@@ -27,5 +27,8 @@ pub mod queued_message;
 pub mod remote_client;
 pub mod repo;
 pub mod skill_registry;
+pub mod workflow_compiler;
+pub mod workflow_orchestrator;
+pub mod workflow_validator;
 pub mod workspace_manager;
 pub mod worktree_manager;
