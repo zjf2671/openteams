@@ -26,7 +26,14 @@ type WorkflowCardProjection = {
   revision_id?: string;
   title: string;
   goal: string;
-  state: 'preview_ready' | 'preview_invalid' | 'running' | 'completed' | 'failed' | 'paused';
+  state:
+    | 'preview_ready'
+    | 'preview_invalid'
+    | 'running'
+    | 'waiting_user'
+    | 'completed'
+    | 'failed'
+    | 'paused';
   execution_status: string;
   error_message?: string | null;
   completed_step_count: number;
@@ -35,6 +42,7 @@ type WorkflowCardProjection = {
   outputs: string[];
   steps: Array<{
     id: string;
+    step_key: string;
     title: string;
     step_type: string;
     status: string;
@@ -43,6 +51,7 @@ type WorkflowCardProjection = {
   }>;
   agents?: Array<{
     session_agent_id: string;
+    workflow_agent_session_id?: string | null;
     agent_id: string;
     name: string;
   }>;
@@ -80,18 +89,46 @@ function WorkflowGraph({ nodes, edges }: { nodes: WorkflowCardNode[]; edges: Wor
     return null;
   }
 
-  const width = 170;
-  const height = 64;
-  const padding = 32;
-  const minX = Math.min(...nodes.map((node) => node.position.x));
-  const minY = Math.min(...nodes.map((node) => node.position.y));
-  const maxX = Math.max(...nodes.map((node) => node.position.x + width));
-  const maxY = Math.max(...nodes.map((node) => node.position.y + height));
-  const viewBox = `${minX - padding} ${minY - padding} ${maxX - minX + padding * 2} ${
-    maxY - minY + padding * 2
-  }`;
-
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const canvasHeight = 360;
+  const nodeGap = 14;
+  const minNodeWidth = 84;
+  const maxNodeWidth = 150;
+  const height = 34;
+  const paddingX = 32;
+  const paddingY = 28;
+  const sortedNodes = [...nodes].sort(
+    (a, b) =>
+      a.position.x - b.position.x ||
+      a.position.y - b.position.y ||
+      a.id.localeCompare(b.id)
+  );
+  const measureNodeWidth = (node: WorkflowCardNode) => {
+    const titleWidth = node.data.title.trim().length * 4 + 26;
+    const typeWidth = node.data.stepType.trim().length * 3.5 + 20;
+    return Math.max(minNodeWidth, Math.min(maxNodeWidth, Math.max(titleWidth, typeWidth)));
+  };
+  const nodeWidths = sortedNodes.map(measureNodeWidth);
+  const totalNodeWidth = nodeWidths.reduce((sum, width) => sum + width, 0);
+  const canvasWidth = Math.max(
+    totalNodeWidth + Math.max(sortedNodes.length - 1, 0) * nodeGap + paddingX * 2,
+    280
+  );
+  const layoutNodes = sortedNodes.map((node, index) => {
+    const renderWidth = nodeWidths[index];
+    const previousWidth = nodeWidths
+      .slice(0, index)
+      .reduce((sum, width) => sum + width, 0);
+    return {
+      ...node,
+      renderWidth,
+      position: {
+        x: paddingX + previousWidth + index * nodeGap,
+        y: (canvasHeight - height) / 2,
+      },
+    };
+  });
+  const nodeById = new Map(layoutNodes.map((node) => [node.id, node]));
+  const viewBox = `0 0 ${canvasWidth} ${canvasHeight}`;
   const statusColor = (status?: string | null) => {
     switch (status) {
       case 'completed':
@@ -108,20 +145,21 @@ function WorkflowGraph({ nodes, edges }: { nodes: WorkflowCardNode[]; edges: Wor
   };
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-[#DCE4F0] bg-[#F8FAFC] px-3 py-3">
-      <svg viewBox={viewBox} className="h-[240px] w-full">
+    <div className="overflow-x-auto overflow-y-hidden rounded-2xl border border-[#DCE4F0] bg-[#F8FAFC] px-3 py-3">
+      <svg viewBox={viewBox} className="mx-auto h-[360px] max-w-none" style={{ width: canvasWidth }}>
         {edges.map((edge) => {
           const source = nodeById.get(edge.source);
           const target = nodeById.get(edge.target);
           if (!source || !target) return null;
-          const x1 = source.position.x + width / 2;
-          const y1 = source.position.y + height;
-          const x2 = target.position.x + width / 2;
-          const y2 = target.position.y;
+          const x1 = source.position.x + source.renderWidth;
+          const y1 = source.position.y + height / 2;
+          const x2 = target.position.x;
+          const y2 = target.position.y + height / 2;
+          const curveOffset = Math.max((x2 - x1) / 2, 12);
           return (
             <path
               key={edge.id}
-              d={`M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`}
+              d={`M ${x1} ${y1} C ${x1 + curveOffset} ${y1}, ${x2 - curveOffset} ${y2}, ${x2} ${y2}`}
               fill="none"
               stroke="#94A3B8"
               strokeWidth="2"
@@ -129,22 +167,36 @@ function WorkflowGraph({ nodes, edges }: { nodes: WorkflowCardNode[]; edges: Wor
             />
           );
         })}
-        {nodes.map((node) => {
+        {layoutNodes.map((node) => {
           const colors = statusColor(node.data.status);
           return (
             <g key={node.id} transform={`translate(${node.position.x}, ${node.position.y})`}>
               <rect
-                width={width}
+                width={node.renderWidth}
                 height={height}
-                rx="18"
+                rx="10"
                 fill={colors.fill}
                 stroke={colors.stroke}
                 strokeWidth="2"
               />
-              <text x="14" y="24" fontSize="12" fontWeight="700" fill={colors.text}>
+              <text
+                x={node.renderWidth / 2}
+                y="13"
+                fontSize="8"
+                fontWeight="700"
+                fill={colors.text}
+                textAnchor="middle"
+              >
                 {node.data.stepType.toUpperCase()}
               </text>
-              <text x="14" y="44" fontSize="14" fontWeight="600" fill="#0F172A">
+              <text
+                x={node.renderWidth / 2}
+                y="24"
+                fontSize="10"
+                fontWeight="600"
+                fill="#0F172A"
+                textAnchor="middle"
+              >
                 {node.data.title.length > 18
                   ? `${node.data.title.slice(0, 18)}...`
                   : node.data.title}
@@ -161,9 +213,10 @@ type ChatWorkflowCardProps = {
   message: ChatMessage;
   onExecute?: (planId: string) => void;
   onPauseAll?: (executionId: string) => void;
+  onOpenWindow?: () => void;
 };
 
-export function ChatWorkflowCard({ message, onExecute, onPauseAll }: ChatWorkflowCardProps) {
+export function ChatWorkflowCard({ message, onExecute, onPauseAll, onOpenWindow }: ChatWorkflowCardProps) {
   const projection = extractWorkflowCardProjection(message.meta);
   if (!projection) {
     return null;
@@ -181,6 +234,8 @@ export function ChatWorkflowCard({ message, onExecute, onPauseAll }: ChatWorkflo
       <PlayIcon className="size-icon-sm text-[#D97706]" weight="fill" />
     ) : projection.state === 'paused' ? (
       <PauseIcon className="size-icon-sm text-[#D97706]" weight="fill" />
+    ) : projection.state === 'waiting_user' ? (
+      <WarningCircleIcon className="size-icon-sm text-[#7C3AED]" weight="fill" />
     ) : (
       <ClockIcon className="size-icon-sm text-[#2563EB]" weight="fill" />
     );
@@ -194,6 +249,8 @@ export function ChatWorkflowCard({ message, onExecute, onPauseAll }: ChatWorkflo
           ? 'Plan Ready'
           : projection.state === 'preview_invalid'
             ? 'Plan Invalid'
+            : projection.state === 'waiting_user'
+              ? 'Action Required'
             : projection.state === 'paused'
               ? 'Paused'
               : 'Workflow Running';
@@ -213,8 +270,19 @@ export function ChatWorkflowCard({ message, onExecute, onPauseAll }: ChatWorkflo
             {projection.goal}
           </div>
         </div>
-        <div className="rounded-full bg-[#EEF4FF] px-3 py-1 text-xs font-semibold text-[#1D4ED8]">
-          {projection.completed_step_count}/{projection.total_step_count}
+        <div className="flex items-center gap-2">
+          <div className="rounded-full bg-[#EEF4FF] px-3 py-1 text-xs font-semibold text-[#1D4ED8]">
+            {projection.completed_step_count}/{projection.total_step_count}
+          </div>
+          {onOpenWindow && (
+            <button
+              type="button"
+              onClick={onOpenWindow}
+              className="rounded-full border border-[#E2E8F0] bg-white px-3 py-1 text-xs font-medium text-[#475569] hover:bg-[#F1F5F9] transition-colors"
+            >
+              Open
+            </button>
+          )}
         </div>
       </div>
 

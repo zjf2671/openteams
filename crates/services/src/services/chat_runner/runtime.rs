@@ -1424,7 +1424,10 @@ impl ChatRunner {
 
                         let messages_created = match process_result {
                             Ok(ProtocolProcessResult::Success(count)) => count,
-                            Ok(ProtocolProcessResult::WorkflowGenerateDetected { send_count, workflow_content }) => {
+                            Ok(ProtocolProcessResult::WorkflowGenerateDetected {
+                                send_count,
+                                workflow_content,
+                            }) => {
                                 tracing::info!(
                                     session_id = %session_id,
                                     run_id = %run_id,
@@ -1436,11 +1439,14 @@ impl ChatRunner {
                                 );
 
                                 // Emit a WebSocket event so the frontend knows a plan generation is starting
-                                runner.emit(session_id, ChatStreamEvent::WorkflowGenerateDetected {
+                                runner.emit(
                                     session_id,
-                                    session_agent_id,
-                                    run_id,
-                                });
+                                    ChatStreamEvent::WorkflowGenerateDetected {
+                                        session_id,
+                                        session_agent_id,
+                                        run_id,
+                                    },
+                                );
 
                                 // Spawn the plan generation pipeline asynchronously
                                 let plan_runner = runner.clone();

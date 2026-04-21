@@ -65,6 +65,14 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             axum::routing::post(workflow::interrupt_step),
         )
         .route(
+            "/workflow/executions/{execution_id}/transcripts",
+            get(workflow::get_transcripts),
+        )
+        .route(
+            "/workflow/resolve-action",
+            axum::routing::post(workflow::resolve_approval),
+        )
+        .route(
             "/messages/batch-delete",
             axum::routing::post(messages::delete_messages_batch),
         )

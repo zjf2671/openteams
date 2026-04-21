@@ -41,11 +41,20 @@ pub fn validate_structure(plan: &WorkflowPlanJson) -> ValidationResult {
     let mut errors = Vec::new();
 
     // version 必须为 1
-    if plan.version != 1 {
-        errors.push(ValidationError {
-            field: "version".into(),
-            message: format!("计划版本号必须为 1，当前值为 {}", plan.version),
-        });
+    match plan.plan_schema_version() {
+        Ok(1) => {}
+        Ok(_) => {
+            errors.push(ValidationError {
+                field: "version".into(),
+                message: format!("计划版本号必须为 1，当前值为 {}", plan.version),
+            });
+        }
+        Err(message) => {
+            errors.push(ValidationError {
+                field: "version".into(),
+                message,
+            });
+        }
     }
 
     // title 非空
@@ -400,7 +409,7 @@ mod tests {
 
     fn make_valid_plan() -> WorkflowPlanJson {
         WorkflowPlanJson {
-            version: 1,
+            version: "1".into(),
             title: "测试计划".into(),
             goal: "测试目标".into(),
             agents: WorkflowPlanAgents {

@@ -116,6 +116,7 @@ export interface ChatMessageItemProps {
   // Workflow controls
   onExecutePlan?: (planId: string) => void;
   onPauseAll?: (executionId: string) => void;
+  onOpenWorkflowWindow?: (projection: unknown) => void;
 }
 
 export function ChatMessageItem({
@@ -142,6 +143,7 @@ export function ChatMessageItem({
   onToggleSelect,
   onExecutePlan,
   onPauseAll,
+  onOpenWorkflowWindow,
 }: ChatMessageItemProps) {
   const { t } = useTranslation('chat');
   const isUser = message.sender_type === ChatSenderType.user;
@@ -277,7 +279,15 @@ export function ChatMessageItem({
             aria-checked={isCleanupMode ? isSelected : undefined}
             tabIndex={isCleanupMode ? 0 : undefined}
           >
-            <ChatWorkflowCard message={message} onExecute={onExecutePlan} onPauseAll={onPauseAll} />
+            <ChatWorkflowCard
+              message={message}
+              onExecute={onExecutePlan}
+              onPauseAll={onPauseAll}
+              onOpenWindow={onOpenWorkflowWindow ? () => {
+                const proj = extractWorkflowCardProjection(message.meta);
+                if (proj) onOpenWorkflowWindow(proj);
+              } : undefined}
+            />
           </div>
         </div>
       );

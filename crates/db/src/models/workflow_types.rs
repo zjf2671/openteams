@@ -1,6 +1,46 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Type;
 use ts_rs::TS;
+
+/// Deserializes version field accepting both integer (e.g. `1`) and string (e.g. `"1.0.0"`)
+fn deserialize_version_flexible<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    struct VersionVisitor;
+
+    impl<'de> de::Visitor<'de> for VersionVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an integer or string version")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<String, E> {
+            Ok(v)
+        }
+    }
+
+    deserializer.deserialize_any(VersionVisitor)
+}
 
 // ---------------------------------------------------------------------------
 // Plan-level enums
@@ -202,7 +242,8 @@ pub enum WorkflowEventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct WorkflowPlanJson {
-    pub version: u32,
+    #[serde(deserialize_with = "deserialize_version_flexible")]
+    pub version: String,
     pub title: String,
     pub goal: String,
     pub agents: WorkflowPlanAgents,
@@ -214,6 +255,24 @@ pub struct WorkflowPlanJson {
     pub edges: Vec<WorkflowPlanEdge>,
     #[serde(default)]
     pub policies: Option<WorkflowPlanPolicies>,
+}
+
+impl WorkflowPlanJson {
+    pub fn plan_schema_version(&self) -> Result<i32, String> {
+        let normalized = self.version.trim().trim_start_matches('v');
+        let major = normalized.split('.').next().unwrap_or_default().trim();
+
+        if major.is_empty() {
+            return Err("Workflow plan version cannot be empty.".to_string());
+        }
+
+        major.parse::<i32>().map_err(|_| {
+            format!(
+                "Invalid workflow plan version '{}'. Expected an integer-like string such as '1' or '1.0.0'.",
+                self.version
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]

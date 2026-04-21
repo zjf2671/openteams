@@ -111,6 +111,25 @@ export interface InterruptStepResponse {
   status: string;
 }
 
+export interface WorkflowTranscriptEntry {
+  id: string;
+  execution_id: string;
+  round_id?: string | null;
+  workflow_agent_session_id?: string | null;
+  step_id?: string | null;
+  step_key?: string | null;
+  sender_type: string;
+  entry_type: string;
+  content: string;
+  meta_json?: string | null;
+  created_at: string;
+  agent_name?: string | null;
+}
+
+export interface ResolveActionResponse {
+  status: string;
+}
+
 export class ApiError<E = unknown> extends Error {
   public status?: number;
   public error_data?: E;
@@ -833,6 +852,55 @@ export const chatApi = {
       }
     );
     return handleApiResponse<InterruptStepResponse>(response);
+  },
+
+  getWorkflowTranscripts: async (
+    sessionId: string,
+    executionId: string,
+    filters?: {
+      stepId?: string | null;
+      stepKey?: string | null;
+      workflowAgentSessionId?: string | null;
+    }
+  ): Promise<WorkflowTranscriptEntry[]> => {
+    const params = new URLSearchParams();
+    if (filters?.stepId) {
+      params.set('step_id', filters.stepId);
+    }
+    if (filters?.stepKey) {
+      params.set('step_key', filters.stepKey);
+    }
+    if (filters?.workflowAgentSessionId) {
+      params.set('workflow_agent_session_id', filters.workflowAgentSessionId);
+    }
+    const queryString = params.toString();
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow/executions/${executionId}/transcripts${queryString ? `?${queryString}` : ''}`,
+      { method: 'GET' }
+    );
+    return handleApiResponse<WorkflowTranscriptEntry[]>(response);
+  },
+
+  resolveWorkflowAction: async (
+    sessionId: string,
+    executionId: string,
+    transcriptId: string,
+    action: string,
+    inputText?: string
+  ): Promise<ResolveActionResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow/resolve-action`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          execution_id: executionId,
+          transcript_id: transcriptId,
+          action,
+          input_text: inputText,
+        }),
+      }
+    );
+    return handleApiResponse<ResolveActionResponse>(response);
   },
 
   createMessage: async (

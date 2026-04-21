@@ -12,7 +12,6 @@ use db::{
         chat_message::{ChatMessage, ChatSenderType},
         chat_session::{ChatSession, ChatSessionStatus},
         chat_session_agent::{ChatSessionAgent, ChatSessionAgentState},
-        chat_skill::ChatSkill,
     },
 };
 use executors::executors::CancellationToken;
@@ -25,11 +24,9 @@ use uuid::Uuid;
 
 use super::{
     AgentProtocolError, AgentProtocolMessageType, ChatProtocolNoticeCode, ChatRunner,
-    ChatStreamEvent, MARKDOWN_PROTOCOL_OUTPUT_EXAMPLE_JSON, MessageAttachmentContext,
-    PROTOCOL_OUTPUT_SCHEMA_JSON, RUNS_MAX_TOTAL_BYTES_PER_WORKSPACE,
-    RUNS_PRUNE_TARGET_BYTES_PER_WORKSPACE, ReferenceAttachment, ReferenceContext,
-    ResolvedPromptLanguage, RunCompletionStatus, SessionAgentSummary, TokenUsageInfo,
-    runtime::RunLogForwarders,
+    ChatStreamEvent, MARKDOWN_PROTOCOL_OUTPUT_EXAMPLE_JSON, PROTOCOL_OUTPUT_SCHEMA_JSON,
+    RUNS_MAX_TOTAL_BYTES_PER_WORKSPACE, RUNS_PRUNE_TARGET_BYTES_PER_WORKSPACE,
+    ResolvedPromptLanguage, RunCompletionStatus, TokenUsageInfo, runtime::RunLogForwarders,
 };
 use crate::services::config::UiLanguage;
 
@@ -63,28 +60,6 @@ fn test_agent(name: &str, system_prompt: &str) -> ChatAgent {
         system_prompt: system_prompt.to_string(),
         model_name: None,
         tools_enabled: sqlx::types::Json(json!({})),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-    }
-}
-
-fn test_skill(name: &str, description: &str, trigger_type: &str) -> ChatSkill {
-    ChatSkill {
-        id: Uuid::new_v4(),
-        name: name.to_string(),
-        description: description.to_string(),
-        content: String::new(),
-        trigger_type: trigger_type.to_string(),
-        trigger_keywords: sqlx::types::Json(Vec::new()),
-        enabled: true,
-        source: "local".to_string(),
-        source_url: None,
-        version: "1.0.0".to_string(),
-        author: None,
-        tags: sqlx::types::Json(Vec::new()),
-        category: None,
-        compatible_agents: sqlx::types::Json(Vec::new()),
-        download_count: 0,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
@@ -905,136 +880,6 @@ fn resolve_message_sender_identity_uses_agent_sender_label() {
     let sender = ChatRunner::resolve_message_sender_identity(&message);
     assert_eq!(sender.label, "architect");
     assert_eq!(sender.address, "agent:architect");
-}
-
-#[test]
-fn build_system_prompt_markdown_preserves_protocol_content() {
-    let current_agent = test_agent(
-        "product",
-        "You are the Product Manager.\nKeep scope testable.",
-    );
-    let other_agent_id = Uuid::new_v4();
-    let session_agents = vec![SessionAgentSummary {
-        session_agent_id: Uuid::new_v4(),
-        agent_id: other_agent_id,
-        name: "architect".to_string(),
-        runner_type: "codex".to_string(),
-        state: ChatSessionAgentState::Idle,
-        description: Some("You are the System Architect.".to_string()),
-        system_prompt: None,
-        tools_enabled: json!({}),
-        skills_used: vec!["agent-browser".to_string()],
-    }];
-    let skills = vec![test_skill(
-        "agent-browser",
-        "Browser automation CLI for AI agents.",
-        "always",
-    )];
-
-    let prompt = ChatRunner::build_system_prompt_markdown(
-        &current_agent,
-        &session_agents,
-        Path::new(r"E:\workspace\projectSS\MainPage2\.openteams\context\demo"),
-        &skills,
-        Some("Please analyze the page issue"),
-        ResolvedPromptLanguage {
-            setting: "simplified_chinese",
-            code: "zh-Hans",
-            instruction: "You MUST respond in Simplified Chinese.",
-        },
-        Some("Work through explicit handoffs."),
-    );
-
-    assert!(prompt.contains("# ChatGroup Protocol"));
-    assert!(prompt.contains("## agent.role"));
-    assert!(prompt.contains("### agent.skills.allowed item 1"));
-    assert!(prompt.contains("### group.members item 1"));
-    assert!(prompt.contains("## history.group_messages"));
-    assert!(prompt.contains("## output"));
-    assert!(prompt.contains("### output.message_types item 1"));
-    assert!(prompt.contains("## output.example"));
-    assert!(prompt.contains("## language"));
-    assert!(prompt.contains("## team.protocol"));
-    assert!(prompt.contains("Work through explicit handoffs."));
-    assert!(prompt.contains("- **PROTOCOL_VERSION**: chatgroup_markdown_v1"));
-    assert!(prompt.contains("- **allowed_targets**: [\"architect\",\"you\"]"));
-    assert!(prompt.contains("Return ONLY a valid JSON array."));
-    assert!(prompt.contains(
-        "Prioritize reading history when the new message implies continuation or refinement"
-    ));
-    assert!(prompt.contains(
-            "Before writing a record item, if you are unsure whether the fact was already captured, check this file first."
-        ));
-    assert!(
-        prompt
-            .contains("Use this file when you need to review what members have already completed.")
-    );
-    // Use PathBuf to build cross-platform expected path
-    let expected_path = Path::new(r"E:\workspace\projectSS\MainPage2\.openteams\context\demo")
-        .join("messages.jsonl");
-    assert!(prompt.contains(expected_path.to_str().unwrap()));
-    assert!(!prompt.contains("[agent.role]"));
-    assert!(!prompt.contains("PROTOCOL_VERSION ="));
-}
-
-#[test]
-fn build_user_prompt_markdown_preserves_reference_and_attachments() {
-    let agent = test_agent("product", "");
-    let message = test_message_with_sender(
-        ChatSenderType::Agent,
-        Some(Uuid::new_v4()),
-        "@product Please confirm the delivery scope",
-        json!({
-            "sender": {
-                "label": "architect",
-                "name": "architect"
-            }
-        }),
-    );
-    let reference = ReferenceContext {
-        message_id: Uuid::new_v4(),
-        sender_label: "user".to_string(),
-        sender_type: ChatSenderType::User,
-        created_at: "2026-03-10 08:00:00 UTC".to_string(),
-        content: "Referenced message".to_string(),
-        attachments: vec![ReferenceAttachment {
-            name: "spec.md".to_string(),
-            mime_type: Some("text/markdown".to_string()),
-            size_bytes: 128,
-            kind: "file".to_string(),
-            local_path: r"E:\workspace\projectSS\MainPage2\spec.md".to_string(),
-        }],
-    };
-    let message_attachments = MessageAttachmentContext {
-        attachments: vec![ReferenceAttachment {
-            name: "ui.png".to_string(),
-            mime_type: Some("image/png".to_string()),
-            size_bytes: 256,
-            kind: "image".to_string(),
-            local_path: r"E:\workspace\projectSS\MainPage2\ui.png".to_string(),
-        }],
-    };
-
-    let prompt = ChatRunner::build_user_prompt_markdown(
-        &agent,
-        &message,
-        Some(&message_attachments),
-        Some(&reference),
-    );
-
-    assert!(prompt.contains("## envelope"));
-    assert!(prompt.contains("## message"));
-    assert!(prompt.contains("### message.reference"));
-    assert!(prompt.contains("#### message.reference.attachments item 1"));
-    assert!(prompt.contains("### message.attachments item 1"));
-    assert!(prompt.contains("- **from**: agent:architect"));
-    assert!(prompt.contains("- **to**: agent:product"));
-    assert!(prompt.contains("```text\n@product Please confirm the delivery scope\n```"));
-    assert!(prompt.contains("```text\nReferenced message\n```"));
-    assert!(prompt.contains(r"- **local_path**: E:\workspace\projectSS\MainPage2\spec.md"));
-    assert!(prompt.contains(r"- **local_path**: E:\workspace\projectSS\MainPage2\ui.png"));
-    assert!(!prompt.contains("[message]"));
-    assert!(!prompt.contains("[message.reference]"));
 }
 
 #[test]

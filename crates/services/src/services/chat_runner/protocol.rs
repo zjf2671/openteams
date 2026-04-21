@@ -615,6 +615,7 @@ impl ChatRunner {
         let session = ChatSession::find_by_id(&self.db.pool, session_id).await?;
         let mut send_count = 0usize;
 
+        // handle send type message for agents in the current session
         for (index, message) in protocol_messages.into_iter().enumerate() {
             if !matches!(message.message_type, AgentProtocolMessageType::Send) {
                 continue;
@@ -709,13 +710,6 @@ impl ChatRunner {
         _source_message_id: Uuid,
         _workflow_content: &str,
     ) -> Result<(), ChatRunnerError> {
-        use super::super::workflow_orchestrator::WorkflowOrchestrator;
-        use super::super::workflow_runtime::{
-            WorkflowCardAgent, build_plan_generation_prompt, extract_json_payload,
-            run_workflow_agent_prompt,
-        };
-        use super::super::workflow_compiler::WorkflowCompiler;
-        use super::super::workflow_validator;
         use db::models::{
             chat_agent::ChatAgent,
             chat_message::ChatMessage as DbChatMessage,
@@ -725,6 +719,16 @@ impl ChatRunner {
             workflow_plan::{CreateWorkflowPlan, WorkflowPlan},
             workflow_plan_revision::{CreateWorkflowPlanRevision, WorkflowPlanRevision},
             workflow_types::*,
+        };
+
+        use super::super::{
+            workflow_compiler::WorkflowCompiler,
+            workflow_orchestrator::WorkflowOrchestrator,
+            workflow_runtime::{
+                WorkflowCardAgent, build_plan_generation_prompt, extract_json_payload,
+                run_workflow_agent_prompt,
+            },
+            workflow_validator,
         };
 
         let pool = &self.db.pool;
@@ -764,9 +768,7 @@ impl ChatRunner {
         let lead_agent = agents
             .iter()
             .find(|a| a.id == lead_session_agent.agent_id)
-            .ok_or_else(|| {
-                ChatRunnerError::AgentNotFound("lead agent not found".to_string())
-            })?;
+            .ok_or_else(|| ChatRunnerError::AgentNotFound("lead agent not found".to_string()))?;
 
         // Resolve user goal from messages
         let messages = DbChatMessage::find_by_session_id(pool, session_id, None).await?;
@@ -784,6 +786,7 @@ impl ChatRunner {
                 let agent = agents.iter().find(|a| a.id == sa.agent_id)?;
                 Some(WorkflowCardAgent {
                     session_agent_id: sa.id.to_string(),
+                    workflow_agent_session_id: None,
                     agent_id: agent.id.to_string(),
                     name: agent.name.clone(),
                 })
@@ -791,11 +794,8 @@ impl ChatRunner {
             .collect();
 
         // Build the plan generation prompt (second-stage schema-guided prompt)
-        let prompt = build_plan_generation_prompt(
-            &user_goal,
-            &lead_agent.id.to_string(),
-            &available_agents,
-        );
+        let prompt =
+            build_plan_generation_prompt(&user_goal, &lead_agent.id.to_string(), &available_agents);
 
         // Run the plan generation (second-stage run)
         let raw_plan_output = match run_workflow_agent_prompt(
@@ -853,8 +853,7 @@ impl ChatRunner {
             }
         };
 
-        let valid_agent_ids: Vec<String> =
-            agents.iter().map(|a| a.id.to_string()).collect();
+        let valid_agent_ids: Vec<String> = agents.iter().map(|a| a.id.to_string()).collect();
         let validation = workflow_validator::validate_plan(&parsed_plan, &valid_agent_ids);
 
         if !validation.is_valid {
@@ -862,6 +861,9 @@ impl ChatRunner {
             let validation_errors_json =
                 serde_json::to_string(&validation.errors).unwrap_or_default();
             let plan_hash = WorkflowCompiler::compute_hash(&parsed_plan);
+            let plan_schema_version = parsed_plan
+                .plan_schema_version()
+                .map_err(ChatRunnerError::InvalidWorkflowPlan)?;
 
             let plan = WorkflowPlan::create(
                 pool,
@@ -872,7 +874,7 @@ impl ChatRunner {
                     title: parsed_plan.title.clone(),
                     summary_text: Some(parsed_plan.goal.clone()),
                     plan_json: plan_json.clone(),
-                    plan_schema_version: parsed_plan.version as i32,
+                    plan_schema_version,
                     plan_hash: plan_hash.clone(),
                     validation_status: WorkflowValidationStatus::Invalid,
                     validation_errors_json: Some(validation_errors_json.clone()),
@@ -880,7 +882,8 @@ impl ChatRunner {
                 Uuid::new_v4(),
             )
             .await?;
-            let _plan = WorkflowPlan::update_status(pool, plan.id, WorkflowPlanStatus::Draft).await?;
+            let _plan =
+                WorkflowPlan::update_status(pool, plan.id, WorkflowPlanStatus::Draft).await?;
 
             let _revision = WorkflowPlanRevision::create(
                 pool,
@@ -899,31 +902,94 @@ impl ChatRunner {
             )
             .await?;
 
-            // Create a preview_invalid card
+            // Build a proper preview_invalid projection so the frontend can render it
             let validation_summary = validation
                 .errors
                 .iter()
                 .map(|e| format!("{}: {}", e.field, e.message))
                 .collect::<Vec<_>>()
                 .join("; ");
+
+            use super::super::workflow_runtime::{
+                WorkflowCardProjection, WorkflowCardState, WorkflowCardStep,
+            };
+
+            let step_views: Vec<WorkflowCardStep> = parsed_plan
+                .nodes
+                .iter()
+                .map(|n| WorkflowCardStep {
+                    id: n.id.clone(),
+                    step_key: n.id.clone(),
+                    title: n.data.title.clone(),
+                    step_type: if n.data.step_type.is_empty() {
+                        "task".to_string()
+                    } else {
+                        n.data.step_type.to_lowercase()
+                    },
+                    status: "pending".to_string(),
+                    agent_name: n.data.agent_id.clone(),
+                    summary_text: None,
+                })
+                .collect();
+
+            let invalid_projection = WorkflowCardProjection {
+                execution_id: None,
+                plan_id: plan.id.to_string(),
+                revision_id: String::new(),
+                title: parsed_plan.title.clone(),
+                goal: parsed_plan.goal.clone(),
+                state: WorkflowCardState::PreviewInvalid,
+                execution_status: "preview".to_string(),
+                error_message: None,
+                completed_step_count: 0,
+                total_step_count: parsed_plan.nodes.len(),
+                result_summary: None,
+                outputs: Vec::new(),
+                agents: available_agents.clone(),
+                steps: step_views,
+                plan: parsed_plan.clone(),
+                started_at: None,
+                completed_at: None,
+                validation_errors: Some(validation_summary),
+            };
+
             let card_meta = serde_json::json!({
                 "card_type": "workflow_plan",
                 "workflow_plan_id": plan.id,
                 "display_state": "preview_invalid",
-                "validation_errors": validation_summary,
-                "plan_title": parsed_plan.title,
-                "plan_goal": parsed_plan.goal,
+                "workflow_card": serde_json::to_value(&invalid_projection)?,
             });
-            let card_message = chat::create_message(
-                pool,
-                session_id,
-                ChatSenderType::System,
-                None,
-                "Workflow Plan (Invalid)".to_string(),
-                Some(card_meta),
-            )
-            .await?;
-            self.emit_message_new(session_id, card_message);
+
+            // Single-card contract: reuse existing card if present
+            let existing_card_id =
+                WorkflowOrchestrator::find_session_workflow_card_message_id(pool, session_id).await;
+            let card_message = if let Some(existing_id) = existing_card_id {
+                let updated = DbChatMessage::update_content_and_meta(
+                    pool,
+                    existing_id,
+                    "Workflow Plan (Invalid)",
+                    card_meta.clone(),
+                )
+                .await?;
+                self.emit_message_updated(session_id, updated.clone());
+                updated
+            } else {
+                let msg = chat::create_message(
+                    pool,
+                    session_id,
+                    ChatSenderType::System,
+                    None,
+                    "Workflow Plan (Invalid)".to_string(),
+                    Some(card_meta),
+                )
+                .await?;
+                self.emit_message_new(session_id, msg.clone());
+                msg
+            };
+
+            // Save card message id to plan for reuse
+            let _ =
+                WorkflowPlan::update_workflow_card_message_id(pool, plan.id, card_message.id).await;
             return Ok(());
         }
 

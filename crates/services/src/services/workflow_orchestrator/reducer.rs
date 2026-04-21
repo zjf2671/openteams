@@ -58,6 +58,7 @@ pub struct TransitionResult<T> {
 // pending -> bootstrapping -> running
 // bootstrapping -> failed
 // running -> interrupting -> waiting_user
+// running -> waiting_user (step requests user action: approval/permission/continue)
 // running -> waiting_user_acceptance
 // running -> pausing -> paused
 // running -> completing -> completed
@@ -81,10 +82,10 @@ pub fn validate_execution_transition(
         Bootstrapping => matches!(to, Running | Failed),
         Running => matches!(
             to,
-            Interrupting | WaitingUserAcceptance | Pausing | Completing | Failed
+            Interrupting | WaitingUser | WaitingUserAcceptance | Pausing | Completing | Failed
         ),
         Interrupting => matches!(to, WaitingUser | Paused),
-        WaitingUser => matches!(to, Running | Cancelled),
+        WaitingUser => matches!(to, Running | Failed | Cancelled),
         WaitingUserAcceptance => matches!(to, Completing | Paused),
         Pausing => matches!(to, Paused),
         Paused => matches!(to, Recompiling | Cancelled),
@@ -137,8 +138,8 @@ pub fn validate_step_transition(
             to,
             WaitingInput | WaitingReview | InterruptRequested | Completed | Failed
         ),
-        WaitingInput => matches!(to, Ready),
-        WaitingReview => matches!(to, Ready),
+        WaitingInput => matches!(to, Ready | Failed),
+        WaitingReview => matches!(to, Ready | Failed),
         InterruptRequested => matches!(to, Interrupted),
         Interrupted => matches!(to, Cancelled),
         Blocked => matches!(to, Ready | Cancelled),
@@ -189,8 +190,8 @@ pub fn validate_agent_session_transition(
             to,
             WaitingInput | WaitingApproval | InterruptRequested | Paused | Completed | Failed
         ),
-        WaitingInput => matches!(to, Running),
-        WaitingApproval => matches!(to, Running),
+        WaitingInput => matches!(to, Running | Failed),
+        WaitingApproval => matches!(to, Running | Failed),
         InterruptRequested => matches!(to, Interrupted),
         Interrupted => matches!(to, Idle),
         Paused => matches!(to, Idle),
@@ -258,7 +259,12 @@ pub fn validate_step_in_execution(
         ),
         E::WaitingUser => matches!(
             step_status,
-            S::WaitingInput | S::Interrupted | S::Completed | S::Failed | S::Blocked
+            S::WaitingInput
+                | S::WaitingReview
+                | S::Interrupted
+                | S::Completed
+                | S::Failed
+                | S::Blocked
         ),
         E::Completed => matches!(
             step_status,
@@ -304,7 +310,12 @@ pub fn validate_agent_session_in_execution(
         ),
         E::WaitingUser => matches!(
             session_state,
-            A::WaitingInput | A::Interrupted | A::Idle | A::Completed | A::Failed
+            A::WaitingInput
+                | A::WaitingApproval
+                | A::Interrupted
+                | A::Idle
+                | A::Completed
+                | A::Failed
         ),
         E::Completed => matches!(
             session_state,
@@ -749,6 +760,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_running_to_waiting_user() {
+        // Running -> WaitingUser: step requests user action (approval/permission/continue)
+        assert!(
+            validate_execution_transition(
+                &WorkflowExecutionStatus::Running,
+                &WorkflowExecutionStatus::WaitingUser,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_waiting_user_to_failed() {
+        assert!(
+            validate_execution_transition(
+                &WorkflowExecutionStatus::WaitingUser,
+                &WorkflowExecutionStatus::Failed,
+            )
+            .is_ok()
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Step transition tests
     // -----------------------------------------------------------------------
@@ -805,6 +839,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_step_waiting_review_to_failed() {
+        assert!(
+            validate_step_transition(
+                &WorkflowStepStatus::WaitingReview,
+                &WorkflowStepStatus::Failed,
+            )
+            .is_ok()
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Agent Session transition tests
     // -----------------------------------------------------------------------
@@ -853,6 +898,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_agent_waiting_approval_to_failed() {
+        assert!(
+            validate_agent_session_transition(
+                &WorkflowAgentSessionState::WaitingApproval,
+                &WorkflowAgentSessionState::Failed,
+            )
+            .is_ok()
+        );
+    }
+
     // -----------------------------------------------------------------------
     // 三层组合约束 tests
     // -----------------------------------------------------------------------
@@ -894,6 +950,22 @@ mod tests {
         assert!(!validate_agent_session_in_execution(
             &WorkflowExecutionStatus::WaitingUserAcceptance,
             &WorkflowAgentSessionState::Running,
+        ));
+    }
+
+    #[test]
+    fn test_waiting_user_allows_waiting_review_step() {
+        assert!(validate_step_in_execution(
+            &WorkflowExecutionStatus::WaitingUser,
+            &WorkflowStepStatus::WaitingReview,
+        ));
+    }
+
+    #[test]
+    fn test_waiting_user_allows_waiting_approval_session() {
+        assert!(validate_agent_session_in_execution(
+            &WorkflowExecutionStatus::WaitingUser,
+            &WorkflowAgentSessionState::WaitingApproval,
         ));
     }
 

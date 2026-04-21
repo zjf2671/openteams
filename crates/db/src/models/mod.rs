@@ -30,6 +30,7 @@ pub mod workflow_plan_revision;
 pub mod workflow_round;
 pub mod workflow_step;
 pub mod workflow_step_edge;
+pub mod workflow_transcript;
 pub mod workflow_types;
 pub mod workspace;
 pub mod workspace_repo;

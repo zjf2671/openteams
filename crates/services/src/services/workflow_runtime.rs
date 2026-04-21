@@ -38,10 +38,10 @@ use ts_rs::TS;
 use utils::{log_msg::LogMsg, msg_store::MsgStore, utf8::Utf8LossyDecoder};
 use uuid::Uuid;
 
-const WORKFLOW_EXECUTION_TIMEOUT: Duration = Duration::from_secs(240);
-const WORKFLOW_DRAIN_TIMEOUT: Duration = Duration::from_millis(350);
-const WORKFLOW_REAP_TIMEOUT: Duration = Duration::from_secs(3);
-const WORKFLOW_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const WORKFLOW_EXECUTION_TIMEOUT: Duration = Duration::from_secs(2400);
+const WORKFLOW_DRAIN_TIMEOUT: Duration = Duration::from_millis(3500);
+const WORKFLOW_REAP_TIMEOUT: Duration = Duration::from_secs(30);
+const WORKFLOW_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 const EXECUTOR_PROFILE_VARIANT_KEY: &str = "executor_profile_variant";
 
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +61,8 @@ pub enum WorkflowRuntimeError {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct WorkflowCardAgent {
     pub session_agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_agent_session_id: Option<String>,
     pub agent_id: String,
     pub name: String,
 }
@@ -71,6 +73,8 @@ pub enum WorkflowCardState {
     PreviewReady,
     PreviewInvalid,
     Running,
+    WaitingUser,
+    Paused,
     Completed,
     Failed,
 }
@@ -78,6 +82,7 @@ pub enum WorkflowCardState {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct WorkflowCardStep {
     pub id: String,
+    pub step_key: String,
     pub title: String,
     pub step_type: String,
     pub status: String,
@@ -124,6 +129,36 @@ pub enum WorkflowStepProtocolMessage {
         message: String,
         #[serde(default)]
         content: Option<String>,
+    },
+    ApprovalRequest {
+        step_key: String,
+        execution_id: String,
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    PermissionRequest {
+        step_key: String,
+        execution_id: String,
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    ContinueConfirmation {
+        step_key: String,
+        execution_id: String,
+        message: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    InputRequest {
+        step_key: String,
+        execution_id: String,
+        prompt: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        placeholder: Option<String>,
     },
 }
 
@@ -195,9 +230,66 @@ pub fn build_plan_generation_prompt(
 ) -> String {
     let available_agents_json =
         serde_json::to_string_pretty(available_agents).unwrap_or_else(|_| "[]".to_string());
+    let plan_schema_definition = r#"{
+  "version": "1",
+  "title": "string",
+  "goal": "string",
+  "agents": {
+    "lead": "string",
+    "available": ["string"]
+  },
+  "globals": {
+    "interrupt_mode": "cooperative",
+    "default_retry": 1,
+    "global_pause_supported": true
+  },
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "nodes": [
+    {
+      "id": "unique_step_key",
+      "type": "workflowStep",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "stepType": "task | review | result",
+        "agentId": "optional string",
+        "title": "string",
+        "instructions": "string",
+        "acceptance": ["optional string"],
+        "outputs": ["optional string"],
+        "interruptible": true,
+        "maxRetry": 1,
+        "status": "optional string"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "unique_edge_id",
+      "source": "node_id",
+      "target": "node_id",
+      "type": "optional string",
+      "data": {
+        "kind": "hard | soft"
+      }
+    }
+  ],
+  "policies": {
+    "approval_required_on": ["optional string"],
+    "permission_required_on": ["optional string"],
+    "on_failure": "optional string",
+    "allow_plan_revision": true
+  }
+}"#;
 
-    format!(
-        r#"你是当前 workflow mode 的 lead agent。你的任务不是直接执行工作，而是先把当前用户目标拆解成一个可执行的 workflow plan。
+    let prompt = format!(
+        r#"你是当前 workflow mode 的 lead agent。你的任务是把方案计划`docs\openteams-integration-plan.md`解成一个可执行的 workflow plan。
 
 你必须输出符合系统 schema 的 workflow JSON，用于后续编译和执行。计划真相源是 React Flow 兼容 JSON，而不是自然语言、YAML 或 Markdown。
 
@@ -226,20 +318,128 @@ lead agent 标识：
 {lead_agent_id}
 
 请直接返回 workflow JSON。"#
-    )
+    );
+
+    let mut prompt = prompt;
+    prompt.push_str("\n\nWorkflowPlanJson schema reference:\n");
+    prompt.push_str(plan_schema_definition);
+    prompt.push_str("\n\nAdditional constraints:\n");
+    prompt.push_str("- version must be string \"1\"\n");
+    prompt.push_str("- agents.lead must equal ");
+    prompt.push_str(lead_agent_id);
+    prompt.push_str("\n");
+    prompt.push_str(
+        "- agents.available and nodes[].data.agentId may only use the provided agent_id values\n",
+    );
+    prompt.push_str(
+        "- globals, viewport, policies, and node/edge optional fields may be omitted when unnecessary",
+    );
+    prompt
 }
 
+#[allow(unreachable_code)]
 pub fn build_step_execution_prompt(
     execution: &WorkflowExecution,
     workflow_goal: &str,
     step: &WorkflowStep,
     completed_dependency_summaries: &[String],
+    step_transcript_context: Option<&str>,
 ) -> String {
     let dependency_text = if completed_dependency_summaries.is_empty() {
         "无".to_string()
     } else {
         completed_dependency_summaries.join("\n\n")
     };
+    let dependency_text = if completed_dependency_summaries.is_empty() {
+        "无".to_string()
+    } else {
+        dependency_text
+    };
+    let step_transcript_text = step_transcript_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("无");
+
+    return format!(
+        r#"你正在执行 OpenTeams workflow mode 中的一个 step。
+你必须只返回一个 JSON 对象，不要输出 Markdown、解释或额外文本。
+成功时返回：
+{{
+  "type": "final_result",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "summary": "一句话总结本 step 的完成结果",
+  "content": "完整结果内容",
+  "outputs": ["如有产出文件，请返回工作区内相对路径"]
+}}
+
+失败时返回：
+{{
+  "type": "error",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "message": "失败原因",
+  "content": "可选的详细错误上下文"
+}}
+
+需要用户决策时返回以下结构之一：
+{{
+  "type": "approval_request",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "title": "需要用户审批的事项",
+  "description": "可选的审批说明"
+}}
+
+{{
+  "type": "permission_request",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "title": "需要用户授权的操作",
+  "description": "可选的权限说明"
+}}
+
+{{
+  "type": "continue_confirmation",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "message": "请确认是否继续",
+  "description": "可选的补充说明"
+}}
+
+{{
+  "type": "input_request",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "prompt": "请用户补充需要的输入内容",
+  "description": "可选的补充说明",
+  "placeholder": "输入你需要用户填写的内容"
+}}
+
+约束：
+1. `step_key` 必须保持为 `{step_key}`。
+2. `execution_id` 必须保持为 `{execution_id}`。
+3. 只允许返回 `final_result`、`error`、`approval_request`、`permission_request`、`continue_confirmation` 或 `input_request`。
+4. `outputs` 仅填写工作区内相对路径。
+5. 只有在确实需要用户审批、授权或继续确认时才返回 request 类消息。
+
+workflow 目标：{workflow_goal}
+step 类型：{step_type}
+step 标题：{step_title}
+step 指令：{step_instructions}
+
+已完成前置步骤摘要：
+{dependency_text}
+
+当前 step 已有交互记录：
+{step_transcript_text}
+"#,
+        step_key = step.step_key,
+        execution_id = execution.id,
+        step_type = format!("{:?}", step.step_type).to_lowercase(),
+        step_title = step.title,
+        step_instructions = step.instructions,
+    );
 
     format!(
         r#"你正在执行 OpenTeams workflow mode 中的一个 step。
@@ -308,6 +508,26 @@ pub fn parse_step_protocol_output(
             step_key: actual_step_key,
             execution_id: actual_execution_id,
             ..
+        }
+        | WorkflowStepProtocolMessage::ApprovalRequest {
+            step_key: actual_step_key,
+            execution_id: actual_execution_id,
+            ..
+        }
+        | WorkflowStepProtocolMessage::PermissionRequest {
+            step_key: actual_step_key,
+            execution_id: actual_execution_id,
+            ..
+        }
+        | WorkflowStepProtocolMessage::ContinueConfirmation {
+            step_key: actual_step_key,
+            execution_id: actual_execution_id,
+            ..
+        }
+        | WorkflowStepProtocolMessage::InputRequest {
+            step_key: actual_step_key,
+            execution_id: actual_execution_id,
+            ..
         } => {
             if actual_step_key != step_key {
                 return Err(WorkflowRuntimeError::Validation(format!(
@@ -371,7 +591,8 @@ pub fn build_workflow_card_projection(
     let step_views = steps
         .iter()
         .map(|step| WorkflowCardStep {
-            id: step.step_key.clone(),
+            id: step.id.to_string(),
+            step_key: step.step_key.clone(),
             title: step.title.clone(),
             step_type: format!("{:?}", step.step_type).to_lowercase(),
             status: format!("{:?}", step.status).to_lowercase(),
@@ -394,6 +615,10 @@ pub fn build_workflow_card_projection(
                 .find(|agent| agent.id == session_agent.agent_id)?;
             Some(WorkflowCardAgent {
                 session_agent_id: session_agent.id.to_string(),
+                workflow_agent_session_id: workflow_agent_sessions
+                    .iter()
+                    .find(|workflow_session| workflow_session.session_agent_id == session_agent.id)
+                    .map(|workflow_session| workflow_session.id.to_string()),
                 agent_id: agent.id.to_string(),
                 name: agent.name.clone(),
             })
@@ -411,6 +636,10 @@ pub fn build_workflow_card_projection(
     let state = match execution.status {
         WorkflowExecutionStatus::Completed => WorkflowCardState::Completed,
         WorkflowExecutionStatus::Failed => WorkflowCardState::Failed,
+        WorkflowExecutionStatus::Paused | WorkflowExecutionStatus::Pausing => {
+            WorkflowCardState::Paused
+        }
+        WorkflowExecutionStatus::WaitingUser => WorkflowCardState::WaitingUser,
         _ => WorkflowCardState::Running,
     };
 
@@ -746,4 +975,110 @@ fn extract_latest_assistant_from_history(history: &[LogMsg]) -> Option<String> {
         .max_by_key(|(index, _)| *index)
         .map(|(_, content)| content.trim().to_string())
         .filter(|content| !content.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_step_protocol_output_accepts_approval_request() {
+        let execution_id = Uuid::new_v4();
+        let step_key = "review";
+        let raw_output = format!(
+            r#"{{
+  "type": "approval_request",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "title": "Need approval",
+  "description": "Please confirm the patch."
+}}"#
+        );
+
+        let message =
+            parse_step_protocol_output(execution_id, step_key, &raw_output).expect("parse");
+
+        match message {
+            WorkflowStepProtocolMessage::ApprovalRequest {
+                title, description, ..
+            } => {
+                assert_eq!(title, "Need approval");
+                assert_eq!(description.as_deref(), Some("Please confirm the patch."));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_step_protocol_output_accepts_continue_confirmation() {
+        let execution_id = Uuid::new_v4();
+        let step_key = "review";
+        let raw_output = format!(
+            r#"{{
+  "type": "continue_confirmation",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "message": "Continue with deployment?"
+}}"#
+        );
+
+        let message =
+            parse_step_protocol_output(execution_id, step_key, &raw_output).expect("parse");
+
+        match message {
+            WorkflowStepProtocolMessage::ContinueConfirmation { message, .. } => {
+                assert_eq!(message, "Continue with deployment?");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_step_protocol_output_accepts_input_request() {
+        let execution_id = Uuid::new_v4();
+        let step_key = "clarify";
+        let raw_output = format!(
+            r#"{{
+  "type": "input_request",
+  "step_key": "{step_key}",
+  "execution_id": "{execution_id}",
+  "prompt": "Please provide the release tag",
+  "placeholder": "v1.2.3"
+}}"#
+        );
+
+        let message =
+            parse_step_protocol_output(execution_id, step_key, &raw_output).expect("parse");
+
+        match message {
+            WorkflowStepProtocolMessage::InputRequest {
+                prompt,
+                placeholder,
+                ..
+            } => {
+                assert_eq!(prompt, "Please provide the release tag");
+                assert_eq!(placeholder.as_deref(), Some("v1.2.3"));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_step_protocol_output_rejects_wrong_execution_id() {
+        let execution_id = Uuid::new_v4();
+        let raw_output = format!(
+            r#"{{
+  "type": "permission_request",
+  "step_key": "review",
+  "execution_id": "{}",
+  "title": "Need permission"
+}}"#,
+            Uuid::new_v4()
+        );
+
+        let err =
+            parse_step_protocol_output(execution_id, "review", &raw_output).expect_err("invalid");
+
+        assert!(matches!(err, WorkflowRuntimeError::Validation(_)));
+    }
 }

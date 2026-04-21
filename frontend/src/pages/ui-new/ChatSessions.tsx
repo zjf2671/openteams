@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { UsersThreeIcon, CaretDoubleDownIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ChatMessage,
@@ -110,6 +110,8 @@ import { ConfirmModal } from './chat/components/ConfirmModal';
 import { FilePreviewModal } from './chat/components/FilePreviewModal';
 import { SkillsPanel } from './chat/components/SkillsPanel';
 import { AiTeamPresetsModal } from './chat/components/AiTeamPresetsModal';
+import { WorkflowWindow } from './chat/components/WorkflowWindow';
+import type { WorkflowWindowProjection } from './chat/components/WorkflowWindow';
 import { ChatSystemMessage } from '@/components/ui-new/primitives/conversation/ChatSystemMessage';
 
 import type { ChatProtocolNotice } from './chat/hooks/useChatWebSocket';
@@ -915,6 +917,15 @@ export function ChatSessions() {
       if (!activeSessionId) throw new Error('No active session');
       return chatApi.pauseAll(activeSessionId, executionId);
     },
+    onSuccess: () => {
+      if (!activeSessionId) return;
+      queryClient.invalidateQueries({
+        queryKey: ['chatMessages', activeSessionId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowTranscripts', activeSessionId],
+      });
+    },
   });
 
   const handleExecutePlan = useCallback(
@@ -930,6 +941,172 @@ export function ChatSessions() {
     },
     [pauseAllMutation]
   );
+
+  const interruptStepMutation = useMutation({
+    mutationFn: async ({
+      executionId,
+      stepId,
+    }: {
+      executionId: string;
+      stepId: string;
+    }) => {
+      if (!activeSessionId) throw new Error('No active session');
+      return chatApi.interruptStep(activeSessionId, executionId, stepId);
+    },
+    onSuccess: () => {
+      if (!activeSessionId) return;
+      queryClient.invalidateQueries({
+        queryKey: ['chatMessages', activeSessionId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowTranscripts', activeSessionId],
+      });
+    },
+  });
+
+  const handleInterruptStep = useCallback(
+    (executionId: string, stepId: string) => {
+      interruptStepMutation.mutate({ executionId, stepId });
+    },
+    [interruptStepMutation]
+  );
+
+  // Workflow window state
+  const [workflowWindowOpen, setWorkflowWindowOpen] = useState(false);
+  const [workflowWindowCardMessageId, setWorkflowWindowCardMessageId] =
+    useState<string | null>(null);
+
+  const workflowWindowProjection = useMemo<WorkflowWindowProjection | null>(
+    () => {
+      if (!workflowWindowOpen || !workflowWindowCardMessageId) return null;
+      const msg = messages.find(
+        (m) => m.id === workflowWindowCardMessageId
+      );
+      if (!msg) return null;
+      return extractWorkflowCardProjection(msg.meta);
+    },
+    [workflowWindowOpen, workflowWindowCardMessageId, messages]
+  );
+
+  const workflowExecutionId = workflowWindowProjection?.execution_id ?? null;
+  const autoOpenedWorkflowExecutionIdRef = useRef<string | null>(null);
+
+  const { data: workflowTranscriptData } = useQuery({
+    queryKey: ['workflowTranscripts', activeSessionId, workflowExecutionId],
+    queryFn: () => {
+      if (!activeSessionId || !workflowExecutionId) return [];
+      return chatApi.getWorkflowTranscripts(
+        activeSessionId,
+        workflowExecutionId
+      );
+    },
+    enabled: !!activeSessionId && !!workflowExecutionId && workflowWindowOpen,
+    refetchInterval: workflowWindowOpen && !!workflowExecutionId ? 2000 : false,
+  });
+
+  const workflowTranscriptEntries = useMemo(() => {
+    const entries = workflowTranscriptData ?? [];
+    return entries.map((e) => ({
+      id: e.id,
+      step_id: e.step_id,
+      step_key: e.step_key,
+      workflow_agent_session_id: e.workflow_agent_session_id,
+      agent_name: e.agent_name,
+      message_type: e.sender_type as 'system' | 'agent' | 'user' | 'control',
+      content: e.content,
+      entry_type: e.entry_type,
+      meta_json: e.meta_json,
+      created_at: e.created_at,
+    }));
+  }, [workflowTranscriptData]);
+
+  const resolveActionMutation = useMutation({
+    mutationFn: async ({
+      executionId,
+      transcriptId,
+      action,
+      inputText,
+    }: {
+      executionId: string;
+      transcriptId: string;
+      action: string;
+      inputText?: string;
+    }) => {
+      if (!activeSessionId) throw new Error('No active session');
+      return chatApi.resolveWorkflowAction(
+        activeSessionId,
+        executionId,
+        transcriptId,
+        action,
+        inputText
+      );
+    },
+    onSuccess: () => {
+      if (!activeSessionId) return;
+      queryClient.invalidateQueries({
+        queryKey: ['chatMessages', activeSessionId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowTranscripts', activeSessionId],
+      });
+    },
+  });
+
+  const handleOpenWorkflowWindow = useCallback(
+    (projection: WorkflowWindowProjection) => {
+      const cardMsgId = messages.find((m) => {
+        const p = extractWorkflowCardProjection(m.meta);
+        return p && p.execution_id === projection.execution_id && p.plan_id === projection.plan_id;
+      })?.id ?? null;
+      setWorkflowWindowCardMessageId(cardMsgId);
+      setWorkflowWindowOpen(true);
+    },
+    [messages]
+  );
+
+  const handleResolveWorkflowAction = useCallback(
+    (action: string, transcriptId: string, inputText?: string) => {
+      if (!workflowExecutionId) return;
+      resolveActionMutation.mutate({
+        executionId: workflowExecutionId,
+        transcriptId,
+        action,
+        inputText,
+      });
+    },
+    [workflowExecutionId, resolveActionMutation]
+  );
+
+  useEffect(() => {
+    const pendingWorkflowCard = [...messages].reverse().find((message) => {
+      const projection = extractWorkflowCardProjection(message.meta);
+      return projection?.execution_id && projection.execution_status === 'waiting_user';
+    });
+
+    if (!pendingWorkflowCard) {
+      autoOpenedWorkflowExecutionIdRef.current = null;
+      return;
+    }
+
+    const pendingProjection = extractWorkflowCardProjection(pendingWorkflowCard.meta);
+    const pendingExecutionId = pendingProjection?.execution_id ?? null;
+    if (!pendingExecutionId) {
+      return;
+    }
+
+    if (autoOpenedWorkflowExecutionIdRef.current === pendingExecutionId) {
+      return;
+    }
+
+    autoOpenedWorkflowExecutionIdRef.current = pendingExecutionId;
+    setWorkflowWindowCardMessageId(pendingWorkflowCard.id);
+    setWorkflowWindowOpen(true);
+  }, [messages]);
+
+  const pendingWorkflowTranscriptId =
+    resolveActionMutation.isPending
+      ? resolveActionMutation.variables?.transcriptId ?? null
+      : null;
 
   // Message input
   const getMessageMentionHandle = useCallback(
@@ -3806,7 +3983,14 @@ export function ChatSessions() {
     if (!activeSessionId) return;
 
     try {
+      // Send a user message that instructs the session agent to emit workflow_generate.
       await generatePlanAndRun.mutateAsync(activeSessionId);
+      // The agent's structured output triggers the plan generation pipeline automatically.
+      // await sendMessage.mutateAsync({
+      //   sessionId: activeSessionId,
+      //   content: 'Please generate a workflow plan for the current task.',
+      //   meta: { intent: 'workflow_generate' },
+      // });
     } catch (error) {
       const message =
         error instanceof ApiError
@@ -3828,7 +4012,7 @@ export function ChatSessions() {
         },
       });
     }
-  }, [activeSessionId, generatePlanAndRun, t]);
+  }, [activeSessionId, sendMessage, t]);
 
   const handleCancelTitleEdit = () => {
     setTitleDraft(activeSession?.title ?? '');
@@ -4186,9 +4370,9 @@ export function ChatSessions() {
               !isArchived &&
               sessionMembers.length > 0 &&
               hasWorkflowGoal &&
-              !generatePlanAndRun.isPending
+              !sendMessage.isPending
             }
-            isGeneratingWorkflow={generatePlanAndRun.isPending}
+            isGeneratingWorkflow={sendMessage.isPending}
             onGenerateWorkflow={handleGenerateWorkflow}
           />
 
@@ -4439,6 +4623,7 @@ export function ChatSessions() {
                           }
                           onExecutePlan={handleExecutePlan}
                           onPauseAll={handlePauseAll}
+                          onOpenWorkflowWindow={(proj) => handleOpenWorkflowWindow(proj as WorkflowWindowProjection)}
                         />
                       );
                     })}
@@ -4739,6 +4924,24 @@ export function ChatSessions() {
           setSessionWorkspacesInitialFilePath(null);
         }}
       />
+
+      {/* Workflow Window */}
+      {workflowWindowOpen && workflowWindowProjection && (
+        <WorkflowWindow
+          projection={workflowWindowProjection}
+          transcript={workflowTranscriptEntries}
+          isOpen={workflowWindowOpen}
+          onClose={() => {
+            setWorkflowWindowOpen(false);
+            setWorkflowWindowCardMessageId(null);
+          }}
+          onExecute={handleExecutePlan}
+          onPauseAll={handlePauseAll}
+          onInterruptStep={handleInterruptStep}
+          onApproval={handleResolveWorkflowAction}
+          pendingTranscriptId={pendingWorkflowTranscriptId}
+        />
+      )}
 
       {/* Diff Viewer Modal */}
       <DiffViewerModal

@@ -742,336 +742,6 @@ impl ChatRunner {
             .replace('\r', "\\r")
             .replace('\t', "\\t")
     }
-    #[cfg_attr(not(test), allow(dead_code))]
-    /// Build the system prompt using Markdown sections while preserving all protocol fields.
-    pub(super) fn build_system_prompt_markdown(
-        agent: &ChatAgent,
-        session_agents: &[SessionAgentSummary],
-        context_dir: &Path,
-        skills: &[ChatSkill],
-        user_message_content: Option<&str>,
-        prompt_language: ResolvedPromptLanguage,
-        team_protocol: Option<&str>,
-    ) -> String {
-        let mut markdown = String::new();
-        let messages_path = context_dir.join("messages.jsonl");
-        let shared_blackboard_path = context_dir.join(SHARED_BLACKBOARD_FILE_NAME);
-        let work_records_path = context_dir.join(WORK_RECORDS_FILE_NAME);
-        let visible_members = session_agents
-            .iter()
-            .filter(|member| member.agent_id != agent.id)
-            .collect::<Vec<_>>();
-
-        Self::push_markdown_section(&mut markdown, 1, "ChatGroup Protocol");
-        Self::push_markdown_field(&mut markdown, "PROTOCOL_VERSION", "chatgroup_markdown_v1");
-
-        Self::push_markdown_section(&mut markdown, 2, "agent.role");
-        Self::push_markdown_field(&mut markdown, "name", &agent.name);
-        let normalized_system_prompt =
-            Self::strip_embedded_team_protocol_from_system_prompt(&agent.system_prompt);
-        if !normalized_system_prompt.is_empty() {
-            Self::push_markdown_block_field(
-                &mut markdown,
-                "role",
-                &normalized_system_prompt,
-                "text",
-            );
-        }
-
-        let active_skills = Self::filter_active_skills(skills, user_message_content);
-        Self::push_markdown_section(&mut markdown, 2, "agent.skills");
-        if active_skills.is_empty() {
-            Self::push_markdown_field(
-                &mut markdown,
-                "restriction",
-                "You have no skills enabled. Do not attempt to use any skill.",
-            );
-        } else {
-            Self::push_markdown_block_field(
-                &mut markdown,
-                "restriction",
-                concat!(
-                    "Skills are available as local files in ~/.agents/skills and companion directories.\n",
-                    "You can ONLY use the skills listed below. Do not invent or use unlisted skills.\n",
-                ),
-                "text",
-            );
-            for (index, skill) in active_skills.iter().enumerate() {
-                Self::push_markdown_section(
-                    &mut markdown,
-                    3,
-                    &format!("agent.skills.allowed item {}", index + 1),
-                );
-                Self::push_markdown_field(&mut markdown, "name", &skill.name);
-                Self::push_markdown_field(&mut markdown, "description", &skill.description);
-            }
-        }
-
-        Self::push_markdown_section(&mut markdown, 2, "group");
-        Self::push_markdown_field(
-            &mut markdown,
-            "members_description",
-            "Other AI members currently in this group",
-        );
-        if visible_members.is_empty() {
-            markdown.push_str("_No other AI members._\n\n");
-        } else {
-            for (index, member) in visible_members.iter().enumerate() {
-                Self::push_markdown_section(
-                    &mut markdown,
-                    3,
-                    &format!("group.members item {}", index + 1),
-                );
-                Self::push_markdown_field(&mut markdown, "name", &member.name);
-                let responsibility = member.description.as_deref().unwrap_or("AI assistant");
-                Self::push_markdown_field(&mut markdown, "responsibility", responsibility);
-                Self::push_markdown_field(&mut markdown, "state", &format!("{:?}", member.state));
-                Self::push_markdown_json_field(&mut markdown, "skills_used", &member.skills_used);
-            }
-        }
-
-        Self::push_markdown_section(&mut markdown, 2, "history.group_messages");
-        Self::push_markdown_field(&mut markdown, "path", &messages_path.to_string_lossy());
-        Self::push_markdown_field(&mut markdown, "format", "jsonl");
-        Self::push_markdown_field(
-            &mut markdown,
-            "description",
-            "Group chat history. Each line is a JSON message record containing sender and content, consistent with messages.jsonl history.",
-        );
-        Self::push_markdown_bool_field(&mut markdown, "optional", true);
-        Self::push_markdown_block_field(
-            &mut markdown,
-            "instruction",
-            HISTORY_GROUP_MESSAGES_INSTRUCTION,
-            "text",
-        );
-
-        Self::push_markdown_section(&mut markdown, 2, "history.shared_blackboard");
-        Self::push_markdown_field(
-            &mut markdown,
-            "path",
-            &shared_blackboard_path.to_string_lossy(),
-        );
-        Self::push_markdown_field(&mut markdown, "format", "jsonl");
-        Self::push_markdown_field(
-            &mut markdown,
-            "description",
-            "Persisted shared messages generated from record items.",
-        );
-        Self::push_markdown_field(
-            &mut markdown,
-            "instruction",
-            HISTORY_SHARED_BLACKBOARD_INSTRUCTION,
-        );
-
-        Self::push_markdown_section(&mut markdown, 2, "history.work_records");
-        Self::push_markdown_field(&mut markdown, "path", &work_records_path.to_string_lossy());
-        Self::push_markdown_field(&mut markdown, "format", "jsonl");
-        Self::push_markdown_field(
-            &mut markdown,
-            "description",
-            "Persisted work outputs and summaries generated from artifact/conclusion items.",
-        );
-        Self::push_markdown_field(
-            &mut markdown,
-            "instruction",
-            HISTORY_WORK_RECORDS_INSTRUCTION,
-        );
-
-        Self::push_markdown_section(&mut markdown, 2, "output");
-        Self::push_markdown_bool_field(&mut markdown, "required", true);
-        Self::push_markdown_field(&mut markdown, "format", "json");
-        Self::push_markdown_field(&mut markdown, "container", "list");
-        Self::push_markdown_bool_field(&mut markdown, "only_send_items_enter_group_history", true);
-        Self::push_markdown_block_field(
-            &mut markdown,
-            "instruction",
-            concat!(
-                "Return ONLY a valid JSON array.\n",
-                "Do not wrap the JSON array in prose or markdown unless your runner forces code fences.\n",
-                "Your final reply MUST be parseable by a standard JSON parser.\n",
-                "Escape all double quotes, backslashes, and newlines inside JSON string values.\n",
-                "Before sending, verify that every `content` value is still a valid JSON string after escaping.\n",
-                "Only send items will be turned into visible group chat messages and written into group history.\n",
-                "The current agent is always recorded as the sender automatically. Do not impersonate other senders.\n",
-                "Do not discuss anything unrelated to the assigned work. Keep every reply concise, precise, and free of filler.\n",
-                "Use `to = \\\"you\\\"` when sending a message to the user. Here `you` refers to the human user.\n",
-                "For send items, `intent` is optional but recommended when the routing semantics matter.\n",
-            ),
-            "text",
-        );
-        let mut allowed_targets: Vec<&str> = visible_members
-            .iter()
-            .map(|member| member.name.as_str())
-            .collect();
-        allowed_targets.push(RESERVED_USER_HANDLE);
-        Self::push_markdown_json_field(&mut markdown, "allowed_targets", &allowed_targets);
-
-        Self::push_markdown_section(&mut markdown, 3, "output.message_types item 1");
-        Self::push_markdown_field(&mut markdown, "type", "send");
-        Self::push_markdown_json_field(
-            &mut markdown,
-            "required_fields",
-            &["type", "to", "content"],
-        );
-        Self::push_markdown_json_field(&mut markdown, "optional_fields", &["intent"]);
-        Self::push_markdown_block_field(
-            &mut markdown,
-            "rules",
-            concat!(
-                "- A send item targets exactly one receiver.\n",
-                "- Use concise language with a clear goal.\n",
-                "- Content may be empty.\n",
-                "- Prefer setting `intent` for machine-readable routing semantics.\n",
-                "- Optional `intent` values for send items: `request` = ask for work or information; `reply` = the receiver should reply; `notify` = informational only, no reply required; `blocker` = report a blocking issue; `confirm` = explicit confirmation is required.\n",
-                "- The system will render the final group message as `@receiver content` and route it to that receiver.\n",
-            ),
-            "text",
-        );
-
-        Self::push_markdown_section(&mut markdown, 3, "output.message_types item 2");
-        Self::push_markdown_field(&mut markdown, "type", "record");
-        Self::push_markdown_bool_field(&mut markdown, "required", false);
-        Self::push_markdown_json_field(&mut markdown, "required_fields", &["type", "content"]);
-        Self::push_markdown_field(&mut markdown, "rules", MARKDOWN_PROTOCOL_RECORD_RULE);
-
-        Self::push_markdown_section(&mut markdown, 3, "output.message_types item 3");
-        Self::push_markdown_field(&mut markdown, "type", "artifact");
-        Self::push_markdown_bool_field(&mut markdown, "required", false);
-        Self::push_markdown_json_field(&mut markdown, "required_fields", &["type", "content"]);
-        Self::push_markdown_field(&mut markdown, "rules", MARKDOWN_PROTOCOL_ARTIFACT_RULE);
-
-        Self::push_markdown_section(&mut markdown, 3, "output.message_types item 4");
-        Self::push_markdown_field(&mut markdown, "type", "conclusion");
-        Self::push_markdown_bool_field(&mut markdown, "required", false);
-        Self::push_markdown_json_field(&mut markdown, "required_fields", &["type", "content"]);
-        Self::push_markdown_field(&mut markdown, "rules", MARKDOWN_PROTOCOL_CONCLUSION_RULE);
-
-        Self::push_markdown_section(&mut markdown, 2, "output.example");
-        Self::push_markdown_block_field(
-            &mut markdown,
-            "json",
-            MARKDOWN_PROTOCOL_OUTPUT_EXAMPLE_JSON,
-            "json",
-        );
-
-        Self::push_markdown_section(&mut markdown, 2, "language");
-        Self::push_markdown_field(&mut markdown, "setting", prompt_language.setting);
-        Self::push_markdown_field(&mut markdown, "instruction", prompt_language.instruction);
-
-        Self::set_trailing_newlines(&mut markdown, 3);
-        Self::push_markdown_section(&mut markdown, 2, "team.protocol");
-        Self::push_markdown_bool_field(
-            &mut markdown,
-            "configured",
-            team_protocol.is_some_and(|content| !content.trim().is_empty()),
-        );
-        Self::push_markdown_block_field(
-            &mut markdown,
-            "guidelines",
-            &Self::resolve_team_protocol_guidelines(team_protocol),
-            "text",
-        );
-
-        markdown
-    }
-
-    /// Build the user message prompt using Markdown sections while preserving all protocol fields.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn build_user_prompt_markdown(
-        agent: &ChatAgent,
-        message: &ChatMessage,
-        message_attachments: Option<&MessageAttachmentContext>,
-        reference: Option<&ReferenceContext>,
-    ) -> String {
-        let mut markdown = String::new();
-        let sender = Self::resolve_message_sender_identity(message);
-
-        Self::push_markdown_section(&mut markdown, 2, "envelope");
-        Self::push_markdown_field(&mut markdown, "session_id", &message.session_id.to_string());
-        Self::push_markdown_field(&mut markdown, "from", &sender.address);
-        Self::push_markdown_field(&mut markdown, "to", &format!("agent:{}", agent.name));
-        Self::push_markdown_field(&mut markdown, "message_id", &message.id.to_string());
-        Self::push_markdown_field(&mut markdown, "timestamp", &message.created_at.to_string());
-
-        Self::push_markdown_section(&mut markdown, 2, "message");
-        Self::push_markdown_field(&mut markdown, "sender", &sender.label);
-        Self::push_markdown_block_field(&mut markdown, "content", message.content.trim(), "text");
-
-        if let Some(reference) = reference {
-            Self::push_markdown_section(&mut markdown, 3, "message.reference");
-            Self::push_markdown_field(
-                &mut markdown,
-                "note",
-                "User referenced the following historical message. Prioritize it.",
-            );
-            Self::push_markdown_field(
-                &mut markdown,
-                "message_id",
-                &reference.message_id.to_string(),
-            );
-            Self::push_markdown_field(&mut markdown, "sender", &reference.sender_label);
-            Self::push_markdown_field(
-                &mut markdown,
-                "sender_type",
-                &format!("{:?}", reference.sender_type),
-            );
-            Self::push_markdown_field(&mut markdown, "created_at", &reference.created_at);
-            Self::push_markdown_block_field(
-                &mut markdown,
-                "content",
-                reference.content.trim(),
-                "text",
-            );
-
-            for (index, attachment) in reference.attachments.iter().enumerate() {
-                Self::push_markdown_section(
-                    &mut markdown,
-                    4,
-                    &format!("message.reference.attachments item {}", index + 1),
-                );
-                Self::push_markdown_field(&mut markdown, "name", &attachment.name);
-                Self::push_markdown_field(&mut markdown, "kind", &attachment.kind);
-                Self::push_markdown_number_field(
-                    &mut markdown,
-                    "size_bytes",
-                    attachment.size_bytes,
-                );
-                Self::push_markdown_field(
-                    &mut markdown,
-                    "mime_type",
-                    attachment.mime_type.as_deref().unwrap_or("unknown"),
-                );
-                Self::push_markdown_field(&mut markdown, "local_path", &attachment.local_path);
-            }
-        }
-
-        if let Some(attachments_ctx) = message_attachments {
-            for (index, attachment) in attachments_ctx.attachments.iter().enumerate() {
-                Self::push_markdown_section(
-                    &mut markdown,
-                    3,
-                    &format!("message.attachments item {}", index + 1),
-                );
-                Self::push_markdown_field(&mut markdown, "name", &attachment.name);
-                Self::push_markdown_field(&mut markdown, "kind", &attachment.kind);
-                Self::push_markdown_number_field(
-                    &mut markdown,
-                    "size_bytes",
-                    attachment.size_bytes,
-                );
-                Self::push_markdown_field(
-                    &mut markdown,
-                    "mime_type",
-                    attachment.mime_type.as_deref().unwrap_or("unknown"),
-                );
-                Self::push_markdown_field(&mut markdown, "local_path", &attachment.local_path);
-            }
-        }
-
-        markdown
-    }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_exact_markdown_prompt(
@@ -1230,9 +900,12 @@ impl ChatRunner {
             markdown.push('\n');
             let normalized_system_prompt =
                 Self::strip_embedded_team_protocol_from_system_prompt(&agent.system_prompt);
-            markdown.push_str("- role: ");
-            markdown.push_str(&normalized_system_prompt);
-            markdown.push('\n');
+            if !normalized_system_prompt.is_empty() {
+                markdown.push_str("- role define: ");
+                markdown.push_str("\n```\n");
+                markdown.push_str(&normalized_system_prompt);
+                markdown.push_str("\n```\n");
+            }
 
             if active_skills.is_empty() {
                 markdown.push_str("- skills: No skills enabled. Do not use any skills.\n");
@@ -1251,10 +924,9 @@ impl ChatRunner {
             markdown.push_str("## Team Protocol\n");
             if let Some(protocol) = team_protocol {
                 if !protocol.trim().is_empty() {
+                    markdown.push_str("\n````\n");
                     markdown.push_str(protocol.trim());
-                    if !protocol.trim().ends_with('\n') {
-                        markdown.push('\n');
-                    }
+                    markdown.push_str("\n````\n");
                 } else {
                     markdown.push_str("No team protocol configured.\n");
                 }
@@ -1313,6 +985,7 @@ impl ChatRunner {
         markdown
     }
 
+    #[allow(dead_code)]
     pub(super) fn push_markdown_section(markdown: &mut String, level: usize, title: &str) {
         let heading_level = level.clamp(1, 6);
         markdown.push_str(&"#".repeat(heading_level));
@@ -1321,6 +994,7 @@ impl ChatRunner {
         markdown.push_str("\n\n");
     }
 
+    #[allow(dead_code)]
     pub(super) fn push_markdown_field(markdown: &mut String, label: &str, value: &str) {
         if value.contains('\n') {
             Self::push_markdown_block_field(markdown, label, value, "text");
@@ -1333,6 +1007,7 @@ impl ChatRunner {
         markdown.push('\n');
     }
 
+    #[allow(dead_code)]
     pub(super) fn push_markdown_bool_field(markdown: &mut String, label: &str, value: bool) {
         markdown.push_str("- **");
         markdown.push_str(label);
@@ -1341,6 +1016,7 @@ impl ChatRunner {
         markdown.push('\n');
     }
 
+    #[allow(dead_code)]
     pub(super) fn push_markdown_number_field(markdown: &mut String, label: &str, value: i64) {
         markdown.push_str("- **");
         markdown.push_str(label);
@@ -1349,6 +1025,7 @@ impl ChatRunner {
         markdown.push('\n');
     }
 
+    #[allow(dead_code)]
     pub(super) fn push_markdown_json_field<T>(markdown: &mut String, label: &str, value: &T)
     where
         T: Serialize + ?Sized,
@@ -1385,6 +1062,7 @@ impl ChatRunner {
         markdown.push_str("\n\n");
     }
 
+    #[allow(dead_code)]
     pub(super) fn set_trailing_newlines(markdown: &mut String, newline_count: usize) {
         while markdown.ends_with('\n') {
             markdown.pop();

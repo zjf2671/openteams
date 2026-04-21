@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use axum::{
     Extension, Json,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json as ResponseJson, Response},
 };
@@ -14,6 +14,8 @@ use db::models::{
     workflow_execution::WorkflowExecution,
     workflow_plan::{CreateWorkflowPlan, WorkflowPlan},
     workflow_plan_revision::{CreateWorkflowPlanRevision, WorkflowPlanRevision},
+    workflow_step::WorkflowStep,
+    workflow_transcript::WorkflowTranscript,
     workflow_types::{WorkflowPlanStatus, WorkflowRevisionEditor, WorkflowValidationStatus},
 };
 use deployment::Deployment;
@@ -111,6 +113,7 @@ pub async fn generate_plan_and_run(
                 .find(|agent| agent.id == session_agent.agent_id)?;
             Some(WorkflowCardAgent {
                 session_agent_id: session_agent.id.to_string(),
+                workflow_agent_session_id: None,
                 agent_id: agent.id.to_string(),
                 name: agent.name.clone(),
             })
@@ -119,6 +122,9 @@ pub async fn generate_plan_and_run(
 
     let prompt =
         build_plan_generation_prompt(&user_goal, &lead_agent.id.to_string(), &available_agents);
+
+    tracing::debug!("Plan generation prompt for lead agent:\n{}", prompt);
+
     let raw_plan_output = run_workflow_agent_prompt(
         deployment.db(),
         &session,
@@ -128,6 +134,9 @@ pub async fn generate_plan_and_run(
     )
     .await
     .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    tracing::debug!("Raw plan output from lead agent: {}", raw_plan_output);
+
     let plan_json = extract_json_payload(&raw_plan_output).ok_or_else(|| {
         ApiError::BadRequest("Lead agent did not return a workflow JSON object.".to_string())
     })?;
@@ -258,7 +267,7 @@ pub struct ExecutePlanResponse {
 pub async fn execute_plan(
     Extension(session): Extension<ChatSession>,
     State(deployment): State<DeploymentImpl>,
-    axum::extract::Path(plan_id): axum::extract::Path<Uuid>,
+    axum::extract::Path((_session_id, plan_id)): axum::extract::Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiError> {
     let pool = &deployment.db().pool;
 
@@ -267,16 +276,14 @@ pub async fn execute_plan(
         .await?
         .ok_or_else(|| ApiError::BadRequest("Plan not found.".to_string()))?;
     if plan.session_id != session.id {
-        return Err(ApiError::BadRequest("Plan not found in this session.".to_string()));
+        return Err(ApiError::BadRequest(
+            "Plan not found in this session.".to_string(),
+        ));
     }
 
-    let bootstrap = WorkflowOrchestrator::execute_plan(
-        pool,
-        deployment.chat_runner(),
-        plan_id,
-    )
-    .await
-    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let bootstrap = WorkflowOrchestrator::execute_plan(pool, deployment.chat_runner(), plan_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     // Wake the scheduler to start executing steps
     let deployment_clone = deployment.clone();
@@ -329,12 +336,22 @@ pub async fn pause_all(
         .await?
         .ok_or_else(|| ApiError::BadRequest("Execution not found.".to_string()))?;
     if execution.session_id != session.id {
-        return Err(ApiError::BadRequest("Execution not found in this session.".to_string()));
+        return Err(ApiError::BadRequest(
+            "Execution not found in this session.".to_string(),
+        ));
     }
 
     let execution = WorkflowOrchestrator::pause_all(pool, payload.execution_id)
         .await
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    WorkflowOrchestrator::refresh_execution_projection(
+        pool,
+        deployment.chat_runner(),
+        execution.id,
+        None,
+    )
+    .await
+    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     Ok((
         StatusCode::OK,
@@ -371,13 +388,19 @@ pub async fn interrupt_step(
         .await?
         .ok_or_else(|| ApiError::BadRequest("Execution not found.".to_string()))?;
     if execution.session_id != session.id {
-        return Err(ApiError::BadRequest("Execution not found in this session.".to_string()));
+        return Err(ApiError::BadRequest(
+            "Execution not found in this session.".to_string(),
+        ));
     }
 
-    let step = WorkflowOrchestrator::interrupt_step(
+    let step = WorkflowOrchestrator::interrupt_step(pool, payload.execution_id, payload.step_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    WorkflowOrchestrator::refresh_execution_projection(
         pool,
+        deployment.chat_runner(),
         payload.execution_id,
-        payload.step_id,
+        None,
     )
     .await
     .map_err(|err| ApiError::BadRequest(err.to_string()))?;
@@ -406,6 +429,9 @@ async fn persist_invalid_plan(
         ApiError::BadRequest(format!("Failed to serialize validation errors: {err}"))
     })?;
     let plan_hash = WorkflowCompiler::compute_hash(parsed_plan);
+    let plan_schema_version = parsed_plan
+        .plan_schema_version()
+        .map_err(ApiError::BadRequest)?;
 
     let plan = WorkflowPlan::create(
         pool,
@@ -416,7 +442,7 @@ async fn persist_invalid_plan(
             title: parsed_plan.title.clone(),
             summary_text: Some(parsed_plan.goal.clone()),
             plan_json: plan_json.to_string(),
-            plan_schema_version: parsed_plan.version as i32,
+            plan_schema_version,
             plan_hash: plan_hash.clone(),
             validation_status: WorkflowValidationStatus::Invalid,
             validation_errors_json: Some(validation_errors_json.clone()),
@@ -444,4 +470,215 @@ async fn persist_invalid_plan(
     .await?;
 
     Ok((plan, revision))
+}
+
+// -----------------------------------------------------------------------
+// Get Workflow Transcripts
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Serialize, TS)]
+pub struct WorkflowTranscriptEntry {
+    pub id: Uuid,
+    pub execution_id: Uuid,
+    pub round_id: Option<Uuid>,
+    pub workflow_agent_session_id: Option<Uuid>,
+    pub step_id: Option<Uuid>,
+    pub step_key: Option<String>,
+    pub sender_type: String,
+    pub entry_type: String,
+    pub content: String,
+    pub meta_json: Option<String>,
+    pub created_at: String,
+    pub agent_name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct WorkflowTranscriptQuery {
+    pub step_id: Option<Uuid>,
+    pub step_key: Option<String>,
+    pub workflow_agent_session_id: Option<Uuid>,
+}
+
+pub async fn get_transcripts(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, execution_id)): axum::extract::Path<(Uuid, Uuid)>,
+    Query(query): Query<WorkflowTranscriptQuery>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let execution = WorkflowExecution::find_by_id(pool, execution_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Execution not found.".to_string()))?;
+    if execution.session_id != session.id {
+        return Err(ApiError::BadRequest(
+            "Execution not found in this session.".to_string(),
+        ));
+    }
+
+    let transcripts = WorkflowTranscript::find_by_execution(pool, execution_id).await?;
+    let steps = WorkflowStep::find_by_execution(pool, execution_id).await?;
+    let workflow_agent_sessions =
+        db::models::workflow_agent_session::WorkflowAgentSession::find_by_execution(
+            pool,
+            execution_id,
+        )
+        .await?;
+    let session_agents = ChatSessionAgent::find_all_for_session(pool, session.id).await?;
+    let agents = load_agents_for_route(pool, &session_agents).await?;
+    let step_key_by_id: HashMap<Uuid, String> = steps
+        .iter()
+        .map(|step| (step.id, step.step_key.clone()))
+        .collect();
+
+    let entries: Vec<WorkflowTranscriptEntry> = transcripts
+        .into_iter()
+        .filter(|transcript| {
+            query
+                .workflow_agent_session_id
+                .is_none_or(|workflow_agent_session_id| {
+                    transcript.workflow_agent_session_id == Some(workflow_agent_session_id)
+                })
+        })
+        .filter(|transcript| {
+            query
+                .step_id
+                .is_none_or(|step_id| transcript.step_id == Some(step_id))
+        })
+        .filter(|transcript| {
+            query.step_key.as_ref().is_none_or(|step_key| {
+                transcript
+                    .step_id
+                    .and_then(|step_id| step_key_by_id.get(&step_id))
+                    .is_some_and(|actual_step_key| actual_step_key == step_key)
+            })
+        })
+        .map(|t| {
+            let agent_name = t
+                .workflow_agent_session_id
+                .and_then(|was_id| workflow_agent_sessions.iter().find(|was| was.id == was_id))
+                .and_then(|was| {
+                    session_agents
+                        .iter()
+                        .find(|sa| sa.id == was.session_agent_id)
+                })
+                .and_then(|sa| agents.iter().find(|a| a.id == sa.agent_id))
+                .map(|a| a.name.clone());
+            WorkflowTranscriptEntry {
+                id: t.id,
+                execution_id: t.execution_id,
+                round_id: t.round_id,
+                workflow_agent_session_id: t.workflow_agent_session_id,
+                step_id: t.step_id,
+                step_key: t
+                    .step_id
+                    .and_then(|step_id| step_key_by_id.get(&step_id).cloned()),
+                sender_type: t.sender_type,
+                entry_type: t.entry_type,
+                content: t.content,
+                meta_json: t.meta_json,
+                created_at: t.created_at,
+                agent_name,
+            }
+        })
+        .collect();
+
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<Vec<WorkflowTranscriptEntry>>::success(
+            entries,
+        )),
+    )
+        .into_response())
+}
+
+// -----------------------------------------------------------------------
+// Resolve Approval / Permission
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, TS)]
+pub struct ResolveActionRequest {
+    pub execution_id: Uuid,
+    pub transcript_id: Uuid,
+    pub action: String,
+    pub input_text: Option<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct ResolveActionResponse {
+    pub status: String,
+}
+
+pub async fn resolve_approval(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<ResolveActionRequest>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let execution = WorkflowExecution::find_by_id(pool, payload.execution_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Execution not found.".to_string()))?;
+    if execution.session_id != session.id {
+        return Err(ApiError::BadRequest(
+            "Execution not found in this session.".to_string(),
+        ));
+    }
+    let transcript = WorkflowTranscript::find_by_id(pool, payload.transcript_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Transcript not found.".to_string()))?;
+    if transcript.execution_id != payload.execution_id {
+        return Err(ApiError::BadRequest(
+            "Transcript does not belong to the provided execution.".to_string(),
+        ));
+    }
+
+    let resolved = WorkflowOrchestrator::resolve_transcript_action(
+        pool,
+        deployment.chat_runner(),
+        payload.transcript_id,
+        &payload.action,
+        payload.input_text.as_deref(),
+    )
+    .await
+    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    if resolved.should_wake_scheduler {
+        let deployment_clone = deployment.clone();
+        let execution_id = resolved.execution.id;
+        tokio::spawn(async move {
+            if let Err(err) = WorkflowOrchestrator::wake_scheduler(
+                deployment_clone.db(),
+                deployment_clone.chat_runner(),
+                execution_id,
+            )
+            .await
+            {
+                tracing::error!(execution_id = %execution_id, error = %err, "workflow scheduler failed");
+            }
+        });
+    }
+
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<ResolveActionResponse>::success(
+            ResolveActionResponse {
+                status: format!("{:?}", resolved.execution.status).to_lowercase(),
+            },
+        )),
+    )
+        .into_response())
+}
+
+async fn load_agents_for_route(
+    pool: &sqlx::SqlitePool,
+    session_agents: &[ChatSessionAgent],
+) -> Result<Vec<ChatAgent>, ApiError> {
+    let mut agents = Vec::with_capacity(session_agents.len());
+    for sa in session_agents {
+        if let Some(agent) = ChatAgent::find_by_id(pool, sa.agent_id).await? {
+            agents.push(agent);
+        }
+    }
+    Ok(agents)
 }

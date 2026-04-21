@@ -607,6 +607,8 @@ pub enum ChatRunnerError {
     ChatService(#[from] ChatServiceError),
     #[error(transparent)]
     NativeSkills(#[from] NativeSkillError),
+    #[error("invalid workflow plan: {0}")]
+    InvalidWorkflowPlan(String),
 }
 
 /// Pending message to be processed by an agent
