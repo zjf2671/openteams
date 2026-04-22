@@ -57,8 +57,40 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             axum::routing::post(workflow::execute_plan),
         )
         .route(
+            "/workflow/executions/{execution_id}/resume",
+            axum::routing::post(workflow::resume_execution),
+        )
+        .route(
             "/workflow/pause-all",
             axum::routing::post(workflow::pause_all),
+        )
+        .route(
+            "/workflow-steps/{step_id}/transcripts",
+            get(workflow::get_step_transcripts),
+        )
+        .route(
+            "/workflow-steps/{step_id}/input",
+            axum::routing::post(workflow::submit_step_input),
+        )
+        .route(
+            "/workflow-steps/{step_id}/interrupt",
+            axum::routing::post(workflow::interrupt_step_by_step_id),
+        )
+        .route(
+            "/workflow-steps/{step_id}/stop",
+            axum::routing::post(workflow::stop_step),
+        )
+        .route(
+            "/workflow-steps/{step_id}/approve",
+            axum::routing::post(workflow::approve_step_action),
+        )
+        .route(
+            "/workflow-steps/{step_id}/resolve-permission",
+            axum::routing::post(workflow::resolve_step_permission),
+        )
+        .route(
+            "/workflow-steps/{step_id}/retry",
+            axum::routing::post(workflow::retry_step),
         )
         .route(
             "/workflow/interrupt-step",
@@ -125,6 +157,10 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let messages_router = Router::new().route(
         "/{message_id}",
         get(messages::get_message).delete(messages::delete_message),
+    )
+    .route(
+        "/{message_id}/workflow-card",
+        get(messages::get_workflow_card),
     );
 
     // Skill CRUD routes

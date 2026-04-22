@@ -7,14 +7,24 @@ use axum::{
     response::{Json as ResponseJson, Response},
 };
 use db::models::{
+    chat_agent::ChatAgent,
     chat_message::{ChatMessage, ChatSenderType},
     chat_session::ChatSession,
+    chat_session_agent::ChatSessionAgent,
+    workflow_agent_session::WorkflowAgentSession,
+    workflow_execution::WorkflowExecution,
+    workflow_plan::WorkflowPlan,
+    workflow_plan_revision::WorkflowPlanRevision,
+    workflow_step::WorkflowStep,
+    workflow_step_edge::WorkflowStepEdge,
+    workflow_types::WorkflowPlanJson,
 };
 use deployment::Deployment;
 use serde::Deserialize;
 use services::services::{
     analytics_events::{AnalyticsProjector, DomainEvent},
     chat::{ChatAttachmentMeta, extract_attachments},
+    workflow_runtime::{WorkflowCardProjection, WorkflowCardState, WorkflowCardStep, build_workflow_card_projection},
 };
 use tokio::{fs, fs::File};
 use tokio_util::io::ReaderStream;
@@ -361,6 +371,155 @@ pub async fn get_message(
         .await?
         .ok_or(ApiError::Database(sqlx::Error::RowNotFound))?;
     Ok(ResponseJson(ApiResponse::success(message)))
+}
+
+pub async fn get_workflow_card(
+    State(deployment): State<DeploymentImpl>,
+    Path(message_id): Path<Uuid>,
+) -> Result<ResponseJson<ApiResponse<WorkflowCardProjection>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let message = ChatMessage::find_by_id(pool, message_id)
+        .await?
+        .ok_or(ApiError::Database(sqlx::Error::RowNotFound))?;
+
+    let card_type = message
+        .meta
+        .0
+        .get("card_type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ApiError::BadRequest("Workflow card metadata is missing.".to_string()))?;
+
+    let projection = match card_type {
+        "workflow_execution" => build_execution_workflow_card_projection(pool, &message).await?,
+        "workflow_plan" => build_plan_workflow_card_projection(pool, &message).await?,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Message is not a workflow card.".to_string(),
+            ));
+        }
+    };
+
+    Ok(ResponseJson(ApiResponse::success(projection)))
+}
+
+async fn build_execution_workflow_card_projection(
+    pool: &sqlx::SqlitePool,
+    message: &ChatMessage,
+) -> Result<WorkflowCardProjection, ApiError> {
+    let execution = WorkflowExecution::find_by_session(pool, message.session_id)
+        .await?
+        .into_iter()
+        .find(|item| item.workflow_card_message_id == Some(message.id))
+        .ok_or_else(|| ApiError::BadRequest("Workflow execution was not found.".to_string()))?;
+    let plan = WorkflowPlan::find_by_id(pool, execution.plan_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Workflow plan was not found.".to_string()))?;
+    let revision_id = execution.active_revision_id.ok_or_else(|| {
+        ApiError::BadRequest("Workflow execution revision is missing.".to_string())
+    })?;
+    let revision = WorkflowPlanRevision::find_by_id(pool, revision_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Workflow revision was not found.".to_string()))?;
+    let session_agents = ChatSessionAgent::find_all_for_session(pool, message.session_id).await?;
+    let mut agents = Vec::with_capacity(session_agents.len());
+    for session_agent in &session_agents {
+        if let Some(agent) = ChatAgent::find_by_id(pool, session_agent.agent_id).await? {
+            agents.push(agent);
+        }
+    }
+    let workflow_sessions = WorkflowAgentSession::find_by_execution(pool, execution.id).await?;
+    let steps = WorkflowStep::find_by_execution(pool, execution.id).await?;
+    let edges = WorkflowStepEdge::find_by_execution(pool, execution.id).await?;
+
+    build_workflow_card_projection(
+        &execution,
+        &plan,
+        &revision,
+        &steps,
+        &edges,
+        &workflow_sessions,
+        &session_agents,
+        &agents,
+        None,
+    )
+    .map_err(|err| ApiError::BadRequest(err.to_string()))
+}
+
+async fn build_plan_workflow_card_projection(
+    pool: &sqlx::SqlitePool,
+    message: &ChatMessage,
+) -> Result<WorkflowCardProjection, ApiError> {
+    let plan = WorkflowPlan::find_by_session(pool, message.session_id)
+        .await?
+        .into_iter()
+        .find(|item| item.workflow_card_message_id == Some(message.id))
+        .ok_or_else(|| ApiError::BadRequest("Workflow plan was not found.".to_string()))?;
+    let revision = WorkflowPlanRevision::find_latest_by_plan(pool, plan.id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Workflow revision was not found.".to_string()))?;
+    let parsed_plan: WorkflowPlanJson = serde_json::from_str(&revision.plan_json)
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let session_agents = ChatSessionAgent::find_all_for_session(pool, message.session_id).await?;
+    let mut agents = Vec::with_capacity(session_agents.len());
+    for session_agent in &session_agents {
+        if let Some(agent) = ChatAgent::find_by_id(pool, session_agent.agent_id).await? {
+            agents.push(agent);
+        }
+    }
+    let agent_views = session_agents
+        .iter()
+        .filter_map(|session_agent| {
+            let agent = agents.iter().find(|item| item.id == session_agent.agent_id)?;
+            Some(services::services::workflow_runtime::WorkflowCardAgent {
+                session_agent_id: session_agent.id.to_string(),
+                workflow_agent_session_id: None,
+                agent_id: agent.id.to_string(),
+                name: agent.name.clone(),
+            })
+        })
+        .collect();
+    let step_views: Vec<WorkflowCardStep> = parsed_plan
+        .nodes
+        .iter()
+        .map(|node| WorkflowCardStep {
+            id: node.id.clone(),
+            step_key: node.id.clone(),
+            title: node.data.title.clone(),
+            step_type: if node.data.step_type.is_empty() {
+                "task".to_string()
+            } else {
+                node.data.step_type.to_lowercase()
+            },
+            status: "pending".to_string(),
+            agent_name: node.data.agent_id.clone(),
+            summary_text: None,
+        })
+        .collect();
+
+    Ok(WorkflowCardProjection {
+        execution_id: None,
+        plan_id: plan.id.to_string(),
+        revision_id: revision.id.to_string(),
+        title: plan.title.clone(),
+        goal: plan
+            .summary_text
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| plan.title.clone()),
+        state: WorkflowCardState::PreviewReady,
+        execution_status: "preview".to_string(),
+        error_message: None,
+        completed_step_count: 0,
+        total_step_count: parsed_plan.nodes.len(),
+        result_summary: None,
+        outputs: Vec::new(),
+        agents: agent_views,
+        steps: step_views,
+        plan: parsed_plan,
+        started_at: None,
+        completed_at: None,
+        validation_errors: None,
+    })
 }
 
 pub async fn delete_message(

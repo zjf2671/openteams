@@ -56,6 +56,7 @@ import { formatTokenUsage } from '@/utils/string';
 import {
   ChatWorkflowCard,
   extractWorkflowCardProjection,
+  type WorkflowCardProjection,
 } from './ChatWorkflowCard';
 
 const SUPPRESSED_PROTOCOL_ERROR_CODES = new Set([
@@ -116,7 +117,9 @@ export interface ChatMessageItemProps {
   // Workflow controls
   onExecutePlan?: (planId: string) => void;
   onPauseAll?: (executionId: string) => void;
+  onResumeWorkflow?: (executionId: string) => void;
   onOpenWorkflowWindow?: (projection: unknown) => void;
+  workflowCardProjection?: WorkflowCardProjection | null;
 }
 
 export function ChatMessageItem({
@@ -143,7 +146,9 @@ export function ChatMessageItem({
   onToggleSelect,
   onExecutePlan,
   onPauseAll,
+  onResumeWorkflow,
   onOpenWorkflowWindow,
+  workflowCardProjection: workflowCardProjectionOverride,
 }: ChatMessageItemProps) {
   const { t } = useTranslation('chat');
   const isUser = message.sender_type === ChatSenderType.user;
@@ -210,7 +215,8 @@ export function ChatMessageItem({
       })
     : null;
   const protocolError = extractProtocolErrorMeta(message.meta);
-  const workflowCardProjection = extractWorkflowCardProjection(message.meta);
+  const workflowCardProjection =
+    workflowCardProjectionOverride ?? extractWorkflowCardProjection(message.meta);
   const errorInfo = extractErrorFromMeta(message.meta);
   const apiError =
     isAgent && !errorInfo
@@ -281,12 +287,14 @@ export function ChatMessageItem({
           >
             <ChatWorkflowCard
               message={message}
+              projection={workflowCardProjection}
               onExecute={onExecutePlan}
               onPauseAll={onPauseAll}
+              onResume={onResumeWorkflow}
               onOpenWindow={onOpenWorkflowWindow ? () => {
-                const proj = extractWorkflowCardProjection(message.meta);
-                if (proj) onOpenWorkflowWindow(proj);
-              } : undefined}
+                 const proj = workflowCardProjection;
+                 if (proj) onOpenWorkflowWindow(proj);
+               } : undefined}
             />
           </div>
         </div>

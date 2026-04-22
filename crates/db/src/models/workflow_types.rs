@@ -95,7 +95,6 @@ pub enum WorkflowExecutionStatus {
     #[sqlx(rename = "waiting_user_acceptance")]
     #[serde(rename = "waiting_user_acceptance")]
     WaitingUserAcceptance,
-    Pausing,
     Paused,
     Recompiling,
     Resuming,
@@ -219,7 +218,6 @@ pub enum WorkflowEventType {
     ExecutionFailed,
     ExecutionCompleted,
     ExecutionCancelled,
-    ExecutionPauseRequested,
     ExecutionPaused,
     ExecutionResumeRequested,
     ExecutionInterruptRequested,

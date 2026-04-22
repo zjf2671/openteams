@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   PlayIcon,
   PauseIcon,
@@ -6,7 +7,9 @@ import {
   FunnelIcon,
   CaretDownIcon,
 } from '@phosphor-icons/react';
+import { chatApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { WorkflowGraphBoard } from './WorkflowGraphBoard';
 
 // -----------------------------------------------------------------------
 // Types
@@ -98,163 +101,26 @@ type WorkflowTranscriptEntry = {
 // -----------------------------------------------------------------------
 
 export type WorkflowWindowProps = {
+  sessionId?: string | null;
   projection: WorkflowWindowProjection;
   transcript?: WorkflowTranscriptEntry[];
   isOpen: boolean;
   onClose: () => void;
   onExecute?: (planId: string) => void;
   onPauseAll?: (executionId: string) => void;
-  onInterruptStep?: (executionId: string, stepId: string) => void;
-  onApproval?: (action: string, transcriptId: string, inputText?: string) => void;
-  pendingTranscriptId?: string | null;
+  onResume?: (executionId: string) => void;
+  onInterruptStep?: (stepId: string) => void;
+  onStopStep?: (stepId: string) => void;
+  onRetryStep?: (stepId: string) => void;
+  onSubmitStepInput?: (stepId: string, inputText: string) => void;
+  onApproval?: (
+    stepId: string,
+    action: string,
+    transcriptId: string,
+    inputText?: string
+  ) => void;
+  pendingActionId?: string | null;
 };
-
-// -----------------------------------------------------------------------
-// Mini graph for left pane
-// -----------------------------------------------------------------------
-
-function MiniGraph({
-  nodes,
-  edges,
-  selectedStepId,
-  onSelectStep,
-}: {
-  nodes: WorkflowCardNode[];
-  edges: WorkflowCardEdge[];
-  selectedStepId: string | null;
-  onSelectStep: (id: string) => void;
-}) {
-  if (nodes.length === 0) return null;
-
-  const canvasHeight = 640;
-  const nodeGap = 20;
-  const minNodeWidth = 90;
-  const maxNodeWidth = 160;
-  const height = 36;
-  const paddingX = 40;
-  const paddingY = 48;
-  const sortedNodes = [...nodes].sort(
-    (a, b) =>
-      a.position.x - b.position.x ||
-      a.position.y - b.position.y ||
-      a.id.localeCompare(b.id)
-  );
-  const measureNodeWidth = (node: WorkflowCardNode) => {
-    const titleWidth = node.data.title.trim().length * 4 + 28;
-    const typeWidth = node.data.stepType.trim().length * 3.5 + 22;
-    return Math.max(minNodeWidth, Math.min(maxNodeWidth, Math.max(titleWidth, typeWidth)));
-  };
-  const nodeWidths = sortedNodes.map(measureNodeWidth);
-  const totalNodeWidth = nodeWidths.reduce((sum, width) => sum + width, 0);
-  const canvasWidth = Math.max(
-    totalNodeWidth + Math.max(sortedNodes.length - 1, 0) * nodeGap + paddingX * 2,
-    320
-  );
-  const layoutNodes = sortedNodes.map((node, index) => {
-    const renderWidth = nodeWidths[index];
-    const previousWidth = nodeWidths
-      .slice(0, index)
-      .reduce((sum, width) => sum + width, 0);
-    return {
-      ...node,
-      renderWidth,
-      position: {
-        x: paddingX + previousWidth + index * nodeGap,
-        y: (canvasHeight - height) / 2,
-      },
-    };
-  });
-  const nodeById = new Map(layoutNodes.map((n) => [n.id, n]));
-  const viewBox = `0 0 ${canvasWidth} ${canvasHeight}`;
-  const statusColor = (status?: string | null, selected?: boolean) => {
-    const base = (() => {
-      switch (status) {
-        case 'completed':
-          return { fill: '#DCFCE7', stroke: '#16A34A', text: '#166534' };
-        case 'running':
-          return { fill: '#DBEAFE', stroke: '#2563EB', text: '#1D4ED8' };
-        case 'failed':
-        case 'interrupted':
-          return { fill: '#FEE2E2', stroke: '#DC2626', text: '#991B1B' };
-        case 'ready':
-          return { fill: '#FEF3C7', stroke: '#D97706', text: '#92400E' };
-        default:
-          return { fill: '#F8FAFC', stroke: '#CBD5E1', text: '#334155' };
-      }
-    })();
-    if (selected) {
-      return { ...base, stroke: '#1E40AF' };
-    }
-    return base;
-  };
-
-  return (
-    <svg viewBox={viewBox} className="h-[640px] max-w-none" style={{ width: canvasWidth }}>
-      {edges.map((edge) => {
-        const source = nodeById.get(edge.source);
-        const target = nodeById.get(edge.target);
-        if (!source || !target) return null;
-        const x1 = source.position.x + source.renderWidth;
-        const y1 = source.position.y + height / 2;
-        const x2 = target.position.x;
-        const y2 = target.position.y + height / 2;
-        const curveOffset = Math.max((x2 - x1) / 2, 16);
-        return (
-          <path
-            key={edge.id}
-            d={`M ${x1} ${y1} C ${x1 + curveOffset} ${y1}, ${x2 - curveOffset} ${y2}, ${x2} ${y2}`}
-            fill="none"
-            stroke="#94A3B8"
-            strokeWidth="1.5"
-            strokeDasharray="4 3"
-          />
-        );
-      })}
-      {layoutNodes.map((node) => {
-        const colors = statusColor(node.data.status, node.id === selectedStepId);
-        return (
-          <g
-            key={node.id}
-            transform={`translate(${node.position.x}, ${node.position.y})`}
-            onClick={() => onSelectStep(node.id)}
-            className="cursor-pointer"
-          >
-            <rect
-              width={node.renderWidth}
-              height={height}
-              rx="10"
-              fill={colors.fill}
-              stroke={colors.stroke}
-              strokeWidth={node.id === selectedStepId ? 3 : 1.5}
-            />
-            <text
-              x={node.renderWidth / 2}
-              y="14"
-              fontSize="8"
-              fontWeight="700"
-              fill={colors.text}
-              textAnchor="middle"
-            >
-              {node.data.stepType.toUpperCase()}
-            </text>
-            <text
-              x={node.renderWidth / 2}
-              y="26"
-              fontSize="10"
-              fontWeight="600"
-              fill="#0F172A"
-              textAnchor="middle"
-            >
-              {node.data.title.length > 20
-                ? `${node.data.title.slice(0, 20)}...`
-                : node.data.title}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
 
 // -----------------------------------------------------------------------
 // Agent Selector
@@ -329,6 +195,7 @@ export function ApprovalCard({
   title,
   description,
   stepId,
+  transcriptId,
   onApprove,
   onReject,
   disabled,
@@ -336,8 +203,9 @@ export function ApprovalCard({
   title: string;
   description?: string;
   stepId: string;
-  onApprove: (stepId: string) => void;
-  onReject: (stepId: string) => void;
+  transcriptId: string;
+  onApprove: (stepId: string, transcriptId: string) => void;
+  onReject: (stepId: string, transcriptId: string) => void;
   disabled?: boolean;
 }) {
   return (
@@ -352,7 +220,7 @@ export function ApprovalCard({
       <div className="mt-2 flex gap-2">
         <button
           type="button"
-          onClick={() => onApprove(stepId)}
+          onClick={() => onApprove(stepId, transcriptId)}
           disabled={disabled}
           className="rounded-full bg-[#16A34A] px-3 py-1 text-xs font-semibold text-white hover:bg-[#15803D] disabled:opacity-50 transition-colors"
         >
@@ -360,7 +228,7 @@ export function ApprovalCard({
         </button>
         <button
           type="button"
-          onClick={() => onReject(stepId)}
+          onClick={() => onReject(stepId, transcriptId)}
           disabled={disabled}
           className="rounded-full bg-[#DC2626] px-3 py-1 text-xs font-semibold text-white hover:bg-[#B91C1C] disabled:opacity-50 transition-colors"
         >
@@ -379,6 +247,7 @@ export function PermissionRequestCard({
   title,
   description,
   stepId,
+  transcriptId,
   onGrant,
   onDeny,
   disabled,
@@ -386,8 +255,9 @@ export function PermissionRequestCard({
   title: string;
   description?: string;
   stepId: string;
-  onGrant: (stepId: string) => void;
-  onDeny: (stepId: string) => void;
+  transcriptId: string;
+  onGrant: (stepId: string, transcriptId: string) => void;
+  onDeny: (stepId: string, transcriptId: string) => void;
   disabled?: boolean;
 }) {
   return (
@@ -402,7 +272,7 @@ export function PermissionRequestCard({
       <div className="mt-2 flex gap-2">
         <button
           type="button"
-          onClick={() => onGrant(stepId)}
+          onClick={() => onGrant(stepId, transcriptId)}
           disabled={disabled}
           className="rounded-full bg-[#2563EB] px-3 py-1 text-xs font-semibold text-white hover:bg-[#1D4ED8] disabled:opacity-50 transition-colors"
         >
@@ -410,7 +280,7 @@ export function PermissionRequestCard({
         </button>
         <button
           type="button"
-          onClick={() => onDeny(stepId)}
+          onClick={() => onDeny(stepId, transcriptId)}
           disabled={disabled}
           className="rounded-full border border-[#CBD5E1] bg-white px-3 py-1 text-xs font-semibold text-[#475569] hover:bg-[#F1F5F9] disabled:opacity-50 transition-colors"
         >
@@ -428,12 +298,14 @@ export function PermissionRequestCard({
 export function ContinueConfirmationCard({
   message,
   stepId,
+  transcriptId,
   onContinue,
   disabled,
 }: {
   message: string;
   stepId: string;
-  onContinue: (stepId: string) => void;
+  transcriptId: string;
+  onContinue: (stepId: string, transcriptId: string) => void;
   disabled?: boolean;
 }) {
   return (
@@ -445,7 +317,7 @@ export function ContinueConfirmationCard({
       <div className="mt-2">
         <button
           type="button"
-          onClick={() => onContinue(stepId)}
+          onClick={() => onContinue(stepId, transcriptId)}
           disabled={disabled}
           className="rounded-full bg-[#16A34A] px-3 py-1 text-xs font-semibold text-white hover:bg-[#15803D] disabled:opacity-50 transition-colors"
         >
@@ -461,6 +333,7 @@ export function InputRequestCard({
   description,
   placeholder,
   stepId,
+  transcriptId,
   onSubmit,
   disabled,
 }: {
@@ -468,7 +341,8 @@ export function InputRequestCard({
   description?: string;
   placeholder?: string;
   stepId: string;
-  onSubmit: (stepId: string, inputText: string) => void;
+  transcriptId: string;
+  onSubmit: (stepId: string, transcriptId: string, inputText: string) => void;
   disabled?: boolean;
 }) {
   const [value, setValue] = useState('');
@@ -499,7 +373,7 @@ export function InputRequestCard({
       <div className="mt-2 flex justify-end">
         <button
           type="button"
-          onClick={() => onSubmit(stepId, trimmedValue)}
+          onClick={() => onSubmit(stepId, transcriptId, trimmedValue)}
           disabled={disabled || trimmedValue.length === 0}
           className="rounded-full bg-[#4F46E5] px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-[#4338CA] disabled:opacity-50"
         >
@@ -515,29 +389,87 @@ export function InputRequestCard({
 // -----------------------------------------------------------------------
 
 export function WorkflowWindow({
+  sessionId,
   projection,
   transcript = [],
   isOpen,
   onClose,
   onExecute,
   onPauseAll,
+  onResume,
   onInterruptStep,
+  onStopStep,
+  onRetryStep,
+  onSubmitStepInput,
   onApproval,
-  pendingTranscriptId,
+  pendingActionId,
 }: WorkflowWindowProps) {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [composerValue, setComposerValue] = useState('');
 
   const isPreview =
     projection.state === 'preview_ready' || projection.state === 'preview_invalid';
   const isRunning = projection.execution_status === 'running';
+  const canResume =
+    projection.execution_status === 'paused' || projection.execution_status === 'failed';
 
   const agents = projection.agents ?? [];
+  const leadAgentId =
+    agents[0]?.workflow_agent_session_id ?? agents[0]?.session_agent_id ?? null;
+  const agentSessionIdByName = useMemo(
+    () =>
+      new Map(
+        agents.map((agent) => [
+          agent.name,
+          agent.workflow_agent_session_id ?? agent.session_agent_id,
+        ])
+      ),
+    [agents]
+  );
+  const stepByKey = useMemo(
+    () => new Map(projection.steps.map((step) => [step.step_key, step])),
+    [projection.steps]
+  );
+  const orderedActionableSteps = useMemo(
+    () =>
+      [...projection.steps].sort((left, right) => {
+        const priority = (status: string) => {
+          switch (status) {
+            case 'running':
+              return 0;
+            case 'waiting_input':
+            case 'waiting_review':
+              return 1;
+            case 'failed':
+              return 2;
+            case 'ready':
+              return 3;
+            default:
+              return 10;
+          }
+        };
+
+        return priority(left.status) - priority(right.status);
+      }),
+    [projection.steps]
+  );
 
   useEffect(() => {
-    setSelectedStepId(null);
-    setSelectedAgentId(null);
-  }, [projection.execution_id, projection.plan_id]);
+    setSelectedStepId(orderedActionableSteps[0]?.step_key ?? null);
+    setSelectedAgentId(
+      orderedActionableSteps[0]?.agent_name
+        ? agentSessionIdByName.get(orderedActionableSteps[0].agent_name) ?? leadAgentId
+        : leadAgentId
+    );
+    setComposerValue('');
+  }, [
+    projection.execution_id,
+    projection.plan_id,
+    orderedActionableSteps,
+    agentSessionIdByName,
+    leadAgentId,
+  ]);
 
   useEffect(() => {
     if (!isOpen || typeof document === 'undefined') {
@@ -561,24 +493,94 @@ export function WorkflowWindow({
   }, [isOpen, onClose]);
 
   // Filter transcript by selected agent/step
-  const filteredTranscript = useMemo(() => {
+  const selectedStep = projection.steps.find((s) => s.step_key === selectedStepId);
+  const effectiveAgentId =
+    selectedAgentId ??
+    (selectedStep?.agent_name
+      ? agentSessionIdByName.get(selectedStep.agent_name) ?? null
+      : null);
+
+  useEffect(() => {
+    if (!selectedStep?.agent_name) {
+      return;
+    }
+
+    const nextAgentId = agentSessionIdByName.get(selectedStep.agent_name) ?? leadAgentId;
+    if (nextAgentId && selectedAgentId !== nextAgentId) {
+      setSelectedAgentId(nextAgentId);
+    }
+  }, [selectedStep?.agent_name, agentSessionIdByName, leadAgentId, selectedAgentId]);
+
+  const { data: selectedStepTranscriptData, isFetching: isFetchingSelectedStepTranscript } =
+    useQuery({
+      queryKey: [
+        'workflowStepTranscripts',
+        sessionId,
+        selectedStep?.id,
+        effectiveAgentId,
+      ],
+      queryFn: () => {
+        if (!sessionId || !selectedStep?.id) {
+          return [];
+        }
+
+        return chatApi.getWorkflowStepTranscripts(sessionId, selectedStep.id, {
+          stepKey: selectedStep.step_key,
+          workflowAgentSessionId: effectiveAgentId,
+        });
+      },
+      enabled: !!sessionId && !!selectedStep?.id && !isPreview && isOpen,
+      refetchInterval:
+        isOpen && !isPreview && !!sessionId && !!selectedStep?.id ? 5000 : false,
+    });
+
+  const fallbackTranscript = useMemo(() => {
     let entries = transcript;
-    if (selectedAgentId) {
+    if (effectiveAgentId) {
       entries = entries.filter(
-        (e) => e.workflow_agent_session_id === selectedAgentId
+        (e) => e.workflow_agent_session_id === effectiveAgentId
       );
     }
-    if (selectedStepId) {
-      entries = entries.filter((e) => e.step_key === selectedStepId);
-    }
     return entries;
-  }, [transcript, selectedAgentId, selectedStepId]);
+  }, [transcript, effectiveAgentId]);
 
-  const handleSelectStep = useCallback((id: string) => {
-    setSelectedStepId((prev) => (prev === id ? null : id));
-  }, []);
+  const stepScopedTranscript = useMemo(() => {
+    const entries = selectedStepTranscriptData ?? [];
+    return entries.map((entry) => ({
+      id: entry.id,
+      step_id: entry.step_id,
+      step_key: entry.step_key,
+      workflow_agent_session_id: entry.workflow_agent_session_id,
+      agent_name: entry.agent_name,
+      message_type: entry.sender_type as 'system' | 'agent' | 'user' | 'control',
+      content: entry.content,
+      entry_type: entry.entry_type,
+      meta_json: entry.meta_json,
+      created_at: entry.created_at,
+    }));
+  }, [selectedStepTranscriptData]);
 
-  const selectedStep = projection.steps.find((s) => s.step_key === selectedStepId);
+  const visibleTranscript = selectedStep ? stepScopedTranscript : fallbackTranscript;
+
+  const handleSelectStep = useCallback(
+    (id: string) => {
+      setSelectedStepId((prev) => {
+        const nextStepId = prev === id ? null : id;
+        const nextStep = nextStepId ? stepByKey.get(nextStepId) : null;
+        const nextAgentId = nextStep?.agent_name
+          ? agentSessionIdByName.get(nextStep.agent_name) ?? leadAgentId
+          : leadAgentId;
+        setSelectedAgentId(nextAgentId);
+        return nextStepId;
+      });
+    },
+    [agentSessionIdByName, leadAgentId, stepByKey]
+  );
+
+  const selectedAgent = agents.find(
+    (agent) =>
+      (agent.workflow_agent_session_id ?? agent.session_agent_id) === effectiveAgentId
+  );
 
   if (!isOpen) return null;
 
@@ -631,70 +633,63 @@ export function WorkflowWindow({
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#64748B] mb-3">
               Plan Graph
             </div>
-            <div className="overflow-x-auto overflow-y-hidden rounded-[24px] border border-white/70 bg-white/75 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-[#2A3445] dark:bg-[rgba(15,23,42,0.78)]">
-              <MiniGraph
+            <WorkflowGraphBoard
                 nodes={projection.plan.nodes}
                 edges={projection.plan.edges}
+                steps={projection.steps}
                 selectedStepId={selectedStepId}
                 onSelectStep={handleSelectStep}
+                onRetryStep={onRetryStep}
               />
-            </div>
 
-            {/* Step list below graph */}
-            <div className="mt-4 space-y-2">
-              {projection.steps.map((step) => (
-                <button
-                  type="button"
-                  key={step.id}
-                  onClick={() => handleSelectStep(step.step_key)}
-                  className={cn(
-                    'w-full rounded-[20px] border px-3 py-3 text-left transition-colors',
-                    selectedStepId === step.step_key
-                      ? 'border-[#93C5FD] bg-[#DBEAFE] shadow-[0_10px_24px_rgba(59,130,246,0.18)]'
-                      : 'border-white/70 bg-white/75 hover:bg-white dark:border-[#2A3445] dark:bg-[rgba(15,23,42,0.78)] dark:hover:bg-[rgba(30,41,59,0.92)]'
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="truncate text-xs font-semibold text-[#0F172A] dark:text-white">
-                      {step.title}
-                    </span>
-                    <span
-                      className={cn(
-                        'shrink-0 text-[10px] font-bold uppercase',
-                        step.status === 'completed' && 'text-[#16A34A]',
-                        step.status === 'running' && 'text-[#2563EB]',
-                        step.status === 'failed' && 'text-[#DC2626]',
-                        !['completed', 'running', 'failed'].includes(step.status) &&
-                          'text-[#94A3B8]'
-                      )}
-                    >
-                      {step.status}
-                    </span>
+            <div className="mt-4 rounded-[22px] border border-white/70 bg-white/80 px-4 py-3 text-xs text-[#475569] shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.78)] dark:text-[#CBD5E1]">
+              {selectedStep ? (
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
+                      Focused Node
+                    </div>
+                    <div className="mt-1 text-sm font-semibold text-[#0F172A] dark:text-white">
+                      {selectedStep.title}
+                    </div>
+                    <div className="mt-1 text-xs text-[#64748B] dark:text-[#94A3B8]">
+                      {selectedStep.step_type}
+                      {selectedStep.agent_name ? ` · ${selectedStep.agent_name}` : ''}
+                    </div>
+                    {selectedStep.summary_text && (
+                      <div className="mt-2 line-clamp-2 text-xs leading-5 text-[#475569] dark:text-[#CBD5E1]">
+                        {selectedStep.summary_text}
+                      </div>
+                    )}
                   </div>
-                  <div className="mt-1 text-[11px] text-[#64748B] dark:text-[#94A3B8]">
-                    {step.step_type}
-                    {step.agent_name ? ` · ${step.agent_name}` : ''}
-                  </div>
-
-                  {/* Interrupt button for running steps */}
-                  {isRunning &&
-                    step.status === 'running' &&
-                    projection.execution_id &&
-                    onInterruptStep && (
+                  <div className="flex flex-col items-end gap-2">
+                    {isRunning && selectedStep.status === 'running' && onInterruptStep && (
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onInterruptStep(projection.execution_id!, step.id);
-                        }}
-                        className="mt-2 flex items-center gap-1 rounded-full bg-[#FEE2E2] px-2.5 py-1 text-[10px] font-semibold text-[#DC2626] transition-colors hover:bg-[#FECACA]"
+                        onClick={() => onInterruptStep(selectedStep.id)}
+                        className="flex items-center gap-1 rounded-full bg-[#FEE2E2] px-2.5 py-1 text-[10px] font-semibold text-[#DC2626] transition-colors hover:bg-[#FECACA]"
                       >
                         <StopIcon className="size-3" weight="bold" />
                         Interrupt
                       </button>
                     )}
-                </button>
-              ))}
+                    {selectedStep.status !== 'completed' &&
+                      selectedStep.status !== 'cancelled' &&
+                      onStopStep && (
+                        <button
+                          type="button"
+                          onClick={() => onStopStep(selectedStep.id)}
+                          className="flex items-center gap-1 rounded-full border border-[#FCA5A5] bg-white px-2.5 py-1 text-[10px] font-semibold text-[#991B1B] transition-colors hover:bg-[#FEF2F2]"
+                        >
+                          <StopIcon className="size-3" weight="bold" />
+                          Stop Step
+                        </button>
+                      )}
+                  </div>
+                </div>
+              ) : (
+                'Select a node to inspect its isolated execution feed.'
+              )}
             </div>
           </div>
 
@@ -750,7 +745,16 @@ export function WorkflowWindow({
                       onSelect={setSelectedAgentId}
                     />
                   )}
-                  <div className="flex-1" />
+                  <div className="min-w-0 flex-1 px-2">
+                    <div className="truncate text-xs font-semibold text-[#0F172A] dark:text-white">
+                      {selectedAgent?.name ?? 'Lead'} feed
+                    </div>
+                    <div className="truncate text-[10px] uppercase tracking-[0.16em] text-[#94A3B8]">
+                      {selectedStep
+                        ? `${selectedStep.title} · step scoped`
+                        : 'Agent scoped execution feed'}
+                    </div>
+                  </div>
                   {isRunning && projection.execution_id && onPauseAll && (
                     <button
                       type="button"
@@ -759,6 +763,16 @@ export function WorkflowWindow({
                     >
                       <PauseIcon className="size-3.5" weight="bold" />
                       Pause All
+                    </button>
+                  )}
+                  {canResume && projection.execution_id && onResume && (
+                    <button
+                      type="button"
+                      onClick={() => onResume(projection.execution_id!)}
+                      className="flex items-center gap-1 rounded-full bg-[#2563EB] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1D4ED8]"
+                    >
+                      <PlayIcon className="size-3.5" weight="bold" />
+                      Resume
                     </button>
                   )}
                 </div>
@@ -783,15 +797,17 @@ export function WorkflowWindow({
 
                 {/* Transcript area */}
                 <div className="flex-1 overflow-auto px-5 py-4 md:px-6">
-                  {filteredTranscript.length === 0 ? (
+                  {visibleTranscript.length === 0 ? (
                     <div className="flex h-full min-h-[240px] items-center justify-center rounded-[24px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] text-sm text-[#94A3B8] dark:border-[#334155] dark:bg-[rgba(15,23,42,0.45)]">
-                      {selectedStepId || selectedAgentId
-                        ? 'No messages matching filter'
-                        : 'Waiting for execution messages...'}
+                      {isFetchingSelectedStepTranscript
+                        ? 'Loading step transcript...'
+                        : selectedStepId || selectedAgentId
+                          ? 'No messages matching current isolation'
+                          : 'Waiting for execution messages...'}
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      {filteredTranscript.map((entry) => {
+                      {visibleTranscript.map((entry) => {
                         if (entry.entry_type === 'approval_request') {
                           const meta = parseTranscriptMeta(entry.meta_json);
                           const resolved = meta?.resolved === true;
@@ -800,10 +816,20 @@ export function WorkflowWindow({
                               key={entry.id}
                               title={entry.content}
                               description={typeof meta?.description === 'string' ? meta.description : undefined}
-                              stepId={entry.id}
-                              onApprove={(id) => onApproval?.('approved', id)}
-                              onReject={(id) => onApproval?.('rejected', id)}
-                              disabled={resolved || !onApproval || pendingTranscriptId === entry.id}
+                              stepId={entry.step_id ?? ''}
+                              transcriptId={entry.id}
+                              onApprove={(stepId, transcriptId) =>
+                                onApproval?.(stepId, 'approved', transcriptId)
+                              }
+                              onReject={(stepId, transcriptId) =>
+                                onApproval?.(stepId, 'rejected', transcriptId)
+                              }
+                              disabled={
+                                !entry.step_id ||
+                                resolved ||
+                                !onApproval ||
+                                pendingActionId === entry.id
+                              }
                             />
                           );
                         }
@@ -815,10 +841,20 @@ export function WorkflowWindow({
                               key={entry.id}
                               title={entry.content}
                               description={typeof meta?.description === 'string' ? meta.description : undefined}
-                              stepId={entry.id}
-                              onGrant={(id) => onApproval?.('granted', id)}
-                              onDeny={(id) => onApproval?.('denied', id)}
-                              disabled={resolved || !onApproval || pendingTranscriptId === entry.id}
+                              stepId={entry.step_id ?? ''}
+                              transcriptId={entry.id}
+                              onGrant={(stepId, transcriptId) =>
+                                onApproval?.(stepId, 'granted', transcriptId)
+                              }
+                              onDeny={(stepId, transcriptId) =>
+                                onApproval?.(stepId, 'denied', transcriptId)
+                              }
+                              disabled={
+                                !entry.step_id ||
+                                resolved ||
+                                !onApproval ||
+                                pendingActionId === entry.id
+                              }
                             />
                           );
                         }
@@ -829,9 +865,17 @@ export function WorkflowWindow({
                             <ContinueConfirmationCard
                               key={entry.id}
                               message={entry.content}
-                              stepId={entry.id}
-                              onContinue={(id) => onApproval?.('continued', id)}
-                              disabled={resolved || !onApproval || pendingTranscriptId === entry.id}
+                              stepId={entry.step_id ?? ''}
+                              transcriptId={entry.id}
+                              onContinue={(stepId, transcriptId) =>
+                                onApproval?.(stepId, 'continued', transcriptId)
+                              }
+                              disabled={
+                                !entry.step_id ||
+                                resolved ||
+                                !onApproval ||
+                                pendingActionId === entry.id
+                              }
                             />
                           );
                         }
@@ -852,11 +896,17 @@ export function WorkflowWindow({
                                   ? meta.placeholder
                                   : undefined
                               }
-                              stepId={entry.id}
-                              onSubmit={(id, inputText) =>
-                                onApproval?.('submitted', id, inputText)
+                              stepId={entry.step_id ?? ''}
+                              transcriptId={entry.id}
+                              onSubmit={(stepId, transcriptId, inputText) =>
+                                onApproval?.(stepId, 'submitted', transcriptId, inputText)
                               }
-                              disabled={resolved || !onApproval || pendingTranscriptId === entry.id}
+                              disabled={
+                                !entry.step_id ||
+                                resolved ||
+                                !onApproval ||
+                                pendingActionId === entry.id
+                              }
                             />
                           );
                         }
@@ -864,26 +914,73 @@ export function WorkflowWindow({
                           <div
                             key={entry.id}
                             className={cn(
-                              'rounded-xl px-3 py-2 text-xs',
+                              'rounded-[18px] border px-3 py-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]',
                               entry.message_type === 'system' &&
-                                'bg-[#F1F5F9] text-[#64748B]',
+                                'border-[#E2E8F0] bg-[#F8FAFC] text-[#475569]',
                               entry.message_type === 'agent' &&
-                                'bg-[#EFF6FF] text-[#1E40AF]',
+                                'border-[#BFDBFE] bg-[#EFF6FF] text-[#1E3A8A]',
                               entry.message_type === 'control' &&
-                                'bg-[#FEF3C7] text-[#92400E]',
+                                'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]',
                               entry.message_type === 'user' &&
-                                'bg-[#F0FDF4] text-[#166534]'
+                                'border-[#BBF7D0] bg-[#F0FDF4] text-[#166534]'
                             )}
                           >
-                            {entry.agent_name && (
-                              <span className="font-bold">{entry.agent_name}: </span>
-                            )}
-                            {entry.content}
+                            <div className="mb-1 flex items-center justify-between gap-3">
+                              <div className="truncate text-[10px] font-bold uppercase tracking-[0.16em] text-current/75">
+                                {entry.agent_name ?? entry.message_type}
+                              </div>
+                              <div className="text-[10px] uppercase tracking-[0.16em] text-current/60">
+                                {entry.entry_type}
+                              </div>
+                            </div>
+                            <div className="whitespace-pre-wrap leading-5">
+                              {entry.content}
+                            </div>
                           </div>
                         );
                       })}
                     </div>
                   )}
+                </div>
+
+                <div className="border-t border-[#E2E8F0] bg-white/90 px-5 py-3 dark:border-[#243041] dark:bg-[rgba(15,23,42,0.78)] md:px-6">
+                  <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-[#94A3B8]">
+                    {selectedStep
+                      ? `Route input to ${selectedStep.title}`
+                      : 'Select a step to route input'}
+                  </div>
+                  <div className="flex gap-2">
+                    <textarea
+                      value={composerValue}
+                      onChange={(event) => setComposerValue(event.target.value)}
+                      placeholder={
+                        selectedStep
+                          ? 'Send step-scoped input or context'
+                          : 'Pick a node before sending input'
+                      }
+                      rows={2}
+                      disabled={!selectedStep || !onSubmitStepInput}
+                      className="min-h-[54px] flex-1 resize-y rounded-2xl border border-[#CBD5E1] bg-white px-3 py-2 text-xs text-[#0F172A] outline-none transition-colors placeholder:text-[#94A3B8] focus:border-[#60A5FA] disabled:cursor-not-allowed disabled:bg-[#F8FAFC] disabled:text-[#94A3B8]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!selectedStep || !onSubmitStepInput) {
+                          return;
+                        }
+                        const nextValue = composerValue.trim();
+                        if (!nextValue) {
+                          return;
+                        }
+                        onSubmitStepInput(selectedStep.id, nextValue);
+                        setComposerValue('');
+                      }}
+                      disabled={!selectedStep || !onSubmitStepInput || composerValue.trim().length === 0}
+                      className="self-end rounded-full bg-[#0F172A] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#1E293B] disabled:opacity-40"
+                    >
+                      Send
+                    </button>
+                  </div>
                 </div>
 
                 {/* Status bar */}

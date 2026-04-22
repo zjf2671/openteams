@@ -60,7 +60,7 @@ pub struct TransitionResult<T> {
 // running -> interrupting -> waiting_user
 // running -> waiting_user (step requests user action: approval/permission/continue)
 // running -> waiting_user_acceptance
-// running -> pausing -> paused
+// running -> paused
 // running -> completing -> completed
 // running -> failed
 // waiting_user -> running
@@ -82,17 +82,17 @@ pub fn validate_execution_transition(
         Bootstrapping => matches!(to, Running | Failed),
         Running => matches!(
             to,
-            Interrupting | WaitingUser | WaitingUserAcceptance | Pausing | Completing | Failed
+            Interrupting | WaitingUser | WaitingUserAcceptance | Paused | Completing | Failed
         ),
         Interrupting => matches!(to, WaitingUser | Paused),
         WaitingUser => matches!(to, Running | Failed | Cancelled),
         WaitingUserAcceptance => matches!(to, Completing | Paused),
-        Pausing => matches!(to, Paused),
-        Paused => matches!(to, Recompiling | Cancelled),
+        Paused => matches!(to, Recompiling | Resuming | Cancelled),
         Recompiling => matches!(to, Resuming),
-        Resuming => matches!(to, Running | Pausing),
+        Resuming => matches!(to, Running),
         Completing => matches!(to, Completed),
-        Completed | Failed | Cancelled => false,
+        Failed => matches!(to, Resuming),
+        Completed | Cancelled => false,
     };
 
     if allowed {
@@ -143,7 +143,7 @@ pub fn validate_step_transition(
         InterruptRequested => matches!(to, Interrupted),
         Interrupted => matches!(to, Cancelled),
         Blocked => matches!(to, Ready | Cancelled),
-        Failed => matches!(to, Ready), // retry
+        Failed => matches!(to, Ready),
         Completed | Skipped | Cancelled => false,
     };
 
@@ -195,7 +195,8 @@ pub fn validate_agent_session_transition(
         InterruptRequested => matches!(to, Interrupted),
         Interrupted => matches!(to, Idle),
         Paused => matches!(to, Idle),
-        Completed | Failed | Expired => false,
+        Failed => matches!(to, Idle),
+        Completed | Expired => false,
     };
 
     if allowed {
@@ -245,10 +246,6 @@ pub fn validate_step_in_execution(
             step_status,
             S::Completed | S::Failed | S::Interrupted | S::Cancelled
         ),
-        E::Pausing => matches!(
-            step_status,
-            S::Running | S::InterruptRequested | S::Completed | S::Failed | S::Blocked
-        ),
         E::Paused => matches!(
             step_status,
             S::Pending | S::Blocked | S::Interrupted | S::Completed | S::Failed | S::Cancelled
@@ -264,6 +261,16 @@ pub fn validate_step_in_execution(
                 | S::Interrupted
                 | S::Completed
                 | S::Failed
+                | S::Blocked
+        ),
+        E::Failed => matches!(
+            step_status,
+            S::Ready
+                | S::Failed
+                | S::Interrupted
+                | S::WaitingInput
+                | S::WaitingReview
+                | S::Completed
                 | S::Blocked
         ),
         E::Completed => matches!(
@@ -286,7 +293,13 @@ pub fn validate_agent_session_in_execution(
     match execution_status {
         E::Running => matches!(
             session_state,
-            A::Idle | A::Running | A::WaitingInput | A::WaitingApproval | A::Completed | A::Failed
+            A::Idle
+                | A::Running
+                | A::WaitingInput
+                | A::WaitingApproval
+                | A::Paused
+                | A::Completed
+                | A::Failed
         ),
         E::Interrupting => matches!(
             session_state,
@@ -295,10 +308,6 @@ pub fn validate_agent_session_in_execution(
         E::WaitingUserAcceptance => matches!(
             session_state,
             A::Idle | A::Completed | A::Failed | A::Paused
-        ),
-        E::Pausing => matches!(
-            session_state,
-            A::Running | A::InterruptRequested | A::Paused | A::Idle
         ),
         E::Paused => matches!(
             session_state,
@@ -316,6 +325,15 @@ pub fn validate_agent_session_in_execution(
                 | A::Idle
                 | A::Completed
                 | A::Failed
+        ),
+        E::Failed => matches!(
+            session_state,
+            A::Idle
+                | A::Failed
+                | A::Interrupted
+                | A::WaitingInput
+                | A::WaitingApproval
+                | A::Completed
         ),
         E::Completed => matches!(
             session_state,
@@ -338,7 +356,6 @@ fn execution_event_type(to: &WorkflowExecutionStatus) -> WorkflowEventType {
         Failed => WorkflowEventType::ExecutionFailed,
         Completed => WorkflowEventType::ExecutionCompleted,
         Cancelled => WorkflowEventType::ExecutionCancelled,
-        Pausing => WorkflowEventType::ExecutionPauseRequested,
         Paused => WorkflowEventType::ExecutionPaused,
         Resuming => WorkflowEventType::ExecutionResumeRequested,
         Interrupting => WorkflowEventType::ExecutionInterruptRequested,
@@ -620,11 +637,11 @@ mod tests {
     }
 
     #[test]
-    fn test_running_to_pausing() {
+    fn test_running_to_paused() {
         assert!(
             validate_execution_transition(
                 &WorkflowExecutionStatus::Running,
-                &WorkflowExecutionStatus::Pausing,
+                &WorkflowExecutionStatus::Paused,
             )
             .is_ok()
         );
@@ -686,13 +703,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resuming_to_pausing_allowed() {
+    fn test_resuming_to_paused_rejected() {
         assert!(
             validate_execution_transition(
                 &WorkflowExecutionStatus::Resuming,
-                &WorkflowExecutionStatus::Pausing,
+                &WorkflowExecutionStatus::Paused,
             )
-            .is_ok()
+            .is_err()
         );
     }
 
@@ -966,6 +983,14 @@ mod tests {
         assert!(validate_agent_session_in_execution(
             &WorkflowExecutionStatus::WaitingUser,
             &WorkflowAgentSessionState::WaitingApproval,
+        ));
+    }
+
+    #[test]
+    fn test_running_execution_allows_paused_agent_session() {
+        assert!(validate_agent_session_in_execution(
+            &WorkflowExecutionStatus::Running,
+            &WorkflowAgentSessionState::Paused,
         ));
     }
 

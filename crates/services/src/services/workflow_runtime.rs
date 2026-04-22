@@ -636,9 +636,7 @@ pub fn build_workflow_card_projection(
     let state = match execution.status {
         WorkflowExecutionStatus::Completed => WorkflowCardState::Completed,
         WorkflowExecutionStatus::Failed => WorkflowCardState::Failed,
-        WorkflowExecutionStatus::Paused | WorkflowExecutionStatus::Pausing => {
-            WorkflowCardState::Paused
-        }
+        WorkflowExecutionStatus::Paused => WorkflowCardState::Paused,
         WorkflowExecutionStatus::WaitingUser => WorkflowCardState::WaitingUser,
         _ => WorkflowCardState::Running,
     };

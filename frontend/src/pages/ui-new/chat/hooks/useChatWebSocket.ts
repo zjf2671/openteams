@@ -26,7 +26,26 @@ type MentionAcknowledgedEvent = {
   status: MentionStatus;
 };
 
-type ChatStreamPayload = ChatStreamEvent | MentionAcknowledgedEvent;
+type WorkflowGraphUpdatedEvent = {
+  type: 'workflow_graph_updated';
+  session_id: string;
+  execution_id: string;
+  graph_version: string;
+  reason: string;
+  changed_step_ids: string[];
+};
+
+type WorkflowExecutionUpdatedEvent = {
+  type: 'workflow_execution_updated';
+  session_id: string;
+  execution_id: string;
+};
+
+type ChatStreamPayload =
+  | ChatStreamEvent
+  | MentionAcknowledgedEvent
+  | WorkflowGraphUpdatedEvent
+  | WorkflowExecutionUpdatedEvent;
 type AgentDeltaPayload = Extract<ChatStreamEvent, { type: 'agent_delta' }> & {
   type: 'agent_delta';
   stream_type?: 'assistant' | 'thinking' | 'error';
@@ -615,6 +634,18 @@ export function useChatWebSocket(
     });
   }, []);
 
+  const handleWorkflowProjectionRefresh = useCallback(
+    async (sessionId: string) => {
+      if (!sessionId) return;
+      queryClient.invalidateQueries({ queryKey: ['chatMessages', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['workflowTranscripts', sessionId] });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowStepTranscripts', sessionId],
+      });
+    },
+    [queryClient]
+  );
+
   useEffect(() => {
     setStreamingRunsBySession((prev) => pruneExpiredStreamingRuns(prev));
   }, [activeSessionId]);
@@ -695,6 +726,16 @@ export function useChatWebSocket(
             return;
           }
 
+          if (payload.type === 'workflow_graph_updated') {
+            void handleWorkflowProjectionRefresh(payload.session_id);
+            return;
+          }
+
+          if (payload.type === 'workflow_execution_updated') {
+            void handleWorkflowProjectionRefresh(payload.session_id);
+            return;
+          }
+
           if (payload.type === 'mention_error') {
             handleMentionError(payload);
           }
@@ -729,6 +770,7 @@ export function useChatWebSocket(
     handleAgentState,
     handleMentionAcknowledged,
     handleProtocolNotice,
+    handleWorkflowProjectionRefresh,
     handleMentionError,
   ]);
 

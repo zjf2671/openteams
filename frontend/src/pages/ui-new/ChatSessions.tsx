@@ -112,6 +112,7 @@ import { SkillsPanel } from './chat/components/SkillsPanel';
 import { AiTeamPresetsModal } from './chat/components/AiTeamPresetsModal';
 import { WorkflowWindow } from './chat/components/WorkflowWindow';
 import type { WorkflowWindowProjection } from './chat/components/WorkflowWindow';
+import type { WorkflowCardProjection } from './chat/components/ChatWorkflowCard';
 import { ChatSystemMessage } from '@/components/ui-new/primitives/conversation/ChatSystemMessage';
 
 import type { ChatProtocolNotice } from './chat/hooks/useChatWebSocket';
@@ -925,6 +926,9 @@ export function ChatSessions() {
       queryClient.invalidateQueries({
         queryKey: ['workflowTranscripts', activeSessionId],
       });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowStepTranscripts', activeSessionId],
+      });
     },
   });
 
@@ -944,14 +948,12 @@ export function ChatSessions() {
 
   const interruptStepMutation = useMutation({
     mutationFn: async ({
-      executionId,
       stepId,
     }: {
-      executionId: string;
       stepId: string;
     }) => {
       if (!activeSessionId) throw new Error('No active session');
-      return chatApi.interruptStep(activeSessionId, executionId, stepId);
+      return chatApi.interruptWorkflowStep(activeSessionId, stepId);
     },
     onSuccess: () => {
       if (!activeSessionId) return;
@@ -965,27 +967,150 @@ export function ChatSessions() {
   });
 
   const handleInterruptStep = useCallback(
-    (executionId: string, stepId: string) => {
-      interruptStepMutation.mutate({ executionId, stepId });
+    (stepId: string) => {
+      interruptStepMutation.mutate({ stepId });
     },
     [interruptStepMutation]
   );
+
+  const stopWorkflowStepMutation = useMutation({
+    mutationFn: async (stepId: string) => {
+      if (!activeSessionId) throw new Error('No active session');
+      return chatApi.stopWorkflowStep(activeSessionId, stepId);
+    },
+    onSuccess: () => {
+      if (!activeSessionId) return;
+      queryClient.invalidateQueries({ queryKey: ['chatMessages', activeSessionId] });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowTranscripts', activeSessionId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowStepTranscripts', activeSessionId],
+      });
+    },
+  });
+
+  const resumeWorkflowMutation = useMutation({
+    mutationFn: async (executionId: string) => {
+      if (!activeSessionId) throw new Error('No active session');
+      return chatApi.resumeWorkflowExecution(activeSessionId, executionId);
+    },
+    onSuccess: () => {
+      if (!activeSessionId) return;
+      queryClient.invalidateQueries({ queryKey: ['chatMessages', activeSessionId] });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowTranscripts', activeSessionId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowStepTranscripts', activeSessionId],
+      });
+    },
+  });
+
+  const retryWorkflowStepMutation = useMutation({
+    mutationFn: async (stepId: string) => {
+      if (!activeSessionId) throw new Error('No active session');
+      return chatApi.retryWorkflowStep(activeSessionId, stepId);
+    },
+    onSuccess: () => {
+      if (!activeSessionId) return;
+      queryClient.invalidateQueries({ queryKey: ['chatMessages', activeSessionId] });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowTranscripts', activeSessionId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowStepTranscripts', activeSessionId],
+      });
+    },
+  });
+
+  const submitWorkflowStepInputMutation = useMutation({
+    mutationFn: async ({
+      stepId,
+      inputText,
+    }: {
+      stepId: string;
+      inputText: string;
+    }) => {
+      if (!activeSessionId) throw new Error('No active session');
+      return chatApi.submitWorkflowStepInput(activeSessionId, stepId, inputText);
+    },
+    onSuccess: () => {
+      if (!activeSessionId) return;
+      queryClient.invalidateQueries({ queryKey: ['chatMessages', activeSessionId] });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowTranscripts', activeSessionId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowStepTranscripts', activeSessionId],
+      });
+    },
+  });
 
   // Workflow window state
   const [workflowWindowOpen, setWorkflowWindowOpen] = useState(false);
   const [workflowWindowCardMessageId, setWorkflowWindowCardMessageId] =
     useState<string | null>(null);
+  const [workflowCardProjectionByMessageId, setWorkflowCardProjectionByMessageId] =
+    useState<Record<string, WorkflowCardProjection>>({});
+
+  const workflowCardMessageIds = useMemo(
+    () =>
+      messages
+        .filter((message) => !!extractWorkflowCardProjection(message.meta))
+        .map((message) => message.id),
+    [messages]
+  );
+
+  useEffect(() => {
+    if (workflowCardMessageIds.length === 0) {
+      setWorkflowCardProjectionByMessageId({});
+      return undefined;
+    }
+
+    let cancelled = false;
+    const refreshWorkflowCards = async () => {
+      const results = await Promise.all(
+        workflowCardMessageIds.map(async (messageId) => {
+          try {
+            const projection = await chatApi.getWorkflowCard(messageId);
+            return [messageId, projection] as const;
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      setWorkflowCardProjectionByMessageId((prev) => {
+        const next: Record<string, WorkflowCardProjection> = {};
+        for (const result of results) {
+          if (result) {
+            next[result[0]] = result[1];
+          }
+        }
+        return Object.keys(next).length > 0 ? next : prev;
+      });
+    };
+
+    void refreshWorkflowCards();
+    const timer = window.setInterval(() => {
+      void refreshWorkflowCards();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [workflowCardMessageIds]);
 
   const workflowWindowProjection = useMemo<WorkflowWindowProjection | null>(
     () => {
       if (!workflowWindowOpen || !workflowWindowCardMessageId) return null;
-      const msg = messages.find(
-        (m) => m.id === workflowWindowCardMessageId
-      );
-      if (!msg) return null;
-      return extractWorkflowCardProjection(msg.meta);
+      return workflowCardProjectionByMessageId[workflowWindowCardMessageId] ?? null;
     },
-    [workflowWindowOpen, workflowWindowCardMessageId, messages]
+    [workflowWindowOpen, workflowWindowCardMessageId, workflowCardProjectionByMessageId]
   );
 
   const workflowExecutionId = workflowWindowProjection?.execution_id ?? null;
@@ -1001,7 +1126,7 @@ export function ChatSessions() {
       );
     },
     enabled: !!activeSessionId && !!workflowExecutionId && workflowWindowOpen,
-    refetchInterval: workflowWindowOpen && !!workflowExecutionId ? 2000 : false,
+    refetchInterval: workflowWindowOpen && !!workflowExecutionId ? 5000 : false,
   });
 
   const workflowTranscriptEntries = useMemo(() => {
@@ -1022,20 +1147,28 @@ export function ChatSessions() {
 
   const resolveActionMutation = useMutation({
     mutationFn: async ({
-      executionId,
+      stepId,
       transcriptId,
       action,
       inputText,
     }: {
-      executionId: string;
+      stepId: string;
       transcriptId: string;
       action: string;
       inputText?: string;
     }) => {
       if (!activeSessionId) throw new Error('No active session');
-      return chatApi.resolveWorkflowAction(
+      if (action === 'granted' || action === 'denied') {
+        return chatApi.resolveWorkflowStepPermission(
+          activeSessionId,
+          stepId,
+          transcriptId,
+          action
+        );
+      }
+      return chatApi.approveWorkflowStep(
         activeSessionId,
-        executionId,
+        stepId,
         transcriptId,
         action,
         inputText
@@ -1049,13 +1182,16 @@ export function ChatSessions() {
       queryClient.invalidateQueries({
         queryKey: ['workflowTranscripts', activeSessionId],
       });
+      queryClient.invalidateQueries({
+        queryKey: ['workflowStepTranscripts', activeSessionId],
+      });
     },
   });
 
   const handleOpenWorkflowWindow = useCallback(
     (projection: WorkflowWindowProjection) => {
       const cardMsgId = messages.find((m) => {
-        const p = extractWorkflowCardProjection(m.meta);
+        const p = workflowCardProjectionByMessageId[m.id] ?? extractWorkflowCardProjection(m.meta);
         return p && p.execution_id === projection.execution_id && p.plan_id === projection.plan_id;
       })?.id ?? null;
       setWorkflowWindowCardMessageId(cardMsgId);
@@ -1065,21 +1201,22 @@ export function ChatSessions() {
   );
 
   const handleResolveWorkflowAction = useCallback(
-    (action: string, transcriptId: string, inputText?: string) => {
-      if (!workflowExecutionId) return;
+    (stepId: string, action: string, transcriptId: string, inputText?: string) => {
       resolveActionMutation.mutate({
-        executionId: workflowExecutionId,
+        stepId,
         transcriptId,
         action,
         inputText,
       });
     },
-    [workflowExecutionId, resolveActionMutation]
+    [resolveActionMutation]
   );
 
   useEffect(() => {
-    const pendingWorkflowCard = [...messages].reverse().find((message) => {
-      const projection = extractWorkflowCardProjection(message.meta);
+      const pendingWorkflowCard = [...messages].reverse().find((message) => {
+      const projection =
+        workflowCardProjectionByMessageId[message.id] ??
+        extractWorkflowCardProjection(message.meta);
       return projection?.execution_id && projection.execution_status === 'waiting_user';
     });
 
@@ -1088,7 +1225,9 @@ export function ChatSessions() {
       return;
     }
 
-    const pendingProjection = extractWorkflowCardProjection(pendingWorkflowCard.meta);
+    const pendingProjection =
+      workflowCardProjectionByMessageId[pendingWorkflowCard.id] ??
+      extractWorkflowCardProjection(pendingWorkflowCard.meta);
     const pendingExecutionId = pendingProjection?.execution_id ?? null;
     if (!pendingExecutionId) {
       return;
@@ -1101,12 +1240,27 @@ export function ChatSessions() {
     autoOpenedWorkflowExecutionIdRef.current = pendingExecutionId;
     setWorkflowWindowCardMessageId(pendingWorkflowCard.id);
     setWorkflowWindowOpen(true);
-  }, [messages]);
+  }, [messages, workflowCardProjectionByMessageId]);
 
-  const pendingWorkflowTranscriptId =
-    resolveActionMutation.isPending
-      ? resolveActionMutation.variables?.transcriptId ?? null
-      : null;
+  const pendingWorkflowActionId = useMemo(() => {
+    if (resolveActionMutation.isPending) {
+      return resolveActionMutation.variables?.transcriptId ?? null;
+    }
+    if (submitWorkflowStepInputMutation.isPending) {
+      return submitWorkflowStepInputMutation.variables?.stepId ?? null;
+    }
+    if (retryWorkflowStepMutation.isPending) {
+      return retryWorkflowStepMutation.variables ?? null;
+    }
+    return null;
+  }, [
+    resolveActionMutation.isPending,
+    resolveActionMutation.variables,
+    retryWorkflowStepMutation.isPending,
+    retryWorkflowStepMutation.variables,
+    submitWorkflowStepInputMutation.isPending,
+    submitWorkflowStepInputMutation.variables,
+  ]);
 
   // Message input
   const getMessageMentionHandle = useCallback(
@@ -4623,6 +4777,10 @@ export function ChatSessions() {
                           }
                           onExecutePlan={handleExecutePlan}
                           onPauseAll={handlePauseAll}
+                          onResumeWorkflow={(executionId) =>
+                            resumeWorkflowMutation.mutate(executionId)
+                          }
+                          workflowCardProjection={workflowCardProjectionByMessageId[message.id] ?? null}
                           onOpenWorkflowWindow={(proj) => handleOpenWorkflowWindow(proj as WorkflowWindowProjection)}
                         />
                       );
@@ -4928,6 +5086,7 @@ export function ChatSessions() {
       {/* Workflow Window */}
       {workflowWindowOpen && workflowWindowProjection && (
         <WorkflowWindow
+          sessionId={activeSessionId}
           projection={workflowWindowProjection}
           transcript={workflowTranscriptEntries}
           isOpen={workflowWindowOpen}
@@ -4937,9 +5096,15 @@ export function ChatSessions() {
           }}
           onExecute={handleExecutePlan}
           onPauseAll={handlePauseAll}
+          onResume={(executionId) => resumeWorkflowMutation.mutate(executionId)}
           onInterruptStep={handleInterruptStep}
+          onStopStep={(stepId) => stopWorkflowStepMutation.mutate(stepId)}
+          onRetryStep={(stepId) => retryWorkflowStepMutation.mutate(stepId)}
+          onSubmitStepInput={(stepId, inputText) =>
+            submitWorkflowStepInputMutation.mutate({ stepId, inputText })
+          }
           onApproval={handleResolveWorkflowAction}
-          pendingTranscriptId={pendingWorkflowTranscriptId}
+          pendingActionId={pendingWorkflowActionId}
         />
       )}
 

@@ -126,7 +126,61 @@ export interface WorkflowTranscriptEntry {
   agent_name?: string | null;
 }
 
+export interface WorkflowCardData {
+  execution_id?: string | null;
+  plan_id?: string;
+  revision_id?: string;
+  title: string;
+  goal: string;
+  state: string;
+  execution_status: string;
+  error_message?: string | null;
+  completed_step_count: number;
+  total_step_count: number;
+  result_summary?: string | null;
+  outputs: string[];
+  steps: Array<{
+    id: string;
+    step_key: string;
+    title: string;
+    step_type: string;
+    status: string;
+    agent_name?: string | null;
+    summary_text?: string | null;
+  }>;
+  agents?: Array<{
+    session_agent_id: string;
+    workflow_agent_session_id?: string | null;
+    agent_id: string;
+    name: string;
+  }>;
+  plan: {
+    nodes: Array<{
+      id: string;
+      position: { x: number; y: number };
+      data: {
+        stepType: string;
+        title: string;
+        instructions: string;
+        agentId?: string | null;
+        status?: string | null;
+      };
+    }>;
+    edges: Array<{
+      id: string;
+      source: string;
+      target: string;
+    }>;
+    viewport?: { x?: number; y?: number; zoom?: number };
+  };
+  validation_errors?: string | null;
+}
+
 export interface ResolveActionResponse {
+  status: string;
+}
+
+export interface ResumeExecutionResponse {
   status: string;
 }
 
@@ -854,6 +908,128 @@ export const chatApi = {
     return handleApiResponse<InterruptStepResponse>(response);
   },
 
+  resumeWorkflowExecution: async (
+    sessionId: string,
+    executionId: string
+  ): Promise<ResumeExecutionResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow/executions/${executionId}/resume`,
+      { method: 'POST' }
+    );
+    return handleApiResponse<ResumeExecutionResponse>(response);
+  },
+
+  getWorkflowStepTranscripts: async (
+    sessionId: string,
+    stepId: string,
+    filters?: {
+      stepKey?: string | null;
+      workflowAgentSessionId?: string | null;
+    }
+  ): Promise<WorkflowTranscriptEntry[]> => {
+    const params = new URLSearchParams();
+    if (filters?.stepKey) {
+      params.set('step_key', filters.stepKey);
+    }
+    if (filters?.workflowAgentSessionId) {
+      params.set('workflow_agent_session_id', filters.workflowAgentSessionId);
+    }
+    const queryString = params.toString();
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/transcripts${queryString ? `?${queryString}` : ''}`,
+      { method: 'GET' }
+    );
+    return handleApiResponse<WorkflowTranscriptEntry[]>(response);
+  },
+
+  submitWorkflowStepInput: async (
+    sessionId: string,
+    stepId: string,
+    inputText: string
+  ): Promise<ResolveActionResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/input`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ input_text: inputText }),
+      }
+    );
+    return handleApiResponse<ResolveActionResponse>(response);
+  },
+
+  interruptWorkflowStep: async (
+    sessionId: string,
+    stepId: string
+  ): Promise<InterruptStepResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/interrupt`,
+      { method: 'POST' }
+    );
+    return handleApiResponse<InterruptStepResponse>(response);
+  },
+
+  stopWorkflowStep: async (
+    sessionId: string,
+    stepId: string
+  ): Promise<InterruptStepResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/stop`,
+      { method: 'POST' }
+    );
+    return handleApiResponse<InterruptStepResponse>(response);
+  },
+
+  retryWorkflowStep: async (
+    sessionId: string,
+    stepId: string
+  ): Promise<ResolveActionResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/retry`,
+      { method: 'POST' }
+    );
+    return handleApiResponse<ResolveActionResponse>(response);
+  },
+
+  approveWorkflowStep: async (
+    sessionId: string,
+    stepId: string,
+    transcriptId: string,
+    action: string,
+    inputText?: string
+  ): Promise<ResolveActionResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/approve`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          transcript_id: transcriptId,
+          action,
+          input_text: inputText,
+        }),
+      }
+    );
+    return handleApiResponse<ResolveActionResponse>(response);
+  },
+
+  resolveWorkflowStepPermission: async (
+    sessionId: string,
+    stepId: string,
+    transcriptId: string,
+    action: string
+  ): Promise<ResolveActionResponse> => {
+    const response = await makeRequest(
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/resolve-permission`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          transcript_id: transcriptId,
+          action,
+        }),
+      }
+    );
+    return handleApiResponse<ResolveActionResponse>(response);
+  },
+
   getWorkflowTranscripts: async (
     sessionId: string,
     executionId: string,
@@ -922,6 +1098,16 @@ export const chatApi = {
       method: 'DELETE',
     });
     return handleApiResponse<void>(response);
+  },
+
+  getMessage: async (messageId: string): Promise<ChatMessage> => {
+    const response = await makeRequest(`/api/chat/messages/${messageId}`);
+    return handleApiResponse<ChatMessage>(response);
+  },
+
+  getWorkflowCard: async (messageId: string): Promise<WorkflowCardData> => {
+    const response = await makeRequest(`/api/chat/messages/${messageId}/workflow-card`);
+    return handleApiResponse<WorkflowCardData>(response);
   },
 
   resendMessage: async (

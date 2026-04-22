@@ -1,6 +1,8 @@
 import type { ChatMessage } from 'shared/types';
 import { CheckCircleIcon, ClockIcon, PlayIcon, WarningCircleIcon, PauseIcon } from '@phosphor-icons/react';
+import type { WorkflowCardData } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { WorkflowGraphBoard } from './WorkflowGraphBoard';
 
 type WorkflowCardNode = {
   id: string;
@@ -20,7 +22,9 @@ type WorkflowCardEdge = {
   target: string;
 };
 
-type WorkflowCardProjection = {
+export type WorkflowCardProjection = WorkflowCardData;
+
+type WorkflowCardProjectionInternal = {
   execution_id?: string | null;
   plan_id?: string;
   revision_id?: string;
@@ -68,7 +72,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export function extractWorkflowCardProjection(
   meta: unknown
-): WorkflowCardProjection | null {
+): WorkflowCardProjectionInternal | null {
   if (!isRecord(meta)) return null;
 
   // Support both workflow_execution (legacy) and workflow_plan (new preview) card types
@@ -81,143 +85,27 @@ export function extractWorkflowCardProjection(
     return null;
   }
 
-  return workflowCard as unknown as WorkflowCardProjection;
-}
-
-function WorkflowGraph({ nodes, edges }: { nodes: WorkflowCardNode[]; edges: WorkflowCardEdge[] }) {
-  if (nodes.length === 0) {
-    return null;
-  }
-
-  const canvasHeight = 360;
-  const nodeGap = 14;
-  const minNodeWidth = 84;
-  const maxNodeWidth = 150;
-  const height = 34;
-  const paddingX = 32;
-  const paddingY = 28;
-  const sortedNodes = [...nodes].sort(
-    (a, b) =>
-      a.position.x - b.position.x ||
-      a.position.y - b.position.y ||
-      a.id.localeCompare(b.id)
-  );
-  const measureNodeWidth = (node: WorkflowCardNode) => {
-    const titleWidth = node.data.title.trim().length * 4 + 26;
-    const typeWidth = node.data.stepType.trim().length * 3.5 + 20;
-    return Math.max(minNodeWidth, Math.min(maxNodeWidth, Math.max(titleWidth, typeWidth)));
-  };
-  const nodeWidths = sortedNodes.map(measureNodeWidth);
-  const totalNodeWidth = nodeWidths.reduce((sum, width) => sum + width, 0);
-  const canvasWidth = Math.max(
-    totalNodeWidth + Math.max(sortedNodes.length - 1, 0) * nodeGap + paddingX * 2,
-    280
-  );
-  const layoutNodes = sortedNodes.map((node, index) => {
-    const renderWidth = nodeWidths[index];
-    const previousWidth = nodeWidths
-      .slice(0, index)
-      .reduce((sum, width) => sum + width, 0);
-    return {
-      ...node,
-      renderWidth,
-      position: {
-        x: paddingX + previousWidth + index * nodeGap,
-        y: (canvasHeight - height) / 2,
-      },
-    };
-  });
-  const nodeById = new Map(layoutNodes.map((node) => [node.id, node]));
-  const viewBox = `0 0 ${canvasWidth} ${canvasHeight}`;
-  const statusColor = (status?: string | null) => {
-    switch (status) {
-      case 'completed':
-        return { fill: '#DCFCE7', stroke: '#16A34A', text: '#166534' };
-      case 'running':
-        return { fill: '#DBEAFE', stroke: '#2563EB', text: '#1D4ED8' };
-      case 'failed':
-        return { fill: '#FEE2E2', stroke: '#DC2626', text: '#991B1B' };
-      case 'ready':
-        return { fill: '#FEF3C7', stroke: '#D97706', text: '#92400E' };
-      default:
-        return { fill: '#F8FAFC', stroke: '#CBD5E1', text: '#334155' };
-    }
-  };
-
-  return (
-    <div className="overflow-x-auto overflow-y-hidden rounded-2xl border border-[#DCE4F0] bg-[#F8FAFC] px-3 py-3">
-      <svg viewBox={viewBox} className="mx-auto h-[360px] max-w-none" style={{ width: canvasWidth }}>
-        {edges.map((edge) => {
-          const source = nodeById.get(edge.source);
-          const target = nodeById.get(edge.target);
-          if (!source || !target) return null;
-          const x1 = source.position.x + source.renderWidth;
-          const y1 = source.position.y + height / 2;
-          const x2 = target.position.x;
-          const y2 = target.position.y + height / 2;
-          const curveOffset = Math.max((x2 - x1) / 2, 12);
-          return (
-            <path
-              key={edge.id}
-              d={`M ${x1} ${y1} C ${x1 + curveOffset} ${y1}, ${x2 - curveOffset} ${y2}, ${x2} ${y2}`}
-              fill="none"
-              stroke="#94A3B8"
-              strokeWidth="2"
-              strokeDasharray="4 4"
-            />
-          );
-        })}
-        {layoutNodes.map((node) => {
-          const colors = statusColor(node.data.status);
-          return (
-            <g key={node.id} transform={`translate(${node.position.x}, ${node.position.y})`}>
-              <rect
-                width={node.renderWidth}
-                height={height}
-                rx="10"
-                fill={colors.fill}
-                stroke={colors.stroke}
-                strokeWidth="2"
-              />
-              <text
-                x={node.renderWidth / 2}
-                y="13"
-                fontSize="8"
-                fontWeight="700"
-                fill={colors.text}
-                textAnchor="middle"
-              >
-                {node.data.stepType.toUpperCase()}
-              </text>
-              <text
-                x={node.renderWidth / 2}
-                y="24"
-                fontSize="10"
-                fontWeight="600"
-                fill="#0F172A"
-                textAnchor="middle"
-              >
-                {node.data.title.length > 18
-                  ? `${node.data.title.slice(0, 18)}...`
-                  : node.data.title}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
+  return workflowCard as unknown as WorkflowCardProjectionInternal;
 }
 
 type ChatWorkflowCardProps = {
   message: ChatMessage;
+  projection?: WorkflowCardProjection | null;
   onExecute?: (planId: string) => void;
   onPauseAll?: (executionId: string) => void;
+  onResume?: (executionId: string) => void;
   onOpenWindow?: () => void;
 };
 
-export function ChatWorkflowCard({ message, onExecute, onPauseAll, onOpenWindow }: ChatWorkflowCardProps) {
-  const projection = extractWorkflowCardProjection(message.meta);
+export function ChatWorkflowCard({
+  message,
+  projection: projectionProp,
+  onExecute,
+  onPauseAll,
+  onResume,
+  onOpenWindow,
+}: ChatWorkflowCardProps) {
+  const projection = projectionProp ?? extractWorkflowCardProjection(message.meta);
   if (!projection) {
     return null;
   }
@@ -270,19 +158,10 @@ export function ChatWorkflowCard({ message, onExecute, onPauseAll, onOpenWindow 
             {projection.goal}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-start">
           <div className="rounded-full bg-[#EEF4FF] px-3 py-1 text-xs font-semibold text-[#1D4ED8]">
             {projection.completed_step_count}/{projection.total_step_count}
           </div>
-          {onOpenWindow && (
-            <button
-              type="button"
-              onClick={onOpenWindow}
-              className="rounded-full border border-[#E2E8F0] bg-white px-3 py-1 text-xs font-medium text-[#475569] hover:bg-[#F1F5F9] transition-colors"
-            >
-              Open
-            </button>
-          )}
         </div>
       </div>
 
@@ -301,46 +180,12 @@ export function ChatWorkflowCard({ message, onExecute, onPauseAll, onOpenWindow 
       )}
 
       <div className="mt-4">
-        <WorkflowGraph
+        <WorkflowGraphBoard
           nodes={projection.plan.nodes}
           edges={projection.plan.edges}
+          steps={projection.steps}
+          compact
         />
-      </div>
-
-      <div className="mt-4 grid gap-2">
-        {projection.steps.map((step) => (
-          <div
-            key={step.id}
-            className={cn(
-              'rounded-2xl border px-3 py-3',
-              step.status === 'completed' && 'border-[#BBF7D0] bg-[#F0FDF4]',
-              step.status === 'running' && 'border-[#BFDBFE] bg-[#EFF6FF]',
-              step.status === 'failed' && 'border-[#FECACA] bg-[#FEF2F2]',
-              !['completed', 'running', 'failed'].includes(step.status) &&
-                'border-[#E2E8F0] bg-[#F8FAFC]'
-            )}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-[#0F172A]">
-                  {step.title}
-                </div>
-                <div className="text-xs uppercase tracking-[0.14em] text-[#64748B]">
-                  {step.step_type}
-                  {step.agent_name ? ` • ${step.agent_name}` : ''}
-                </div>
-              </div>
-              <div className="text-xs font-semibold text-[#475569]">
-                {step.status}
-              </div>
-            </div>
-            {step.summary_text && (
-              <div className="mt-2 text-sm leading-6 text-[#475569]">
-                {step.summary_text}
-              </div>
-            )}
-          </div>
-        ))}
       </div>
 
       {/* Validation errors (preview_invalid) */}
@@ -351,33 +196,49 @@ export function ChatWorkflowCard({ message, onExecute, onPauseAll, onOpenWindow 
         </div>
       )}
 
-      {/* Execute button (preview_ready) */}
-      {projection.state === 'preview_ready' && projection.plan_id && onExecute && (
-        <div className="mt-4 flex justify-end">
+      <div className="mt-4 flex items-center justify-end gap-2">
+        {onOpenWindow && (
+          <button
+            type="button"
+            onClick={onOpenWindow}
+            className="rounded-full border border-[#E2E8F0] bg-white px-3 py-1.5 text-xs font-medium text-[#475569] transition-colors hover:bg-[#F1F5F9]"
+          >
+            Open
+          </button>
+        )}
+        {projection.state === 'preview_ready' && projection.plan_id && onExecute && (
           <button
             type="button"
             onClick={() => onExecute(projection.plan_id!)}
-            className="flex items-center gap-2 rounded-full bg-[#2563EB] px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-[#1D4ED8] transition-colors"
+            className="flex items-center gap-2 rounded-full bg-[#2563EB] px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#1D4ED8]"
           >
             <PlayIcon className="size-4" weight="bold" />
             Execute Plan
           </button>
-        </div>
-      )}
-
-      {/* Pause button (running) */}
-      {projection.state === 'running' && projection.execution_id && onPauseAll && (
-        <div className="mt-4 flex justify-end">
+        )}
+        {projection.state === 'running' && projection.execution_id && onPauseAll && (
           <button
             type="button"
             onClick={() => onPauseAll(projection.execution_id!)}
-            className="flex items-center gap-2 rounded-full bg-[#D97706] px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-[#B45309] transition-colors"
+            className="flex items-center gap-2 rounded-full bg-[#D97706] px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#B45309]"
           >
             <PauseIcon className="size-4" weight="bold" />
             Pause All
           </button>
-        </div>
-      )}
+        )}
+        {(projection.state === 'paused' || projection.state === 'failed') &&
+          projection.execution_id &&
+          onResume && (
+            <button
+              type="button"
+              onClick={() => onResume(projection.execution_id!)}
+              className="flex items-center gap-2 rounded-full bg-[#2563EB] px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#1D4ED8]"
+            >
+              <PlayIcon className="size-4" weight="bold" />
+              Resume
+            </button>
+          )}
+      </div>
 
       {projection.state === 'completed' && (
         <div className="mt-4 rounded-[24px] border border-[#D1FAE5] bg-[#ECFDF5] p-4">

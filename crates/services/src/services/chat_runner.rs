@@ -22,6 +22,7 @@ use db::{
         chat_session_agent::{ChatSessionAgent, ChatSessionAgentState},
         chat_skill::ChatSkill,
         chat_work_item::{ChatWorkItem, ChatWorkItemType, CreateChatWorkItem},
+        workflow_types::{WorkflowPlanEdge, WorkflowPlanNode},
     },
 };
 use executors::{
@@ -576,6 +577,15 @@ pub enum ChatStreamEvent {
         session_id: Uuid,
         execution_id: Uuid,
     },
+    WorkflowGraphUpdated {
+        session_id: Uuid,
+        execution_id: Uuid,
+        graph_version: String,
+        reason: String,
+        nodes: Vec<WorkflowPlanNode>,
+        edges: Vec<WorkflowPlanEdge>,
+        changed_step_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -795,6 +805,40 @@ impl ChatRunner {
 
     pub fn emit_work_item_new(&self, session_id: Uuid, work_item: ChatWorkItem) {
         self.emit(session_id, ChatStreamEvent::WorkItemNew { work_item });
+    }
+
+    pub fn emit_workflow_execution_updated(&self, session_id: Uuid, execution_id: Uuid) {
+        self.emit(
+            session_id,
+            ChatStreamEvent::WorkflowExecutionUpdated {
+                session_id,
+                execution_id,
+            },
+        );
+    }
+
+    pub fn emit_workflow_graph_updated(
+        &self,
+        session_id: Uuid,
+        execution_id: Uuid,
+        graph_version: String,
+        reason: String,
+        nodes: Vec<WorkflowPlanNode>,
+        edges: Vec<WorkflowPlanEdge>,
+        changed_step_ids: Vec<String>,
+    ) {
+        self.emit(
+            session_id,
+            ChatStreamEvent::WorkflowGraphUpdated {
+                session_id,
+                execution_id,
+                graph_version,
+                reason,
+                nodes,
+                edges,
+                changed_step_ids,
+            },
+        );
     }
 
     /// Update the mention_statuses field in a message's meta

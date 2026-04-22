@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS chat_workflow_executions (
                                     CHECK (status IN (
                                         'pending', 'bootstrapping', 'running',
                                         'interrupting', 'waiting_user', 'waiting_user_acceptance',
-                                        'pausing', 'paused', 'recompiling', 'resuming',
+                                        'paused', 'recompiling', 'resuming',
                                         'completing', 'completed', 'failed', 'cancelled'
                                     )),
     current_round           INTEGER NOT NULL DEFAULT 0,

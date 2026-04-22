@@ -16,7 +16,10 @@ use db::models::{
     workflow_plan_revision::{CreateWorkflowPlanRevision, WorkflowPlanRevision},
     workflow_step::WorkflowStep,
     workflow_transcript::WorkflowTranscript,
-    workflow_types::{WorkflowPlanStatus, WorkflowRevisionEditor, WorkflowValidationStatus},
+    workflow_types::{
+        WorkflowExecutionStatus, WorkflowPlanStatus, WorkflowRevisionEditor,
+        WorkflowValidationStatus,
+    },
 };
 use deployment::Deployment;
 use serde::{Deserialize, Serialize};
@@ -312,6 +315,60 @@ pub async fn execute_plan(
 }
 
 // -----------------------------------------------------------------------
+// Resume Execution
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Serialize, TS)]
+pub struct ResumeExecutionResponse {
+    pub status: String,
+}
+
+pub async fn resume_execution(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, execution_id)): axum::extract::Path<(Uuid, Uuid)>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let execution = WorkflowExecution::find_by_id(pool, execution_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Execution not found.".to_string()))?;
+    if execution.session_id != session.id {
+        return Err(ApiError::BadRequest(
+            "Execution not found in this session.".to_string(),
+        ));
+    }
+
+    let resumed =
+        WorkflowOrchestrator::resume_execution(pool, deployment.chat_runner(), execution_id)
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    let deployment_clone = deployment.clone();
+    tokio::spawn(async move {
+        if let Err(err) = WorkflowOrchestrator::wake_scheduler(
+            deployment_clone.db(),
+            deployment_clone.chat_runner(),
+            execution_id,
+        )
+        .await
+        {
+            tracing::error!(execution_id = %execution_id, error = %err, "workflow scheduler failed");
+        }
+    });
+
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<ResumeExecutionResponse>::success(
+            ResumeExecutionResponse {
+                status: format!("{:?}", resumed.status).to_lowercase(),
+            },
+        )),
+    )
+        .into_response())
+}
+
+// -----------------------------------------------------------------------
 // Pause All
 // -----------------------------------------------------------------------
 
@@ -341,15 +398,8 @@ pub async fn pause_all(
         ));
     }
 
-    let execution = WorkflowOrchestrator::pause_all(pool, payload.execution_id)
-        .await
-        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
-    WorkflowOrchestrator::refresh_execution_projection(
-        pool,
-        deployment.chat_runner(),
-        execution.id,
-        None,
-    )
+    let execution =
+        WorkflowOrchestrator::pause_all(deployment.chat_runner(), pool, payload.execution_id)
     .await
     .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
@@ -393,17 +443,14 @@ pub async fn interrupt_step(
         ));
     }
 
-    let step = WorkflowOrchestrator::interrupt_step(pool, payload.execution_id, payload.step_id)
+    let step = WorkflowOrchestrator::interrupt_step(
+        deployment.chat_runner(),
+        pool,
+        payload.execution_id,
+        payload.step_id,
+    )
         .await
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
-    WorkflowOrchestrator::refresh_execution_projection(
-        pool,
-        deployment.chat_runner(),
-        payload.execution_id,
-        None,
-    )
-    .await
-    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     Ok((
         StatusCode::OK,
@@ -412,6 +459,273 @@ pub async fn interrupt_step(
                 status: format!("{:?}", step.status),
             },
         )),
+    )
+        .into_response())
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct StepActionRequest {
+    pub transcript_id: Option<Uuid>,
+    pub action: Option<String>,
+    pub input_text: Option<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct StepActionResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct StepInputRequest {
+    pub input_text: String,
+}
+
+async fn load_step_for_session(
+    pool: &sqlx::SqlitePool,
+    session: &ChatSession,
+    step_id: Uuid,
+) -> Result<(WorkflowStep, WorkflowExecution), ApiError> {
+    let step = WorkflowStep::find_by_id(pool, step_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Step not found.".to_string()))?;
+    let execution = WorkflowExecution::find_by_id(pool, step.execution_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Execution not found.".to_string()))?;
+    if execution.session_id != session.id {
+        return Err(ApiError::BadRequest(
+            "Step not found in this session.".to_string(),
+        ));
+    }
+    Ok((step, execution))
+}
+
+pub async fn get_step_transcripts(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+    Query(query): Query<WorkflowTranscriptQuery>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    let (_step, execution) = load_step_for_session(pool, &session, step_id).await?;
+    let mut scoped_query = query;
+    scoped_query.step_id = Some(step_id);
+    list_transcript_response(pool, &session, execution.id, scoped_query).await
+}
+
+pub async fn submit_step_input(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+    Json(payload): Json<StepInputRequest>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    let (_step, execution) = load_step_for_session(pool, &session, step_id).await?;
+
+    let result = WorkflowOrchestrator::submit_step_input(
+        pool,
+        deployment.chat_runner(),
+        step_id,
+        &payload.input_text,
+    )
+    .await
+    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    if result.should_wake_scheduler
+        || matches!(result.execution.status, WorkflowExecutionStatus::Running)
+            && execution.status == WorkflowExecutionStatus::WaitingUser
+    {
+        let deployment_clone = deployment.clone();
+        let execution_id = result.execution.id;
+        tokio::spawn(async move {
+            if let Err(err) = WorkflowOrchestrator::wake_scheduler(
+                deployment_clone.db(),
+                deployment_clone.chat_runner(),
+                execution_id,
+            )
+            .await
+            {
+                tracing::error!(execution_id = %execution_id, error = %err, "workflow scheduler failed");
+            }
+        });
+    }
+
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<StepActionResponse>::success(
+            StepActionResponse {
+                status: format!("{:?}", result.execution.status).to_lowercase(),
+            },
+        )),
+    )
+        .into_response())
+}
+
+pub async fn interrupt_step_by_step_id(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    let (_step, execution) = load_step_for_session(pool, &session, step_id).await?;
+
+    let step = WorkflowOrchestrator::interrupt_step(
+        deployment.chat_runner(),
+        pool,
+        execution.id,
+        step_id,
+    )
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<InterruptStepResponse>::success(
+            InterruptStepResponse {
+                status: format!("{:?}", step.status).to_lowercase(),
+            },
+        )),
+    )
+        .into_response())
+}
+
+pub async fn stop_step(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    let (_step, execution) = load_step_for_session(pool, &session, step_id).await?;
+
+    let step = WorkflowOrchestrator::interrupt_step(
+        deployment.chat_runner(),
+        pool,
+        execution.id,
+        step_id,
+    )
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<InterruptStepResponse>::success(
+            InterruptStepResponse {
+                status: format!("{:?}", step.status).to_lowercase(),
+            },
+        )),
+    )
+        .into_response())
+}
+
+pub async fn retry_step(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    let (_step, _execution) = load_step_for_session(pool, &session, step_id).await?;
+
+    let (execution, step) =
+        WorkflowOrchestrator::retry_step(deployment.db(), deployment.chat_runner(), step_id)
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<StepActionResponse>::success(
+            StepActionResponse {
+                status: if execution.status == WorkflowExecutionStatus::Failed {
+                    "failed".to_string()
+                } else {
+                    format!("{:?}", step.status).to_lowercase()
+                },
+            },
+        )),
+    )
+        .into_response())
+}
+
+async fn resolve_step_action(
+    pool: &sqlx::SqlitePool,
+    deployment: &DeploymentImpl,
+    step_id: Uuid,
+    payload: StepActionRequest,
+) -> Result<ResolveActionResponse, ApiError> {
+    let transcript_id = payload
+        .transcript_id
+        .ok_or_else(|| ApiError::BadRequest("transcript_id is required.".to_string()))?;
+    let action = payload
+        .action
+        .clone()
+        .ok_or_else(|| ApiError::BadRequest("action is required.".to_string()))?;
+
+    let transcript = WorkflowTranscript::find_by_id(pool, transcript_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Transcript not found.".to_string()))?;
+    if transcript.step_id != Some(step_id) {
+        return Err(ApiError::BadRequest(
+            "Transcript does not belong to this step.".to_string(),
+        ));
+    }
+
+    let resolved = WorkflowOrchestrator::resolve_transcript_action(
+        pool,
+        deployment.chat_runner(),
+        transcript_id,
+        &action,
+        payload.input_text.as_deref(),
+    )
+    .await
+    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    if resolved.should_wake_scheduler {
+        let deployment_clone = deployment.clone();
+        let execution_id = resolved.execution.id;
+        tokio::spawn(async move {
+            if let Err(err) = WorkflowOrchestrator::wake_scheduler(
+                deployment_clone.db(),
+                deployment_clone.chat_runner(),
+                execution_id,
+            )
+            .await
+            {
+                tracing::error!(execution_id = %execution_id, error = %err, "workflow scheduler failed");
+            }
+        });
+    }
+
+    Ok(ResolveActionResponse {
+        status: format!("{:?}", resolved.execution.status).to_lowercase(),
+    })
+}
+
+pub async fn approve_step_action(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+    Json(payload): Json<StepActionRequest>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    let _ = load_step_for_session(pool, &session, step_id).await?;
+    let response = resolve_step_action(pool, &deployment, step_id, payload).await?;
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<ResolveActionResponse>::success(response)),
+    )
+        .into_response())
+}
+
+pub async fn resolve_step_permission(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+    Json(payload): Json<StepActionRequest>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    let _ = load_step_for_session(pool, &session, step_id).await?;
+    let response = resolve_step_action(pool, &deployment, step_id, payload).await?;
+    Ok((
+        StatusCode::OK,
+        ResponseJson(ApiResponse::<ResolveActionResponse>::success(response)),
     )
         .into_response())
 }
@@ -499,14 +813,12 @@ pub struct WorkflowTranscriptQuery {
     pub workflow_agent_session_id: Option<Uuid>,
 }
 
-pub async fn get_transcripts(
-    Extension(session): Extension<ChatSession>,
-    State(deployment): State<DeploymentImpl>,
-    axum::extract::Path((_session_id, execution_id)): axum::extract::Path<(Uuid, Uuid)>,
-    Query(query): Query<WorkflowTranscriptQuery>,
+async fn list_transcript_response(
+    pool: &sqlx::SqlitePool,
+    session: &ChatSession,
+    execution_id: Uuid,
+    query: WorkflowTranscriptQuery,
 ) -> Result<Response, ApiError> {
-    let pool = &deployment.db().pool;
-
     let execution = WorkflowExecution::find_by_id(pool, execution_id)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Execution not found.".to_string()))?;
@@ -590,6 +902,16 @@ pub async fn get_transcripts(
         )),
     )
         .into_response())
+}
+
+pub async fn get_transcripts(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+    axum::extract::Path((_session_id, execution_id)): axum::extract::Path<(Uuid, Uuid)>,
+    Query(query): Query<WorkflowTranscriptQuery>,
+) -> Result<Response, ApiError> {
+    let pool = &deployment.db().pool;
+    list_transcript_response(pool, &session, execution_id, query).await
 }
 
 // -----------------------------------------------------------------------
