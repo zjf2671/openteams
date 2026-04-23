@@ -737,7 +737,7 @@ impl ChatRunner {
             .await?
             .ok_or_else(|| ChatRunnerError::SessionNotFound(session_id))?;
 
-        // Check for active executions
+        // Skip auto-regeneration if the session already has a running/completed execution.
         if !WorkflowExecution::find_active_by_session(pool, session_id)
             .await
             .unwrap_or_default()
@@ -745,7 +745,7 @@ impl ChatRunner {
         {
             tracing::warn!(
                 session_id = %session_id,
-                "[plan_generation] skipping: active execution already exists"
+                "[plan_generation] skipping: running or completed execution already exists"
             );
             return Ok(());
         }
@@ -803,6 +803,7 @@ impl ChatRunner {
             &session,
             lead_agent,
             lead_session_agent,
+            None,
             &prompt,
             Uuid::nil(),
         )

@@ -181,12 +181,6 @@ pub enum WorkflowAgentSessionState {
     #[serde(rename = "interrupt_requested")]
     InterruptRequested,
     Interrupted,
-    #[sqlx(rename = "waiting_input")]
-    #[serde(rename = "waiting_input")]
-    WaitingInput,
-    #[sqlx(rename = "waiting_approval")]
-    #[serde(rename = "waiting_approval")]
-    WaitingApproval,
     Paused,
     Completed,
     Failed,

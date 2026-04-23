@@ -176,7 +176,7 @@ export enum WorkflowEdgeKind { hard = "hard", soft = "soft" }
 
 export enum WorkflowAgentSessionRole { lead = "lead", worker = "worker", reviewer = "reviewer" }
 
-export enum WorkflowAgentSessionState { idle = "idle", running = "running", interrupt_requested = "interrupt_requested", interrupted = "interrupted", waiting_input = "waiting_input", waiting_approval = "waiting_approval", paused = "paused", completed = "completed", failed = "failed", expired = "expired" }
+export enum WorkflowAgentSessionState { idle = "idle", running = "running", interrupt_requested = "interrupt_requested", interrupted = "interrupted", paused = "paused", completed = "completed", failed = "failed", expired = "expired" }
 
 export enum WorkflowEventType { execution_created = "execution_created", execution_running = "execution_running", execution_failed = "execution_failed", execution_completed = "execution_completed", execution_paused = "execution_paused", execution_waiting = "execution_waiting", round_started = "round_started", round_result_ready = "round_result_ready", user_accepted = "user_accepted", user_rejected = "user_rejected", round_archived = "round_archived", plan_revision_created = "plan_revision_created", plan_recompiled = "plan_recompiled", step_status_changed = "step_status_changed", agent_session_state_changed = "agent_session_state_changed" }
 

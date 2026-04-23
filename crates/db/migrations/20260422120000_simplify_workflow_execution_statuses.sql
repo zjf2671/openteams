@@ -1,9 +1,10 @@
 -- Keep child workflow tables referencing `chat_workflow_executions` while we
--- rebuild the parent table. Without this, SQLite rewrites those foreign keys
--- to `chat_workflow_executions_old` during the rename and DROP then fails.
+-- rebuild the parent table. SQLite rewrites child foreign keys to the
+-- temporary table name during RENAME, so we normalize those references back to
+-- the canonical table name before the migration finishes.
 PRAGMA legacy_alter_table = ON;
 
-ALTER TABLE chat_workflow_executions RENAME TO chat_workflow_executions_old;
+ALTER TABLE chat_workflow_executions RENAME TO chat_workflow_executions_legacy;
 
 CREATE TABLE chat_workflow_executions (
     id                       BLOB    NOT NULL PRIMARY KEY,
@@ -69,9 +70,18 @@ SELECT
     completed_at,
     created_at,
     updated_at
-FROM chat_workflow_executions_old;
+FROM chat_workflow_executions_legacy;
 
-DROP TABLE chat_workflow_executions_old;
+DROP TABLE chat_workflow_executions_legacy;
+
+PRAGMA writable_schema = ON;
+
+UPDATE sqlite_schema
+SET sql = REPLACE(sql, '"chat_workflow_executions_legacy"', 'chat_workflow_executions')
+WHERE type = 'table'
+  AND sql LIKE '%"chat_workflow_executions_legacy"%';
+
+PRAGMA writable_schema = OFF;
 
 PRAGMA legacy_alter_table = OFF;
 

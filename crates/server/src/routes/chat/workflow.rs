@@ -56,7 +56,7 @@ pub async fn generate_plan_and_run(
 ) -> Result<Response, ApiError> {
     let pool = &deployment.db().pool;
 
-    if !WorkflowExecution::find_active_by_session(pool, session.id)
+    if !WorkflowExecution::find_non_terminal_by_session(pool, session.id)
         .await?
         .is_empty()
     {
@@ -133,6 +133,7 @@ pub async fn generate_plan_and_run(
         &session,
         lead_agent,
         lead_session_agent,
+        None,
         &prompt,
         uuid::Uuid::nil(),
     )
@@ -401,8 +402,8 @@ pub async fn pause_all(
 
     let execution =
         WorkflowOrchestrator::pause_all(deployment.chat_runner(), pool, payload.execution_id)
-    .await
-    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     Ok((
         StatusCode::OK,
@@ -450,8 +451,8 @@ pub async fn interrupt_step(
         payload.execution_id,
         payload.step_id,
     )
-        .await
-        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    .await
+    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     Ok((
         StatusCode::OK,
@@ -523,7 +524,7 @@ pub async fn submit_step_input(
     let (_step, _execution) = load_step_for_session(pool, &session, step_id).await?;
 
     let result = WorkflowOrchestrator::submit_step_input(
-        pool,
+        deployment.db(),
         deployment.chat_runner(),
         step_id,
         &payload.input_text,
@@ -566,14 +567,10 @@ pub async fn interrupt_step_by_step_id(
     let pool = &deployment.db().pool;
     let (_step, execution) = load_step_for_session(pool, &session, step_id).await?;
 
-    let step = WorkflowOrchestrator::interrupt_step(
-        deployment.chat_runner(),
-        pool,
-        execution.id,
-        step_id,
-    )
-        .await
-        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let step =
+        WorkflowOrchestrator::interrupt_step(deployment.chat_runner(), pool, execution.id, step_id)
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     Ok((
         StatusCode::OK,
@@ -594,14 +591,10 @@ pub async fn stop_step(
     let pool = &deployment.db().pool;
     let (_step, execution) = load_step_for_session(pool, &session, step_id).await?;
 
-    let step = WorkflowOrchestrator::interrupt_step(
-        deployment.chat_runner(),
-        pool,
-        execution.id,
-        step_id,
-    )
-        .await
-        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let step =
+        WorkflowOrchestrator::interrupt_step(deployment.chat_runner(), pool, execution.id, step_id)
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     Ok((
         StatusCode::OK,

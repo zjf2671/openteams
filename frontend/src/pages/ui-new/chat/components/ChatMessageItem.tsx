@@ -58,6 +58,7 @@ import {
   extractWorkflowCardProjection,
   type WorkflowCardProjection,
 } from './ChatWorkflowCard';
+import type { WorkflowFinalReviewActionData } from './WorkflowFinalReviewCard';
 
 const SUPPRESSED_PROTOCOL_ERROR_CODES = new Set([
   'invalid_json',
@@ -120,6 +121,13 @@ export interface ChatMessageItemProps {
   onResumeWorkflow?: (executionId: string) => void;
   onOpenWorkflowWindow?: (projection: unknown) => void;
   workflowCardProjection?: WorkflowCardProjection | null;
+  workflowFinalReviewAction?: WorkflowFinalReviewActionData | null;
+  onResolveWorkflowFinalReview?: (
+    executionId: string,
+    transcriptId: string,
+    action: 'accepted' | 'rejected'
+  ) => void;
+  pendingWorkflowActionId?: string | null;
 }
 
 export function ChatMessageItem({
@@ -149,6 +157,9 @@ export function ChatMessageItem({
   onResumeWorkflow,
   onOpenWorkflowWindow,
   workflowCardProjection: workflowCardProjectionOverride,
+  workflowFinalReviewAction,
+  onResolveWorkflowFinalReview,
+  pendingWorkflowActionId,
 }: ChatMessageItemProps) {
   const { t } = useTranslation('chat');
   const isUser = message.sender_type === ChatSenderType.user;
@@ -216,7 +227,8 @@ export function ChatMessageItem({
     : null;
   const protocolError = extractProtocolErrorMeta(message.meta);
   const workflowCardProjection =
-    workflowCardProjectionOverride ?? extractWorkflowCardProjection(message.meta);
+    workflowCardProjectionOverride ??
+    extractWorkflowCardProjection(message.meta);
   const errorInfo = extractErrorFromMeta(message.meta);
   const apiError =
     isAgent && !errorInfo
@@ -275,10 +287,7 @@ export function ChatMessageItem({
             </button>
           )}
           <div
-            className={cn(
-              'relative w-full',
-              isCleanupMode && 'cursor-pointer'
-            )}
+            className={cn('relative w-full', isCleanupMode && 'cursor-pointer')}
             onClick={handleCleanupCardClick}
             onKeyDown={handleCleanupCardKeyDown}
             role={isCleanupMode ? 'checkbox' : undefined}
@@ -291,10 +300,17 @@ export function ChatMessageItem({
               onExecute={onExecutePlan}
               onPauseAll={onPauseAll}
               onResume={onResumeWorkflow}
-              onOpenWindow={onOpenWorkflowWindow ? () => {
-                 const proj = workflowCardProjection;
-                 if (proj) onOpenWorkflowWindow(proj);
-               } : undefined}
+              finalReviewAction={workflowFinalReviewAction}
+              onResolveFinalReview={onResolveWorkflowFinalReview}
+              pendingActionId={pendingWorkflowActionId}
+              onOpenWindow={
+                onOpenWorkflowWindow
+                  ? () => {
+                      const proj = workflowCardProjection;
+                      if (proj) onOpenWorkflowWindow(proj);
+                    }
+                  : undefined
+              }
             />
           </div>
         </div>

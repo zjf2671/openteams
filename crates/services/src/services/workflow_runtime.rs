@@ -1,8 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use once_cell::sync::Lazy;
-
 use db::{
     DBService,
     models::{
@@ -34,7 +32,9 @@ use executors::{
     profile::{ExecutorConfigs, ExecutorProfileId, canonical_variant_key},
 };
 use futures::StreamExt;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use tokio::{fs, time};
 use tokio_util::io::ReaderStream;
 use ts_rs::TS;
@@ -283,7 +283,7 @@ pub fn build_plan_generation_prompt(
         "acceptance": ["optional string"],
         "outputs": ["optional string"],
         "interruptible": true,
-        "maxRetry": 1,
+        "maxRetry": 3,
         "status": "optional string"
       }
     }
@@ -308,7 +308,8 @@ pub fn build_plan_generation_prompt(
 }"#;
 
     let prompt = format!(
-        r#"你是当前 workflow mode 的 lead agent。你的任务是把方案计划`docs\openteams-integration-plan.md`解成一个可执行的 workflow plan。
+        r#"你是当前 workflow mode 的 lead agent。你需要先读取聊天记录，明确任务计划（如果没找见，让用户补充）。
+        你的任务是把当前拟定的方案计划解成一个可执行的 workflow plan。
 
 你必须输出符合系统 schema 的 workflow JSON，用于后续编译和执行。计划真相源是 React Flow 兼容 JSON，而不是自然语言、YAML 或 Markdown。
 
@@ -689,12 +690,72 @@ pub fn build_workflow_card_projection(
 }
 
 pub async fn run_workflow_agent_prompt(
-    _db: &DBService,
+    db: &DBService,
     session: &ChatSession,
     agent: &ChatAgent,
     session_agent: &ChatSessionAgent,
+    workflow_session: Option<&WorkflowAgentSession>,
     prompt: &str,
     step_id: Uuid,
+) -> Result<String, WorkflowRuntimeError> {
+    run_workflow_agent_prompt_inner(
+        db,
+        session,
+        agent,
+        session_agent,
+        workflow_session,
+        prompt,
+        step_id,
+        None,
+        None,
+    )
+    .await
+}
+
+pub async fn run_workflow_agent_follow_up(
+    db: &DBService,
+    session: &ChatSession,
+    agent: &ChatAgent,
+    session_agent: &ChatSessionAgent,
+    workflow_session: &WorkflowAgentSession,
+    prompt: &str,
+    step_id: Uuid,
+) -> Result<String, WorkflowRuntimeError> {
+    let resume_session_id = workflow_session
+        .agent_session_id
+        .as_deref()
+        .or(session_agent.agent_session_id.as_deref())
+        .ok_or_else(|| {
+            WorkflowRuntimeError::Validation(format!(
+                "workflow session {} missing persisted agent session id",
+                workflow_session.id
+            ))
+        })?;
+
+    run_workflow_agent_prompt_inner(
+        db,
+        session,
+        agent,
+        session_agent,
+        Some(workflow_session),
+        prompt,
+        step_id,
+        Some(resume_session_id),
+        workflow_session.agent_message_id.as_deref(),
+    )
+    .await
+}
+
+async fn run_workflow_agent_prompt_inner(
+    db: &DBService,
+    session: &ChatSession,
+    agent: &ChatAgent,
+    session_agent: &ChatSessionAgent,
+    workflow_session: Option<&WorkflowAgentSession>,
+    prompt: &str,
+    step_id: Uuid,
+    resume_session_id: Option<&str>,
+    reset_to_message_id: Option<&str>,
 ) -> Result<String, WorkflowRuntimeError> {
     let workspace_path = resolve_workspace_path(session, agent, session_agent);
     fs::create_dir_all(&workspace_path).await?;
@@ -716,9 +777,24 @@ pub async fn run_workflow_agent_prompt(
     env.insert("VK_WORKFLOW_AGENT_ID", agent.id.to_string());
     env.insert("VK_WORKFLOW_SESSION_AGENT_ID", session_agent.id.to_string());
 
-    let mut spawned = executor
-        .spawn(workspace_path.as_path(), prompt, &env)
-        .await?;
+    let mut spawned = match resume_session_id {
+        Some(session_id) => {
+            executor
+                .spawn_follow_up(
+                    workspace_path.as_path(),
+                    prompt,
+                    session_id,
+                    reset_to_message_id,
+                    &env,
+                )
+                .await?
+        }
+        None => {
+            executor
+                .spawn(workspace_path.as_path(), prompt, &env)
+                .await?
+        }
+    };
 
     // Register the cancel token so interrupt_step can terminate this process.
     if let Some(cancel) = spawned.cancel.clone() {
@@ -809,12 +885,75 @@ pub async fn run_workflow_agent_prompt(
         )));
     }
 
-    extract_latest_assistant_from_history(&msg_store.get_history()).ok_or_else(|| {
+    let history = msg_store.get_history();
+    persist_workflow_runtime_session_ids(&db.pool, session_agent.id, workflow_session, &history)
+        .await?;
+    extract_latest_assistant_from_history(&history).ok_or_else(|| {
         WorkflowRuntimeError::Validation(format!(
             "workflow agent '{}' 没有返回 assistant 输出",
             agent.name
         ))
     })
+}
+
+fn latest_agent_runtime_ids(history: &[LogMsg]) -> (Option<String>, Option<String>) {
+    let mut agent_session_id = None;
+    let mut agent_message_id = None;
+
+    for entry in history {
+        match entry {
+            LogMsg::SessionId(value) => agent_session_id = Some(value.clone()),
+            LogMsg::MessageId(value) => agent_message_id = Some(value.clone()),
+            _ => {}
+        }
+    }
+
+    (agent_session_id, agent_message_id)
+}
+
+async fn persist_workflow_runtime_session_ids(
+    pool: &SqlitePool,
+    session_agent_id: Uuid,
+    workflow_session: Option<&WorkflowAgentSession>,
+    history: &[LogMsg],
+) -> Result<(), WorkflowRuntimeError> {
+    let (agent_session_id, agent_message_id) = latest_agent_runtime_ids(history);
+
+    if let Some(agent_session_id) = agent_session_id {
+        ChatSessionAgent::update_agent_session_id(
+            pool,
+            session_agent_id,
+            Some(agent_session_id.clone()),
+        )
+        .await?;
+        if let Some(workflow_session) = workflow_session {
+            WorkflowAgentSession::update_agent_session_id(
+                pool,
+                workflow_session.id,
+                Some(agent_session_id),
+            )
+            .await?;
+        }
+    }
+
+    if let Some(agent_message_id) = agent_message_id {
+        ChatSessionAgent::update_agent_message_id(
+            pool,
+            session_agent_id,
+            Some(agent_message_id.clone()),
+        )
+        .await?;
+        if let Some(workflow_session) = workflow_session {
+            WorkflowAgentSession::update_agent_message_id(
+                pool,
+                workflow_session.id,
+                Some(agent_message_id),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn overlay_step_statuses(

@@ -24,7 +24,9 @@ use serde::Deserialize;
 use services::services::{
     analytics_events::{AnalyticsProjector, DomainEvent},
     chat::{ChatAttachmentMeta, extract_attachments},
-    workflow_runtime::{WorkflowCardProjection, WorkflowCardState, WorkflowCardStep, build_workflow_card_projection},
+    workflow_runtime::{
+        WorkflowCardProjection, WorkflowCardState, WorkflowCardStep, build_workflow_card_projection,
+    },
 };
 use tokio::{fs, fs::File};
 use tokio_util::io::ReaderStream;
@@ -469,7 +471,9 @@ async fn build_plan_workflow_card_projection(
     let agent_views = session_agents
         .iter()
         .filter_map(|session_agent| {
-            let agent = agents.iter().find(|item| item.id == session_agent.agent_id)?;
+            let agent = agents
+                .iter()
+                .find(|item| item.id == session_agent.agent_id)?;
             Some(services::services::workflow_runtime::WorkflowCardAgent {
                 session_agent_id: session_agent.id.to_string(),
                 workflow_agent_session_id: None,

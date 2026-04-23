@@ -10,6 +10,7 @@ use utils::assets::asset_dir;
 pub mod models;
 
 const WORKFLOW_EXECUTION_STATUS_MIGRATION_VERSION: i64 = 20260422120000;
+const WORKFLOW_AGENT_SESSION_STATE_MIGRATION_VERSION: i64 = 20260423100000;
 
 async fn apply_workflow_execution_status_migration_shim(
     pool: &Pool<Sqlite>,
@@ -366,8 +367,8 @@ async fn apply_workflow_execution_status_migration_shim(
                 state                   TEXT    NOT NULL DEFAULT 'idle'
                                                 CHECK (state IN (
                                                     'idle', 'running', 'interrupt_requested',
-                                                    'interrupted', 'waiting_input', 'waiting_approval',
-                                                    'paused', 'completed', 'failed', 'expired'
+                                                    'interrupted', 'paused', 'completed',
+                                                    'failed', 'expired'
                                                 )),
                 created_at              TEXT    NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at              TEXT    NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -384,7 +385,13 @@ async fn apply_workflow_execution_status_migration_shim(
             )
             SELECT
                 id, workflow_execution_id, session_agent_id, role, agent_session_id,
-                agent_message_id, state, created_at, updated_at
+                agent_message_id,
+                CASE
+                    WHEN state IN ('waiting_input', 'waiting_approval') THEN 'paused'
+                    ELSE state
+                END,
+                created_at,
+                updated_at
             FROM chat_workflow_agent_sessions_old
             "#,
         )
@@ -583,11 +590,203 @@ async fn apply_workflow_execution_status_migration_shim(
     result
 }
 
+async fn apply_workflow_agent_session_state_migration_shim(
+    pool: &Pool<Sqlite>,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<(), Error> {
+    let Some(migration) = migrator
+        .iter()
+        .find(|migration| migration.version == WORKFLOW_AGENT_SESSION_STATE_MIGRATION_VERSION)
+    else {
+        return Ok(());
+    };
+
+    let migrations_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if migrations_table_exists == 0 {
+        return Ok(());
+    }
+
+    let already_applied = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?1 AND success = 1",
+    )
+    .bind(WORKFLOW_AGENT_SESSION_STATE_MIGRATION_VERSION)
+    .fetch_one(pool)
+    .await?;
+    if already_applied > 0 {
+        return Ok(());
+    }
+
+    let agent_sessions_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chat_workflow_agent_sessions'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if agent_sessions_table_exists == 0 {
+        return Ok(());
+    }
+
+    let mut conn = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("PRAGMA legacy_alter_table = ON")
+        .execute(&mut *conn)
+        .await?;
+
+    let result = async {
+        let old_table_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chat_workflow_agent_sessions_old'",
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+
+        if old_table_exists > 0 {
+            sqlx::query("DROP TABLE IF EXISTS chat_workflow_agent_sessions")
+                .execute(&mut *conn)
+                .await?;
+        } else {
+            sqlx::query(
+                "ALTER TABLE chat_workflow_agent_sessions RENAME TO chat_workflow_agent_sessions_old",
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+
+        sqlx::query(
+            r#"
+            CREATE TABLE chat_workflow_agent_sessions (
+                id                      BLOB    NOT NULL PRIMARY KEY,
+                workflow_execution_id   BLOB    NOT NULL REFERENCES chat_workflow_executions(id),
+                session_agent_id        BLOB    NOT NULL,
+                role                    TEXT    NOT NULL DEFAULT 'worker'
+                                                CHECK (role IN ('lead', 'worker', 'reviewer')),
+                agent_session_id        TEXT,
+                agent_message_id        TEXT,
+                state                   TEXT    NOT NULL DEFAULT 'idle'
+                                                CHECK (state IN (
+                                                    'idle', 'running', 'interrupt_requested',
+                                                    'interrupted', 'paused', 'completed',
+                                                    'failed', 'expired'
+                                                )),
+                created_at              TEXT    NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at              TEXT    NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO chat_workflow_agent_sessions (
+                id, workflow_execution_id, session_agent_id, role, agent_session_id,
+                agent_message_id, state, created_at, updated_at
+            )
+            SELECT
+                id, workflow_execution_id, session_agent_id, role, agent_session_id,
+                agent_message_id,
+                CASE
+                    WHEN state IN ('waiting_input', 'waiting_approval') THEN 'paused'
+                    ELSE state
+                END,
+                created_at,
+                updated_at
+            FROM chat_workflow_agent_sessions_old old
+            WHERE EXISTS (
+                SELECT 1
+                FROM chat_workflow_executions exec
+                WHERE exec.id = old.workflow_execution_id
+            )
+            "#,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM chat_workflow_transcripts
+            WHERE workflow_agent_session_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM chat_workflow_agent_sessions s
+                  WHERE s.id = chat_workflow_transcripts.workflow_agent_session_id
+              )
+            "#,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query("DROP TABLE chat_workflow_agent_sessions_old")
+            .execute(&mut *conn)
+            .await?;
+
+        sqlx::query("PRAGMA legacy_alter_table = OFF")
+            .execute(&mut *conn)
+            .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_agent_sessions_execution_id ON chat_workflow_agent_sessions(workflow_execution_id)",
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_agent_sessions_state ON chat_workflow_agent_sessions(state)",
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO _sqlx_migrations (
+                version,
+                description,
+                success,
+                checksum,
+                execution_time
+            )
+            VALUES (?1, ?2, 1, ?3, 0)
+            "#,
+        )
+        .bind(migration.version)
+        .bind(migration.description.clone())
+        .bind(&*migration.checksum)
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await?;
+
+        let fk_violations = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(&mut *conn)
+            .await?;
+        if fk_violations > 0 {
+            return Err(Error::Protocol(
+                "workflow agent session state migration shim left foreign key violations".into(),
+            ));
+        }
+
+        Ok::<(), Error>(())
+    }
+    .await;
+
+    let _ = sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *conn)
+        .await;
+
+    result
+}
+
 async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
     use std::collections::HashSet;
 
     let migrator = sqlx::migrate!("./migrations");
     apply_workflow_execution_status_migration_shim(pool, &migrator).await?;
+    apply_workflow_agent_session_state_migration_shim(pool, &migrator).await?;
     let mut processed_versions: HashSet<i64> = HashSet::new();
 
     loop {

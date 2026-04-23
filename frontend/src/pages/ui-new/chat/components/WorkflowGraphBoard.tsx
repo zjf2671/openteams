@@ -1,5 +1,9 @@
-import { useMemo } from 'react';
-import { ArrowClockwiseIcon, RobotIcon, SparkleIcon } from '@phosphor-icons/react';
+import { useMemo, useState } from 'react';
+import {
+  ArrowClockwiseIcon,
+  RobotIcon,
+  SparkleIcon,
+} from '@phosphor-icons/react';
 import { cn } from '@/lib/utils';
 
 type WorkflowGraphStep = {
@@ -47,6 +51,13 @@ type LayoutNode = WorkflowGraphNode & {
   y: number;
   rank: number;
   order: number;
+};
+
+type RenderEdge = {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  path: string;
 };
 
 function statusTone(status?: string | null, selected?: boolean) {
@@ -121,6 +132,7 @@ function layoutGraph(
   const verticalGap = compact ? 24 : 30;
   const paddingX = compact ? 28 : 40;
   const paddingY = compact ? 28 : 40;
+  const verticalScale = 2;
 
   const sortedNodes = [...nodes].sort(
     (left, right) =>
@@ -128,7 +140,9 @@ function layoutGraph(
       left.position.y - right.position.y ||
       left.id.localeCompare(right.id)
   );
-  const originalOrder = new Map(sortedNodes.map((node, index) => [node.id, index]));
+  const originalOrder = new Map(
+    sortedNodes.map((node, index) => [node.id, index])
+  );
   const stepByKey = new Map(steps.map((step) => [step.step_key, step]));
   const incoming = new Map<string, string[]>();
   const outgoing = new Map<string, string[]>();
@@ -152,7 +166,10 @@ function layoutGraph(
   const queue = sortedNodes
     .filter((node) => (indegree.get(node.id) ?? 0) === 0)
     .map((node) => node.id);
-  queue.sort((left, right) => (originalOrder.get(left) ?? 0) - (originalOrder.get(right) ?? 0));
+  queue.sort(
+    (left, right) =>
+      (originalOrder.get(left) ?? 0) - (originalOrder.get(right) ?? 0)
+  );
 
   const topo: string[] = [];
   while (queue.length > 0) {
@@ -167,7 +184,8 @@ function layoutGraph(
       if (nextIndegree === 0) {
         queue.push(targetId);
         queue.sort(
-          (left, right) => (originalOrder.get(left) ?? 0) - (originalOrder.get(right) ?? 0)
+          (left, right) =>
+            (originalOrder.get(left) ?? 0) - (originalOrder.get(right) ?? 0)
         );
       }
     }
@@ -207,16 +225,23 @@ function layoutGraph(
       const rightIncoming = incoming.get(right) ?? [];
       const leftScore =
         leftIncoming.length > 0
-          ? leftIncoming.reduce((sum, item) => sum + (orderById.get(item) ?? 0), 0) /
-            leftIncoming.length
-          : originalOrder.get(left) ?? 0;
+          ? leftIncoming.reduce(
+              (sum, item) => sum + (orderById.get(item) ?? 0),
+              0
+            ) / leftIncoming.length
+          : (originalOrder.get(left) ?? 0);
       const rightScore =
         rightIncoming.length > 0
-          ? rightIncoming.reduce((sum, item) => sum + (orderById.get(item) ?? 0), 0) /
-            rightIncoming.length
-          : originalOrder.get(right) ?? 0;
+          ? rightIncoming.reduce(
+              (sum, item) => sum + (orderById.get(item) ?? 0),
+              0
+            ) / rightIncoming.length
+          : (originalOrder.get(right) ?? 0);
 
-      return leftScore - rightScore || (originalOrder.get(left) ?? 0) - (originalOrder.get(right) ?? 0);
+      return (
+        leftScore - rightScore ||
+        (originalOrder.get(left) ?? 0) - (originalOrder.get(right) ?? 0)
+      );
     });
 
     group.forEach((nodeId, index) => {
@@ -225,15 +250,21 @@ function layoutGraph(
     groups.set(rank, group);
   }
 
-  const maxRankSize = Math.max(...[...groups.values()].map((group) => group.length));
-  const totalHeight = paddingY * 2 + maxRankSize * cardHeight + Math.max(maxRankSize - 1, 0) * verticalGap;
+  const maxRankSize = Math.max(
+    ...[...groups.values()].map((group) => group.length)
+  );
+  const totalHeight =
+    paddingY * 2 +
+    maxRankSize * cardHeight +
+    Math.max(maxRankSize - 1, 0) * verticalGap;
 
   const layoutNodes: LayoutNode[] = topo.map((nodeId) => {
     const node = sortedNodes.find((item) => item.id === nodeId)!;
     const rank = rankById.get(nodeId) ?? 0;
     const group = groups.get(rank) ?? [];
     const order = group.indexOf(nodeId);
-    const groupHeight = group.length * cardHeight + Math.max(group.length - 1, 0) * verticalGap;
+    const groupHeight =
+      group.length * cardHeight + Math.max(group.length - 1, 0) * verticalGap;
     const topOffset = paddingY + (totalHeight - paddingY * 2 - groupHeight) / 2;
 
     return {
@@ -242,20 +273,70 @@ function layoutGraph(
       rank,
       order,
       x: paddingX + rank * (cardWidth + horizontalGap),
-      y: topOffset + order * (cardHeight + verticalGap),
+      y: (topOffset + order * (cardHeight + verticalGap)) * verticalScale,
     };
   });
 
   const maxRank = Math.max(...layoutNodes.map((node) => node.rank));
-  const totalWidth = paddingX * 2 + (maxRank + 1) * cardWidth + maxRank * horizontalGap;
+  const totalWidth =
+    paddingX * 2 + (maxRank + 1) * cardWidth + maxRank * horizontalGap;
 
   return {
     nodes: layoutNodes,
     width: totalWidth,
-    height: totalHeight,
+    height: totalHeight * verticalScale,
     cardWidth,
     cardHeight,
   };
+}
+
+function buildSmoothStepPath({
+  x1,
+  y1,
+  x2,
+  y2,
+  laneOffset,
+  compact,
+}: {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  laneOffset: number;
+  compact: boolean;
+}) {
+  if (Math.abs(y2 - y1) < 1) {
+    return `M ${x1} ${y1} L ${x2} ${y2}`;
+  }
+
+  const turnPadding = compact ? 22 : 28;
+  const controlX = x1 + (x2 - x1) / 2 + laneOffset;
+  const minX = x1 + turnPadding;
+  const maxX = x2 - turnPadding;
+  const midX = Math.min(maxX, Math.max(minX, controlX));
+  const radius = Math.max(
+    0,
+    Math.min(
+      compact ? 10 : 14,
+      Math.abs(y2 - y1) / 2,
+      Math.abs(x2 - x1) / 2 - 4
+    )
+  );
+
+  if (midX <= minX || midX >= maxX || radius <= 0) {
+    const curveOffset = Math.max((x2 - x1) / 2, compact ? 36 : 48);
+    return `M ${x1} ${y1} C ${x1 + curveOffset} ${y1}, ${x2 - curveOffset} ${y2}, ${x2} ${y2}`;
+  }
+
+  const directionY = y2 > y1 ? 1 : -1;
+  return [
+    `M ${x1} ${y1}`,
+    `L ${midX - radius} ${y1}`,
+    `Q ${midX} ${y1} ${midX} ${y1 + directionY * radius}`,
+    `L ${midX} ${y2 - directionY * radius}`,
+    `Q ${midX} ${y2} ${midX + radius} ${y2}`,
+    `L ${x2} ${y2}`,
+  ].join(' ');
 }
 
 export function WorkflowGraphBoard({
@@ -268,6 +349,7 @@ export function WorkflowGraphBoard({
   compact = false,
   className,
 }: WorkflowGraphBoardProps) {
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const layout = useMemo(
     () => layoutGraph(nodes, edges, steps, compact),
     [compact, edges, nodes, steps]
@@ -277,7 +359,65 @@ export function WorkflowGraphBoard({
     return null;
   }
 
-  const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  const nodeById = useMemo(
+    () => new Map(layout.nodes.map((node) => [node.id, node])),
+    [layout.nodes]
+  );
+  const emphasizedNodeId = hoveredNodeId ?? selectedStepId ?? null;
+  const renderedEdges = useMemo<RenderEdge[]>(() => {
+    const groupedEdges = new Map<
+      string,
+      Array<{ edge: WorkflowGraphEdge; source: LayoutNode; target: LayoutNode }>
+    >();
+
+    for (const edge of edges) {
+      const source = nodeById.get(edge.source);
+      const target = nodeById.get(edge.target);
+      if (!source || !target) {
+        continue;
+      }
+
+      const groupKey = `${source.rank}-${target.rank}`;
+      const group = groupedEdges.get(groupKey) ?? [];
+      group.push({ edge, source, target });
+      groupedEdges.set(groupKey, group);
+    }
+
+    const next: RenderEdge[] = [];
+    for (const group of groupedEdges.values()) {
+      group.sort(
+        (left, right) =>
+          left.source.order - right.source.order ||
+          left.target.order - right.target.order ||
+          left.edge.id.localeCompare(right.edge.id)
+      );
+
+      group.forEach(({ edge, source, target }, index) => {
+        const x1 = source.x + layout.cardWidth;
+        const y1 = source.y + layout.cardHeight / 2;
+        const x2 = target.x;
+        const y2 = target.y + layout.cardHeight / 2;
+        const laneOffset =
+          (index - (group.length - 1) / 2) * (compact ? 12 : 16);
+
+        next.push({
+          id: edge.id,
+          sourceId: edge.source,
+          targetId: edge.target,
+          path: buildSmoothStepPath({
+            x1,
+            y1,
+            x2,
+            y2,
+            laneOffset,
+            compact,
+          }),
+        });
+      });
+    }
+
+    return next;
+  }, [compact, edges, layout, nodeById]);
 
   return (
     <div
@@ -296,41 +436,47 @@ export function WorkflowGraphBoard({
           height={layout.height}
           viewBox={`0 0 ${layout.width} ${layout.height}`}
         >
-          <defs>
-            <linearGradient id="workflow-edge-gradient" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#94A3B8" stopOpacity="0.45" />
-              <stop offset="100%" stopColor="#CBD5E1" stopOpacity="0.9" />
-            </linearGradient>
-          </defs>
-          {edges.map((edge) => {
-            const source = nodeById.get(edge.source);
-            const target = nodeById.get(edge.target);
-            if (!source || !target) {
-              return null;
-            }
-
-            const x1 = source.x + layout.cardWidth;
-            const y1 = source.y + layout.cardHeight / 2;
-            const x2 = target.x;
-            const y2 = target.y + layout.cardHeight / 2;
-            const controlOffset = Math.max((x2 - x1) / 2, compact ? 36 : 48);
-
+          {renderedEdges.map((edge) => {
+            const isHighlighted =
+              !!emphasizedNodeId &&
+              (edge.sourceId === emphasizedNodeId ||
+                edge.targetId === emphasizedNodeId);
             return (
-              <path
-                key={edge.id}
-                d={`M ${x1} ${y1} C ${x1 + controlOffset} ${y1}, ${x2 - controlOffset} ${y2}, ${x2} ${y2}`}
-                fill="none"
-                stroke="url(#workflow-edge-gradient)"
-                strokeWidth={compact ? '2' : '2.5'}
-                strokeDasharray={compact ? '6 5' : '7 6'}
-              />
+              <g key={edge.id}>
+                <path
+                  d={edge.path}
+                  fill="none"
+                  stroke={
+                    isHighlighted
+                      ? 'rgba(37,99,235,0.22)'
+                      : 'rgba(148,163,184,0.14)'
+                  }
+                  strokeWidth={compact ? 8 : 10}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d={edge.path}
+                  fill="none"
+                  stroke={isHighlighted ? '#2563EB' : '#94A3B8'}
+                  strokeWidth={
+                    isHighlighted ? (compact ? 3 : 3.5) : compact ? 2.25 : 2.75
+                  }
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={isHighlighted ? 1 : 0.88}
+                />
+              </g>
             );
           })}
         </svg>
 
         {layout.nodes.map((node) => {
           const step = node.step;
-          const tone = statusTone(step?.status ?? node.data.status, node.id === selectedStepId);
+          const tone = statusTone(
+            step?.status ?? node.data.status,
+            node.id === selectedStepId
+          );
           const summary = step?.summary_text?.trim() || 'Summary pending';
           const agentName = step?.agent_name?.trim() || 'Lead';
           const showRetry = step?.status === 'failed' && !!onRetryStep;
@@ -350,12 +496,23 @@ export function WorkflowGraphBoard({
                   onSelectStep(node.id);
                 }
               }}
+              onMouseEnter={() => setHoveredNodeId(node.id)}
+              onMouseLeave={() =>
+                setHoveredNodeId((prev) => (prev === node.id ? null : prev))
+              }
+              onFocus={() => setHoveredNodeId(node.id)}
+              onBlur={() =>
+                setHoveredNodeId((prev) => (prev === node.id ? null : prev))
+              }
               className={cn(
                 'absolute flex flex-col rounded-[26px] border bg-white/92 text-left transition-all duration-200 hover:-translate-y-0.5 hover:bg-white dark:bg-[rgba(15,23,42,0.92)] dark:hover:bg-[rgba(15,23,42,0.98)]',
-                compact ? 'h-[138px] w-[212px] p-3.5' : 'h-[156px] w-[232px] p-4',
+                compact
+                  ? 'h-[138px] w-[212px] p-3.5'
+                  : 'h-[156px] w-[232px] p-4',
                 onSelectStep && 'cursor-pointer',
                 tone.glow,
-                node.id === selectedStepId && 'ring-2 ring-[#60A5FA]/70'
+                (node.id === selectedStepId || node.id === hoveredNodeId) &&
+                  'ring-2 ring-[#60A5FA]/70'
               )}
               style={{
                 left: node.x,
@@ -383,7 +540,12 @@ export function WorkflowGraphBoard({
                 </span>
               </div>
 
-              <div className={cn('mt-3 text-xs leading-5 text-[#475569] dark:text-[#CBD5E1]', compact ? 'line-clamp-3' : 'line-clamp-4')}>
+              <div
+                className={cn(
+                  'mt-3 text-xs leading-5 text-[#475569] dark:text-[#CBD5E1]',
+                  compact ? 'line-clamp-3' : 'line-clamp-4'
+                )}
+              >
                 {summary}
               </div>
 
@@ -416,7 +578,7 @@ export function WorkflowGraphBoard({
                 ) : (
                   <div className="inline-flex items-center gap-1 rounded-full bg-[#F8FAFC] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-[#64748B] dark:bg-[rgba(30,41,59,0.88)] dark:text-[#CBD5E1]">
                     <SparkleIcon className="size-3" weight="fill" />
-                    {node.id === selectedStepId ? 'Focused' : 'Open'}
+                    {node.id === selectedStepId ? 'Selected' : 'Details'}
                   </div>
                 )}
               </div>

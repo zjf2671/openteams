@@ -154,14 +154,15 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/", get(agents::get_agents).post(agents::create_agent))
         .nest("/{agent_id}", agent_router);
 
-    let messages_router = Router::new().route(
-        "/{message_id}",
-        get(messages::get_message).delete(messages::delete_message),
-    )
-    .route(
-        "/{message_id}/workflow-card",
-        get(messages::get_workflow_card),
-    );
+    let messages_router = Router::new()
+        .route(
+            "/{message_id}",
+            get(messages::get_message).delete(messages::delete_message),
+        )
+        .route(
+            "/{message_id}/workflow-card",
+            get(messages::get_workflow_card),
+        );
 
     // Skill CRUD routes
     let skills_router = Router::new()

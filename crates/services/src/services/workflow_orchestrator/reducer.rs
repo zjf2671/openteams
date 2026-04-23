@@ -97,7 +97,8 @@ pub fn derive_execution_status(
     }
 
     if step_statuses.iter().all(is_step_completed_like) {
-        return E::Completed;
+        // All steps done → Waiting for user final review, not auto-complete.
+        return E::Waiting;
     }
 
     if step_statuses
@@ -112,9 +113,9 @@ pub fn derive_execution_status(
     }
 
     if step_statuses.iter().any(is_step_waiting)
-        && step_statuses
-            .iter()
-            .all(|status| is_step_waiting(status) || is_step_completed_like(status))
+        && step_statuses.iter().all(|status| {
+            is_step_waiting(status) || is_step_completed_like(status) || is_step_ready_like(status)
+        })
     {
         return E::Waiting;
     }
@@ -150,18 +151,13 @@ pub fn derive_agent_session_state(
         return A::Running;
     }
 
-    if step_statuses
-        .iter()
-        .any(|status| matches!(status, WorkflowStepStatus::WaitingInput))
-    {
-        return A::WaitingInput;
-    }
-
-    if step_statuses
-        .iter()
-        .any(|status| matches!(status, WorkflowStepStatus::WaitingReview))
-    {
-        return A::WaitingApproval;
+    if step_statuses.iter().any(|status| {
+        matches!(
+            status,
+            WorkflowStepStatus::WaitingInput | WorkflowStepStatus::WaitingReview
+        )
+    }) {
+        return A::Paused;
     }
 
     if step_statuses.iter().any(is_step_failed_like) {
@@ -180,8 +176,7 @@ fn is_agent_session_derived_state(state: &WorkflowAgentSessionState) -> bool {
         state,
         WorkflowAgentSessionState::Idle
             | WorkflowAgentSessionState::Running
-            | WorkflowAgentSessionState::WaitingInput
-            | WorkflowAgentSessionState::WaitingApproval
+            | WorkflowAgentSessionState::Paused
             | WorkflowAgentSessionState::Failed
             | WorkflowAgentSessionState::Completed
     )
@@ -198,7 +193,10 @@ pub fn validate_execution_transition(
     use WorkflowExecutionStatus::*;
 
     let allowed = match from {
-        Pending => matches!(to, Running | Failed | Paused | Recompiling | Completed | Waiting),
+        Pending => matches!(
+            to,
+            Running | Failed | Paused | Recompiling | Completed | Waiting
+        ),
         Running => matches!(to, Failed | Paused | Recompiling | Completed | Waiting),
         Failed => matches!(to, Running | Paused | Recompiling | Waiting),
         Paused => matches!(to, Running | Failed | Recompiling | Completed | Waiting),
@@ -241,7 +239,8 @@ pub fn validate_step_transition(
         Interrupted => matches!(to, Failed | Cancelled),
         Blocked => matches!(to, Ready | Cancelled),
         Failed => matches!(to, Ready),
-        Completed | Skipped | Cancelled => false,
+        Completed => matches!(to, Ready),
+        Skipped | Cancelled => false,
     };
 
     if allowed {
@@ -294,10 +293,21 @@ pub fn validate_step_in_execution(
         E::Pending => matches!(step_status, S::Pending | S::Ready | S::Blocked),
         E::Running => true,
         E::Failed => !matches!(step_status, S::Running),
-        E::Paused => matches!(step_status, S::Pending | S::Ready | S::Blocked | S::Completed),
+        E::Paused => matches!(
+            step_status,
+            S::Pending | S::Ready | S::Blocked | S::Completed
+        ),
         E::Recompiling => !matches!(step_status, S::Running),
         E::Completed => matches!(step_status, S::Completed | S::Skipped | S::Cancelled),
-        E::Waiting => matches!(step_status, S::WaitingInput | S::WaitingReview | S::Completed),
+        E::Waiting => matches!(
+            step_status,
+            S::WaitingInput
+                | S::WaitingReview
+                | S::Ready
+                | S::Completed
+                | S::Skipped
+                | S::Cancelled
+        ),
     }
 }
 
@@ -312,27 +322,19 @@ pub fn validate_agent_session_in_execution(
         E::Pending => matches!(session_state, A::Idle),
         E::Running => matches!(
             session_state,
-            A::Idle
-                | A::Running
-                | A::WaitingInput
-                | A::WaitingApproval
-                | A::Completed
-                | A::Failed
+            A::Idle | A::Running | A::Paused | A::Completed | A::Failed
         ),
         E::Failed => matches!(
             session_state,
-            A::Idle | A::WaitingInput | A::WaitingApproval | A::Completed | A::Failed
+            A::Idle | A::Paused | A::Completed | A::Failed
         ),
-        E::Paused => matches!(session_state, A::Idle | A::Completed),
+        E::Paused => matches!(session_state, A::Idle | A::Completed | A::Paused),
         E::Recompiling => matches!(
             session_state,
-            A::Idle | A::WaitingInput | A::WaitingApproval | A::Completed | A::Failed
+            A::Idle | A::Paused | A::Completed | A::Failed
         ),
         E::Completed => matches!(session_state, A::Idle | A::Completed | A::Expired),
-        E::Waiting => matches!(
-            session_state,
-            A::Idle | A::WaitingInput | A::WaitingApproval | A::Completed
-        ),
+        E::Waiting => matches!(session_state, A::Idle | A::Paused | A::Completed),
     }
 }
 
@@ -684,14 +686,14 @@ mod tests {
                 &WorkflowAgentSessionState::Idle,
                 &[WorkflowStepStatus::WaitingInput],
             ),
-            WorkflowAgentSessionState::WaitingInput
+            WorkflowAgentSessionState::Paused
         );
         assert_eq!(
             derive_agent_session_state(
                 &WorkflowAgentSessionState::Idle,
                 &[WorkflowStepStatus::WaitingReview],
             ),
-            WorkflowAgentSessionState::WaitingApproval
+            WorkflowAgentSessionState::Paused
         );
         assert_eq!(
             derive_agent_session_state(
@@ -718,36 +720,48 @@ mod tests {
 
     #[test]
     fn agent_session_transition_matrix_follows_derived_states() {
-        assert!(validate_agent_session_transition(
-            &WorkflowAgentSessionState::Idle,
-            &WorkflowAgentSessionState::WaitingApproval,
-        )
-        .is_ok());
-        assert!(validate_agent_session_transition(
-            &WorkflowAgentSessionState::Failed,
-            &WorkflowAgentSessionState::WaitingInput,
-        )
-        .is_ok());
-        assert!(validate_agent_session_transition(
-            &WorkflowAgentSessionState::Interrupted,
-            &WorkflowAgentSessionState::Completed,
-        )
-        .is_ok());
-        assert!(validate_agent_session_transition(
-            &WorkflowAgentSessionState::Running,
-            &WorkflowAgentSessionState::Paused,
-        )
-        .is_err());
-        assert!(validate_agent_session_transition(
-            &WorkflowAgentSessionState::Completed,
-            &WorkflowAgentSessionState::Completed,
-        )
-        .is_err());
-        assert!(validate_agent_session_transition(
-            &WorkflowAgentSessionState::Expired,
-            &WorkflowAgentSessionState::Idle,
-        )
-        .is_err());
+        assert!(
+            validate_agent_session_transition(
+                &WorkflowAgentSessionState::Idle,
+                &WorkflowAgentSessionState::Paused,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_agent_session_transition(
+                &WorkflowAgentSessionState::Failed,
+                &WorkflowAgentSessionState::Paused,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_agent_session_transition(
+                &WorkflowAgentSessionState::Interrupted,
+                &WorkflowAgentSessionState::Completed,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_agent_session_transition(
+                &WorkflowAgentSessionState::Running,
+                &WorkflowAgentSessionState::Paused,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_agent_session_transition(
+                &WorkflowAgentSessionState::Completed,
+                &WorkflowAgentSessionState::Completed,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_agent_session_transition(
+                &WorkflowAgentSessionState::Expired,
+                &WorkflowAgentSessionState::Idle,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -774,7 +788,7 @@ mod tests {
     fn execution_agent_compatibility_matches_new_rules() {
         assert!(validate_agent_session_in_execution(
             &WorkflowExecutionStatus::Waiting,
-            &WorkflowAgentSessionState::WaitingApproval,
+            &WorkflowAgentSessionState::Paused,
         ));
         assert!(validate_agent_session_in_execution(
             &WorkflowExecutionStatus::Paused,
@@ -786,7 +800,7 @@ mod tests {
         ));
         assert!(validate_agent_session_in_execution(
             &WorkflowExecutionStatus::Recompiling,
-            &WorkflowAgentSessionState::WaitingInput,
+            &WorkflowAgentSessionState::Paused,
         ));
         assert!(!validate_agent_session_in_execution(
             &WorkflowExecutionStatus::Completed,
@@ -813,14 +827,14 @@ mod tests {
     #[test]
     fn wire_format_produces_expected_values() {
         assert_eq!(to_wire_format(&WorkflowExecutionStatus::Waiting), "waiting");
-        assert_eq!(to_wire_format(&WorkflowExecutionStatus::Recompiling), "recompiling");
+        assert_eq!(
+            to_wire_format(&WorkflowExecutionStatus::Recompiling),
+            "recompiling"
+        );
         assert_eq!(
             to_wire_format(&WorkflowStepStatus::WaitingInput),
             "waiting_input"
         );
-        assert_eq!(
-            to_wire_format(&WorkflowAgentSessionState::WaitingApproval),
-            "waiting_approval"
-        );
+        assert_eq!(to_wire_format(&WorkflowAgentSessionState::Paused), "paused");
     }
 }

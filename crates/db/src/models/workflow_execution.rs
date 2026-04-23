@@ -67,6 +67,18 @@ impl WorkflowExecution {
         session_id: Uuid,
     ) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as::<_, Self>(&format!(
+            "{EXECUTION_SELECT}\nWHERE session_id = ?1 AND status IN ('running', 'completed')\nORDER BY created_at DESC"
+        ))
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    pub async fn find_non_terminal_by_session(
+        pool: &SqlitePool,
+        session_id: Uuid,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as::<_, Self>(&format!(
             "{EXECUTION_SELECT}\nWHERE session_id = ?1 AND status NOT IN ('completed', 'failed')\nORDER BY created_at DESC"
         ))
         .bind(session_id)

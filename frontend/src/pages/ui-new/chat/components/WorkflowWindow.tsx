@@ -1,30 +1,21 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  ArrowUpIcon,
+  CaretDownIcon,
+  FunnelIcon,
   PlayIcon,
   PauseIcon,
   StopIcon,
-  FunnelIcon,
-  CaretDownIcon,
 } from '@phosphor-icons/react';
 import { chatApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { WorkflowGraphBoard } from './WorkflowGraphBoard';
-
-// -----------------------------------------------------------------------
-// Types
-// -----------------------------------------------------------------------
-
-function parseTranscriptMeta(
-  metaJson: string | null | undefined
-): Record<string, unknown> | null {
-  if (!metaJson) return null;
-  try {
-    return JSON.parse(metaJson) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
+import {
+  parseWorkflowTranscriptMeta,
+  toWorkflowFinalReviewAction,
+  WorkflowFinalReviewCard,
+} from './WorkflowFinalReviewCard';
 
 type WorkflowCardStep = {
   id: string;
@@ -96,6 +87,9 @@ type WorkflowTranscriptEntry = {
   created_at: string;
 };
 
+const WORKFLOW_COMPOSER_MIN_HEIGHT = 104;
+const WORKFLOW_COMPOSER_MAX_HEIGHT = 192;
+
 // -----------------------------------------------------------------------
 // Props
 // -----------------------------------------------------------------------
@@ -119,12 +113,13 @@ export type WorkflowWindowProps = {
     transcriptId: string,
     inputText?: string
   ) => void;
+  onResolveFinalReview?: (
+    executionId: string,
+    transcriptId: string,
+    action: 'accepted' | 'rejected'
+  ) => void;
   pendingActionId?: string | null;
 };
-
-// -----------------------------------------------------------------------
-// Agent Selector
-// -----------------------------------------------------------------------
 
 function AgentSelector({
   agents,
@@ -133,54 +128,54 @@ function AgentSelector({
 }: {
   agents: WorkflowCardAgent[];
   selectedAgentId: string | null;
-  onSelect: (id: string | null) => void;
+  onSelect: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const selected = agents.find(
-    (a) => (a.workflow_agent_session_id ?? a.session_agent_id) === selectedAgentId
-  );
+  const selected =
+    agents.find(
+      (agent) =>
+        (agent.workflow_agent_session_id ?? agent.session_agent_id) ===
+        selectedAgentId
+    ) ?? agents[0];
+
+  if (agents.length === 0 || !selected) {
+    return null;
+  }
 
   return (
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-lg border border-[#E2E8F0] bg-white px-3 py-1.5 text-xs font-medium text-[#334155] hover:bg-[#F8FAFC] transition-colors"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex items-center gap-1.5 rounded-lg border border-[#E2E8F0] bg-white px-3 py-1.5 text-xs font-medium text-[#334155] transition-colors hover:bg-[#F8FAFC]"
       >
         <FunnelIcon className="size-3.5" weight="bold" />
-        {selected ? selected.name : 'All Agents'}
+        {selected.name}
         <CaretDownIcon className="size-3" weight="bold" />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-10 mt-1 min-w-[160px] rounded-lg border border-[#E2E8F0] bg-white py-1 shadow-lg">
-          <button
-            type="button"
-            onClick={() => { onSelect(null); setOpen(false); }}
-            className={cn(
-              'block w-full px-3 py-1.5 text-left text-xs hover:bg-[#F1F5F9]',
-              !selectedAgentId && 'font-bold text-[#1D4ED8]'
-            )}
-          >
-            All Agents
-          </button>
-          {agents.map((agent) => (
-            <button
-              type="button"
-              key={agent.session_agent_id}
-              onClick={() => {
-                onSelect(agent.workflow_agent_session_id ?? agent.session_agent_id);
-                setOpen(false);
-              }}
-              className={cn(
-                'block w-full px-3 py-1.5 text-left text-xs hover:bg-[#F1F5F9]',
-                selectedAgentId ===
-                  (agent.workflow_agent_session_id ?? agent.session_agent_id) &&
-                  'font-bold text-[#1D4ED8]'
-              )}
-            >
-              {agent.name}
-            </button>
-          ))}
+        <div className="absolute left-0 top-full z-10 mt-1 min-w-[180px] rounded-lg border border-[#E2E8F0] bg-white py-1 shadow-lg">
+          {agents.map((agent) => {
+            const agentSessionId =
+              agent.workflow_agent_session_id ?? agent.session_agent_id;
+            return (
+              <button
+                type="button"
+                key={agent.session_agent_id}
+                onClick={() => {
+                  onSelect(agentSessionId);
+                  setOpen(false);
+                }}
+                className={cn(
+                  'block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[#F1F5F9]',
+                  selectedAgentId === agentSessionId &&
+                    'font-bold text-[#1D4ED8]'
+                )}
+              >
+                {agent.name}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -384,6 +379,196 @@ export function InputRequestCard({
   );
 }
 
+function workflowStatusBadgeClass(status?: string | null) {
+  switch (status) {
+    case 'completed':
+      return 'border-[#86EFAC] bg-[#DCFCE7] text-[#166534]';
+    case 'running':
+      return 'border-[#93C5FD] bg-[#DBEAFE] text-[#1D4ED8]';
+    case 'failed':
+    case 'interrupted':
+      return 'border-[#FCA5A5] bg-[#FEE2E2] text-[#991B1B]';
+    case 'ready':
+      return 'border-[#FCD34D] bg-[#FEF3C7] text-[#92400E]';
+    case 'waiting_input':
+    case 'waiting_review':
+      return 'border-[#C7D2FE] bg-[#E0E7FF] text-[#4338CA]';
+    default:
+      return 'border-[#CBD5E1] bg-[#F1F5F9] text-[#334155]';
+  }
+}
+
+function WorkflowTranscriptFeed({
+  entries,
+  isLoading,
+  emptyMessage,
+  pendingActionId,
+  onApproval,
+}: {
+  entries: WorkflowTranscriptEntry[];
+  isLoading?: boolean;
+  emptyMessage: string;
+  pendingActionId?: string | null;
+  onApproval?: (
+    stepId: string,
+    action: string,
+    transcriptId: string,
+    inputText?: string
+  ) => void;
+}) {
+  if (entries.length === 0) {
+    return (
+      <div className="flex h-full min-h-[240px] items-center justify-center rounded-[24px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] px-5 text-center text-sm text-[#94A3B8] dark:border-[#334155] dark:bg-[rgba(15,23,42,0.45)]">
+        {isLoading ? 'Loading step transcript...' : emptyMessage}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {entries.map((entry) => {
+        if (entry.entry_type === 'approval_request') {
+          const meta = parseWorkflowTranscriptMeta(entry.meta_json);
+          const resolved = meta?.resolved === true;
+          return (
+            <ApprovalCard
+              key={entry.id}
+              title={entry.content}
+              description={
+                typeof meta?.description === 'string'
+                  ? meta.description
+                  : undefined
+              }
+              stepId={entry.step_id ?? ''}
+              transcriptId={entry.id}
+              onApprove={(stepId, transcriptId) =>
+                onApproval?.(stepId, 'approved', transcriptId)
+              }
+              onReject={(stepId, transcriptId) =>
+                onApproval?.(stepId, 'rejected', transcriptId)
+              }
+              disabled={
+                !entry.step_id ||
+                resolved ||
+                !onApproval ||
+                pendingActionId === entry.id
+              }
+            />
+          );
+        }
+        if (entry.entry_type === 'permission_request') {
+          const meta = parseWorkflowTranscriptMeta(entry.meta_json);
+          const resolved = meta?.resolved === true;
+          return (
+            <PermissionRequestCard
+              key={entry.id}
+              title={entry.content}
+              description={
+                typeof meta?.description === 'string'
+                  ? meta.description
+                  : undefined
+              }
+              stepId={entry.step_id ?? ''}
+              transcriptId={entry.id}
+              onGrant={(stepId, transcriptId) =>
+                onApproval?.(stepId, 'granted', transcriptId)
+              }
+              onDeny={(stepId, transcriptId) =>
+                onApproval?.(stepId, 'denied', transcriptId)
+              }
+              disabled={
+                !entry.step_id ||
+                resolved ||
+                !onApproval ||
+                pendingActionId === entry.id
+              }
+            />
+          );
+        }
+        if (entry.entry_type === 'continue_confirmation') {
+          const resolved =
+            parseWorkflowTranscriptMeta(entry.meta_json)?.resolved === true;
+          return (
+            <ContinueConfirmationCard
+              key={entry.id}
+              message={entry.content}
+              stepId={entry.step_id ?? ''}
+              transcriptId={entry.id}
+              onContinue={(stepId, transcriptId) =>
+                onApproval?.(stepId, 'continued', transcriptId)
+              }
+              disabled={
+                !entry.step_id ||
+                resolved ||
+                !onApproval ||
+                pendingActionId === entry.id
+              }
+            />
+          );
+        }
+        if (entry.entry_type === 'input_request') {
+          const meta = parseWorkflowTranscriptMeta(entry.meta_json);
+          const resolved = meta?.resolved === true;
+          return (
+            <InputRequestCard
+              key={entry.id}
+              prompt={entry.content}
+              description={
+                typeof meta?.description === 'string'
+                  ? meta.description
+                  : undefined
+              }
+              placeholder={
+                typeof meta?.placeholder === 'string'
+                  ? meta.placeholder
+                  : undefined
+              }
+              stepId={entry.step_id ?? ''}
+              transcriptId={entry.id}
+              onSubmit={(stepId, transcriptId, inputText) =>
+                onApproval?.(stepId, 'submitted', transcriptId, inputText)
+              }
+              disabled={
+                !entry.step_id ||
+                resolved ||
+                !onApproval ||
+                pendingActionId === entry.id
+              }
+            />
+          );
+        }
+
+        return (
+          <div
+            key={entry.id}
+            className={cn(
+              'rounded-[18px] border px-3 py-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]',
+              entry.message_type === 'system' &&
+                'border-[#E2E8F0] bg-[#F8FAFC] text-[#475569]',
+              entry.message_type === 'agent' &&
+                'border-[#BFDBFE] bg-[#EFF6FF] text-[#1E3A8A]',
+              entry.message_type === 'control' &&
+                'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]',
+              entry.message_type === 'user' &&
+                'border-[#BBF7D0] bg-[#F0FDF4] text-[#166534]'
+            )}
+          >
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <div className="truncate text-[10px] font-bold uppercase tracking-[0.16em] text-current/75">
+                {entry.agent_name ?? entry.message_type}
+              </div>
+              <div className="text-[10px] uppercase tracking-[0.16em] text-current/60">
+                {entry.entry_type}
+              </div>
+            </div>
+            <div className="whitespace-pre-wrap leading-5">{entry.content}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // -----------------------------------------------------------------------
 // Workflow Window
 // -----------------------------------------------------------------------
@@ -402,19 +587,26 @@ export function WorkflowWindow({
   onRetryStep,
   onSubmitStepInput,
   onApproval,
+  onResolveFinalReview,
   pendingActionId,
 }: WorkflowWindowProps) {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [detailStepId, setDetailStepId] = useState<string | null>(null);
   const [composerValue, setComposerValue] = useState('');
+  const initializedWorkflowKeyRef = useRef<string | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const isPreview =
-    projection.state === 'preview_ready' || projection.state === 'preview_invalid';
+    projection.state === 'preview_ready' ||
+    projection.state === 'preview_invalid';
   const isRunning = projection.execution_status === 'running';
   const canResume =
-    projection.execution_status === 'paused' || projection.execution_status === 'failed' || projection.state === 'pending';
+    projection.execution_status === 'paused' ||
+    projection.execution_status === 'failed' ||
+    projection.state === 'paused';
 
-  const agents = projection.agents ?? [];
+  const agents = useMemo(() => projection.agents ?? [], [projection.agents]);
   const leadAgentId =
     agents[0]?.workflow_agent_session_id ?? agents[0]?.session_agent_id ?? null;
   const agentSessionIdByName = useMemo(
@@ -430,6 +622,10 @@ export function WorkflowWindow({
   const stepByKey = useMemo(
     () => new Map(projection.steps.map((step) => [step.step_key, step])),
     [projection.steps]
+  );
+  const planNodeById = useMemo(
+    () => new Map(projection.plan.nodes.map((node) => [node.id, node])),
+    [projection.plan.nodes]
   );
   const orderedActionableSteps = useMemo(
     () =>
@@ -454,21 +650,86 @@ export function WorkflowWindow({
       }),
     [projection.steps]
   );
+  const workflowInstanceKey = useMemo(
+    () => `${projection.execution_id ?? ''}::${projection.plan_id ?? ''}`,
+    [projection.execution_id, projection.plan_id]
+  );
+  const resolveStepAgentId = useCallback(
+    (step?: WorkflowCardStep | null) => {
+      if (!step) {
+        return leadAgentId;
+      }
+      if (!step.agent_name) {
+        return leadAgentId;
+      }
+      return agentSessionIdByName.get(step.agent_name) ?? leadAgentId;
+    },
+    [agentSessionIdByName, leadAgentId]
+  );
+  const findPreferredStepForAgent = useCallback(
+    (agentId: string | null) => {
+      if (!agentId) {
+        return orderedActionableSteps[0] ?? projection.steps[0] ?? null;
+      }
+      return (
+        orderedActionableSteps.find(
+          (step) => resolveStepAgentId(step) === agentId
+        ) ??
+        projection.steps.find((step) => resolveStepAgentId(step) === agentId) ??
+        null
+      );
+    },
+    [orderedActionableSteps, projection.steps, resolveStepAgentId]
+  );
 
   useEffect(() => {
-    setSelectedStepId(orderedActionableSteps[0]?.step_key ?? null);
-    setSelectedAgentId(
-      orderedActionableSteps[0]?.agent_name
-        ? agentSessionIdByName.get(orderedActionableSteps[0].agent_name) ?? leadAgentId
-        : leadAgentId
-    );
-    setComposerValue('');
+    if (!isOpen) {
+      return;
+    }
+
+    const initialStep =
+      orderedActionableSteps[0] ?? projection.steps[0] ?? null;
+    const initialStepKey = initialStep?.step_key ?? null;
+    const initialAgentId = resolveStepAgentId(initialStep);
+
+    if (initializedWorkflowKeyRef.current !== workflowInstanceKey) {
+      initializedWorkflowKeyRef.current = workflowInstanceKey;
+      setSelectedStepId(initialStepKey);
+      setSelectedAgentId(initialAgentId);
+      setDetailStepId(null);
+      setComposerValue('');
+      return;
+    }
+
+    setSelectedStepId((prev) => {
+      if (!prev) {
+        return initialStepKey;
+      }
+      return stepByKey.has(prev) ? prev : initialStepKey;
+    });
+
+    setSelectedAgentId((prev) => {
+      if (
+        prev &&
+        agents.some(
+          (agent) =>
+            (agent.workflow_agent_session_id ?? agent.session_agent_id) === prev
+        )
+      ) {
+        return prev;
+      }
+      return initialAgentId;
+    });
+
+    setDetailStepId((prev) => (prev && stepByKey.has(prev) ? prev : null));
   }, [
-    projection.execution_id,
-    projection.plan_id,
+    agents,
+    isOpen,
     orderedActionableSteps,
-    agentSessionIdByName,
-    leadAgentId,
+    projection.steps,
+    resolveStepAgentId,
+    stepByKey,
+    workflowInstanceKey,
   ]);
 
   useEffect(() => {
@@ -479,6 +740,10 @@ export function WorkflowWindow({
     const previousOverflow = document.body.style.overflow;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (detailStepId) {
+          setDetailStepId(null);
+          return;
+        }
         onClose();
       }
     };
@@ -490,96 +755,185 @@ export function WorkflowWindow({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen, onClose]);
-
-  // Filter transcript by selected agent/step
-  const selectedStep = projection.steps.find((s) => s.step_key === selectedStepId);
-  const effectiveAgentId =
-    selectedAgentId ??
-    (selectedStep?.agent_name
-      ? agentSessionIdByName.get(selectedStep.agent_name) ?? null
-      : null);
+  }, [detailStepId, isOpen, onClose]);
 
   useEffect(() => {
-    if (!selectedStep?.agent_name) {
+    if (!isOpen) {
+      setDetailStepId(null);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    const textarea = composerTextareaRef.current;
+    if (!textarea) {
       return;
     }
 
-    const nextAgentId = agentSessionIdByName.get(selectedStep.agent_name) ?? leadAgentId;
-    if (nextAgentId && selectedAgentId !== nextAgentId) {
-      setSelectedAgentId(nextAgentId);
+    textarea.style.height = `${WORKFLOW_COMPOSER_MIN_HEIGHT}px`;
+    const fullHeight = textarea.scrollHeight;
+    const shouldEnableScroll = fullHeight > WORKFLOW_COMPOSER_MAX_HEIGHT;
+    const nextHeight = Math.min(fullHeight, WORKFLOW_COMPOSER_MAX_HEIGHT);
+    textarea.style.height = `${Math.max(
+      nextHeight,
+      WORKFLOW_COMPOSER_MIN_HEIGHT
+    )}px`;
+    textarea.style.overflowY = shouldEnableScroll ? 'auto' : 'hidden';
+  }, [composerValue, isOpen]);
+
+  const selectedStep = projection.steps.find(
+    (s) => s.step_key === selectedStepId
+  );
+  const selectedAgent =
+    agents.find(
+      (agent) =>
+        (agent.workflow_agent_session_id ?? agent.session_agent_id) ===
+        selectedAgentId
+    ) ??
+    agents[0] ??
+    null;
+  const selectedStepInputRequest = useMemo(() => {
+    if (!selectedStep || selectedStep.status !== 'waiting_input') {
+      return null;
     }
-  }, [selectedStep?.agent_name, agentSessionIdByName, leadAgentId, selectedAgentId]);
 
-  const { data: selectedStepTranscriptData, isFetching: isFetchingSelectedStepTranscript } =
-    useQuery({
-      queryKey: [
-        'workflowStepTranscripts',
-        sessionId,
-        selectedStep?.id,
-        effectiveAgentId,
-      ],
-      queryFn: () => {
-        if (!sessionId || !selectedStep?.id) {
-          return [];
-        }
+    for (let index = transcript.length - 1; index >= 0; index -= 1) {
+      const entry = transcript[index];
+      if (
+        entry.entry_type !== 'input_request' ||
+        (entry.step_id !== selectedStep.id &&
+          entry.step_key !== selectedStep.step_key)
+      ) {
+        continue;
+      }
 
-        return chatApi.getWorkflowStepTranscripts(sessionId, selectedStep.id, {
-          stepKey: selectedStep.step_key,
-          workflowAgentSessionId: effectiveAgentId,
-        });
-      },
-      enabled: !!sessionId && !!selectedStep?.id && !isPreview && isOpen,
-      refetchInterval:
-        isOpen && !isPreview && !!sessionId && !!selectedStep?.id ? 5000 : false,
-    });
+      const meta = parseWorkflowTranscriptMeta(entry.meta_json);
+      if (meta?.resolved === true) {
+        continue;
+      }
 
-  const fallbackTranscript = useMemo(() => {
-    let entries = transcript;
-    if (effectiveAgentId) {
+      return {
+        prompt: entry.content,
+        description:
+          typeof meta?.description === 'string' ? meta.description : undefined,
+        placeholder:
+          typeof meta?.placeholder === 'string' ? meta.placeholder : undefined,
+      };
+    }
+
+    return null;
+  }, [selectedStep, transcript]);
+  const composerPlaceholder = useMemo(() => {
+    if (selectedStepInputRequest?.placeholder?.trim()) {
+      return selectedStepInputRequest.placeholder.trim();
+    }
+    if (selectedStepInputRequest?.prompt?.trim()) {
+      return selectedStepInputRequest.prompt.trim();
+    }
+    if (selectedStep) {
+      return `Send input to ${selectedAgent?.name ?? 'selected agent'}`;
+    }
+    if (selectedAgent) {
+      return 'No step available for the selected agent';
+    }
+    return 'Pick a node before sending input';
+  }, [selectedAgent, selectedStep, selectedStepInputRequest]);
+  const detailStep = projection.steps.find((s) => s.step_key === detailStepId);
+  const detailStepNode = detailStepId ? planNodeById.get(detailStepId) : null;
+  const detailAgentSessionId = detailStep?.agent_name
+    ? (agentSessionIdByName.get(detailStep.agent_name) ?? leadAgentId)
+    : leadAgentId;
+
+  const {
+    data: detailStepTranscriptData,
+    isFetching: isFetchingDetailStepTranscript,
+  } = useQuery({
+    queryKey: [
+      'workflowStepTranscripts',
+      sessionId,
+      detailStep?.id,
+      detailAgentSessionId,
+    ],
+    queryFn: () => {
+      if (!sessionId || !detailStep?.id) {
+        return [];
+      }
+
+      return chatApi.getWorkflowStepTranscripts(sessionId, detailStep.id, {
+        stepKey: detailStep.step_key,
+        workflowAgentSessionId: detailAgentSessionId,
+      });
+    },
+    enabled: !!sessionId && !!detailStep?.id && !isPreview && isOpen,
+    refetchInterval:
+      isOpen && !isPreview && !!sessionId && !!detailStep?.id ? 5000 : false,
+  });
+
+  const detailFallbackTranscript = useMemo(() => {
+    if (!detailStep) {
+      return [];
+    }
+
+    let entries = transcript.filter(
+      (entry) =>
+        entry.step_id === detailStep.id ||
+        entry.step_key === detailStep.step_key
+    );
+    if (detailAgentSessionId) {
       entries = entries.filter(
-        (e) => e.workflow_agent_session_id === effectiveAgentId
+        (entry) => entry.workflow_agent_session_id === detailAgentSessionId
       );
     }
     return entries;
-  }, [transcript, effectiveAgentId]);
+  }, [detailAgentSessionId, detailStep, transcript]);
 
-  const stepScopedTranscript = useMemo(() => {
-    const entries = selectedStepTranscriptData ?? [];
+  const detailStepScopedTranscript = useMemo(() => {
+    const entries = detailStepTranscriptData ?? [];
     return entries.map((entry) => ({
       id: entry.id,
       step_id: entry.step_id,
       step_key: entry.step_key,
       workflow_agent_session_id: entry.workflow_agent_session_id,
       agent_name: entry.agent_name,
-      message_type: entry.sender_type as 'system' | 'agent' | 'user' | 'control',
+      message_type: entry.sender_type as
+        | 'system'
+        | 'agent'
+        | 'user'
+        | 'control',
       content: entry.content,
       entry_type: entry.entry_type,
       meta_json: entry.meta_json,
       created_at: entry.created_at,
     }));
-  }, [selectedStepTranscriptData]);
+  }, [detailStepTranscriptData]);
 
-  const visibleTranscript = selectedStep ? stepScopedTranscript : fallbackTranscript;
-
+  const visibleDetailTranscript =
+    detailStepScopedTranscript.length > 0
+      ? detailStepScopedTranscript
+      : detailFallbackTranscript;
+  const workflowFinalReviewAction = useMemo(
+    () => toWorkflowFinalReviewAction(projection.execution_id, transcript),
+    [projection.execution_id, transcript]
+  );
   const handleSelectStep = useCallback(
     (id: string) => {
-      setSelectedStepId((prev) => {
-        const nextStepId = prev === id ? null : id;
-        const nextStep = nextStepId ? stepByKey.get(nextStepId) : null;
-        const nextAgentId = nextStep?.agent_name
-          ? agentSessionIdByName.get(nextStep.agent_name) ?? leadAgentId
-          : leadAgentId;
-        setSelectedAgentId(nextAgentId);
-        return nextStepId;
-      });
+      const nextStep = stepByKey.get(id);
+      if (!nextStep) {
+        return;
+      }
+      setSelectedStepId(id);
+      setSelectedAgentId(resolveStepAgentId(nextStep));
+      setDetailStepId(id);
     },
-    [agentSessionIdByName, leadAgentId, stepByKey]
+    [resolveStepAgentId, stepByKey]
   );
-
-  const selectedAgent = agents.find(
-    (agent) =>
-      (agent.workflow_agent_session_id ?? agent.session_agent_id) === effectiveAgentId
+  const handleSelectAgent = useCallback(
+    (agentId: string) => {
+      setSelectedAgentId(agentId);
+      const nextStep = findPreferredStepForAgent(agentId);
+      setSelectedStepId(nextStep?.step_key ?? null);
+      setDetailStepId(null);
+    },
+    [findPreferredStepForAgent]
   );
 
   if (!isOpen) return null;
@@ -593,7 +947,7 @@ export function WorkflowWindow({
       aria-label={`Workflow window: ${projection.title}`}
     >
       <div
-        className="flex h-[min(92vh,880px)] w-full max-w-[1360px] flex-col overflow-hidden rounded-[28px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(248,250,252,0.98)_100%)] shadow-[0_30px_100px_rgba(15,23,42,0.28)] backdrop-blur-xl dark:border-[#243041] dark:bg-[linear-gradient(180deg,rgba(11,16,23,0.96)_0%,rgba(15,23,42,0.94)_100%)] dark:shadow-[0_28px_100px_rgba(0,0,0,0.5)]"
+        className="relative flex h-[min(92vh,880px)] w-full max-w-[1360px] flex-col overflow-hidden rounded-[28px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(248,250,252,0.98)_100%)] shadow-[0_30px_100px_rgba(15,23,42,0.28)] backdrop-blur-xl dark:border-[#243041] dark:bg-[linear-gradient(180deg,rgba(11,16,23,0.96)_0%,rgba(15,23,42,0.94)_100%)] dark:shadow-[0_28px_100px_rgba(0,0,0,0.5)]"
         onClick={(event) => event.stopPropagation()}
       >
         {/* Header */}
@@ -620,8 +974,18 @@ export function WorkflowWindow({
             className="inline-flex size-10 shrink-0 items-center justify-center rounded-2xl border border-white/70 bg-white/75 text-[#64748B] shadow-sm transition-colors hover:bg-white hover:text-[#0F172A] dark:border-[#2A3445] dark:bg-[rgba(25,34,51,0.82)] dark:text-[#94A3B8] dark:hover:text-white"
             aria-label="Close workflow window"
           >
-            <svg className="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg
+              className="size-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>
@@ -630,66 +994,78 @@ export function WorkflowWindow({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Left pane: Graph */}
           <div className="w-full shrink-0 overflow-auto border-b border-[#E2E8F0] bg-[radial-gradient(circle_at_top_left,rgba(191,219,254,0.45),rgba(248,250,252,0.8)_34%,rgba(248,250,252,1)_72%)] p-4 lg:basis-3/4 lg:border-b-0 lg:border-r lg:p-5 dark:border-[#243041] dark:bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,0.18),rgba(15,23,42,0.92)_38%,rgba(11,16,23,0.98)_78%)]">
-            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#64748B] mb-3">
+            <div className="mb-3 text-[10px] font-bold uppercase tracking-[0.2em] text-[#64748B]">
               Plan Graph
             </div>
             <WorkflowGraphBoard
-                nodes={projection.plan.nodes}
-                edges={projection.plan.edges}
-                steps={projection.steps}
-                selectedStepId={selectedStepId}
-                onSelectStep={handleSelectStep}
-                onRetryStep={onRetryStep}
-              />
+              nodes={projection.plan.nodes}
+              edges={projection.plan.edges}
+              steps={projection.steps}
+              selectedStepId={selectedStepId}
+              onSelectStep={handleSelectStep}
+              onRetryStep={onRetryStep}
+            />
 
-            <div className="mt-4 rounded-[22px] border border-white/70 bg-white/80 px-4 py-3 text-xs text-[#475569] shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.78)] dark:text-[#CBD5E1]">
-              {selectedStep ? (
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
-                      Focused Node
-                    </div>
-                    <div className="mt-1 text-sm font-semibold text-[#0F172A] dark:text-white">
-                      {selectedStep.title}
-                    </div>
-                    <div className="mt-1 text-xs text-[#64748B] dark:text-[#94A3B8]">
-                      {selectedStep.step_type}
-                      {selectedStep.agent_name ? ` · ${selectedStep.agent_name}` : ''}
-                    </div>
-                    {selectedStep.summary_text && (
-                      <div className="mt-2 line-clamp-2 text-xs leading-5 text-[#475569] dark:text-[#CBD5E1]">
-                        {selectedStep.summary_text}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex flex-col items-end gap-2">
-                    {isRunning && selectedStep.status === 'running' && onInterruptStep && (
-                      <button
-                        type="button"
-                        onClick={() => onInterruptStep(selectedStep.id)}
-                        className="flex items-center gap-1 rounded-full bg-[#FEE2E2] px-2.5 py-1 text-[10px] font-semibold text-[#DC2626] transition-colors hover:bg-[#FECACA]"
-                      >
-                        <StopIcon className="size-3" weight="bold" />
-                        Interrupt
-                      </button>
-                    )}
-                    {selectedStep.status !== 'completed' &&
-                      selectedStep.status !== 'cancelled' &&
-                      onStopStep && (
-                        <button
-                          type="button"
-                          onClick={() => onStopStep(selectedStep.id)}
-                          className="flex items-center gap-1 rounded-full border border-[#FCA5A5] bg-white px-2.5 py-1 text-[10px] font-semibold text-[#991B1B] transition-colors hover:bg-[#FEF2F2]"
-                        >
-                          <StopIcon className="size-3" weight="bold" />
-                          Stop Step
-                        </button>
-                      )}
-                  </div>
+            <div className="mt-4 flex items-center justify-between gap-3 rounded-[22px] border border-white/70 bg-white/80 px-4 py-3 text-xs text-[#475569] shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.78)] dark:text-[#CBD5E1]">
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
+                  Step Inspector
                 </div>
-              ) : (
-                'Select a node to inspect its isolated execution feed.'
-              )}
+                <div className="mt-1 text-xs leading-5 text-[#475569] dark:text-[#CBD5E1]">
+                  Click a step node to open its detail card with task
+                  instructions, summary, agent, status and transcript.
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px]">
+                  <span className="rounded-full bg-[#EEF4FF] px-2.5 py-1 font-semibold text-[#1D4ED8] dark:bg-[rgba(37,99,235,0.18)] dark:text-[#BFDBFE]">
+                    {projection.completed_step_count}/
+                    {projection.total_step_count} steps completed
+                  </span>
+                  {projection.result_summary && (
+                    <span className="rounded-full bg-[#DCFCE7] px-2.5 py-1 font-semibold text-[#166534] dark:bg-[rgba(22,163,74,0.18)] dark:text-[#BBF7D0]">
+                      {projection.result_summary}
+                    </span>
+                  )}
+                  {projection.error_message && (
+                    <span className="rounded-full bg-[#FEE2E2] px-2.5 py-1 font-semibold text-[#991B1B] dark:bg-[rgba(220,38,38,0.18)] dark:text-[#FECACA]">
+                      {projection.error_message}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                {projection.state === 'preview_ready' &&
+                  projection.plan_id &&
+                  onExecute && (
+                    <button
+                      type="button"
+                      onClick={() => onExecute(projection.plan_id!)}
+                      className="flex items-center gap-2 rounded-full bg-[#2563EB] px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#1D4ED8]"
+                    >
+                      <PlayIcon className="size-3.5" weight="bold" />
+                      Execute Plan
+                    </button>
+                  )}
+                {isRunning && projection.execution_id && onPauseAll && (
+                  <button
+                    type="button"
+                    onClick={() => onPauseAll(projection.execution_id!)}
+                    className="flex items-center gap-1 rounded-full bg-[#D97706] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#B45309]"
+                  >
+                    <PauseIcon className="size-3.5" weight="bold" />
+                    Pause All
+                  </button>
+                )}
+                {canResume && projection.execution_id && onResume && (
+                  <button
+                    type="button"
+                    onClick={() => onResume(projection.execution_id!)}
+                    className="flex items-center gap-1 rounded-full bg-[#2563EB] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1D4ED8]"
+                  >
+                    <PlayIcon className="size-3.5" weight="bold" />
+                    Resume
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -716,19 +1092,6 @@ export function WorkflowWindow({
                       </div>
                     </div>
                   )}
-
-                  {projection.state === 'preview_ready' && projection.plan_id && onExecute && (
-                    <div className="mt-6">
-                      <button
-                        type="button"
-                        onClick={() => onExecute(projection.plan_id!)}
-                        className="flex items-center gap-2 rounded-full bg-[#2563EB] px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#1D4ED8]"
-                      >
-                        <PlayIcon className="size-4" weight="bold" />
-                        Execute Plan
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
             )}
@@ -736,267 +1099,257 @@ export function WorkflowWindow({
             {/* Execution mode */}
             {!isPreview && (
               <>
-                {/* Agent selector + controls bar */}
-                <div className="flex items-center gap-2 border-b border-[#E2E8F0] px-5 py-3 dark:border-[#243041] md:px-6">
-                  {agents.length > 0 && (
+                {agents.length > 0 && (
+                  <div className="border-b border-[#E2E8F0] px-5 py-3 dark:border-[#243041] md:px-6">
                     <AgentSelector
                       agents={agents}
-                      selectedAgentId={selectedAgentId}
-                      onSelect={setSelectedAgentId}
+                      selectedAgentId={
+                        selectedAgent
+                          ? (selectedAgent.workflow_agent_session_id ??
+                            selectedAgent.session_agent_id)
+                          : selectedAgentId
+                      }
+                      onSelect={handleSelectAgent}
                     />
-                  )}
-                  <div className="min-w-0 flex-1 px-2">
-                    <div className="truncate text-xs font-semibold text-[#0F172A] dark:text-white">
-                      {selectedAgent?.name ?? 'Lead'} feed
-                    </div>
-                    <div className="truncate text-[10px] uppercase tracking-[0.16em] text-[#94A3B8]">
-                      {selectedStep
-                        ? `${selectedStep.title} · step scoped`
-                        : 'Agent scoped execution feed'}
-                    </div>
                   </div>
-                  {isRunning && projection.execution_id && onPauseAll && (
-                    <button
-                      type="button"
-                      onClick={() => onPauseAll(projection.execution_id!)}
-                      className="flex items-center gap-1 rounded-full bg-[#D97706] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#B45309]"
-                    >
-                      <PauseIcon className="size-3.5" weight="bold" />
-                      Pause All
-                    </button>
-                  )}
-                  {canResume && projection.execution_id && onResume && (
-                    <button
-                      type="button"
-                      onClick={() => onResume(projection.execution_id!)}
-                      className="flex items-center gap-1 rounded-full bg-[#2563EB] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#1D4ED8]"
-                    >
-                      <PlayIcon className="size-3.5" weight="bold" />
-                      Resume
-                    </button>
-                  )}
-                </div>
-
-                {/* Selected step info */}
-                {selectedStep && (
-                  <div className="border-b border-[#E2E8F0] bg-[#F8FAFC] px-5 py-3 dark:border-[#243041] dark:bg-[rgba(15,23,42,0.7)] md:px-6">
-                    <div className="text-xs font-bold text-[#334155] dark:text-white">
-                      {selectedStep.title}
-                    </div>
-                    <div className="text-[10px] text-[#64748B] dark:text-[#94A3B8]">
-                      {selectedStep.step_type} · {selectedStep.status}
-                      {selectedStep.agent_name ? ` · ${selectedStep.agent_name}` : ''}
-                    </div>
-                    {selectedStep.summary_text && (
-                      <div className="mt-1 text-xs text-[#475569] dark:text-[#CBD5E1]">
-                        {selectedStep.summary_text}
+                )}
+                <div className="relative min-h-0 flex-1">
+                  <div className="h-full overflow-auto px-5 pb-28 pt-4 md:px-6">
+                    {workflowFinalReviewAction && onResolveFinalReview && (
+                      <div className="mb-3">
+                        <WorkflowFinalReviewCard
+                          message={workflowFinalReviewAction.message}
+                          description={workflowFinalReviewAction.description}
+                          onAccept={() =>
+                            onResolveFinalReview(
+                              workflowFinalReviewAction.executionId,
+                              workflowFinalReviewAction.transcriptId,
+                              'accepted'
+                            )
+                          }
+                          onReject={() =>
+                            onResolveFinalReview(
+                              workflowFinalReviewAction.executionId,
+                              workflowFinalReviewAction.transcriptId,
+                              'rejected'
+                            )
+                          }
+                          disabled={
+                            pendingActionId ===
+                            workflowFinalReviewAction.transcriptId
+                          }
+                        />
                       </div>
                     )}
                   </div>
-                )}
 
-                {/* Transcript area */}
-                <div className="flex-1 overflow-auto px-5 py-4 md:px-6">
-                  {visibleTranscript.length === 0 ? (
-                    <div className="flex h-full min-h-[240px] items-center justify-center rounded-[24px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] text-sm text-[#94A3B8] dark:border-[#334155] dark:bg-[rgba(15,23,42,0.45)]">
-                      {isFetchingSelectedStepTranscript
-                        ? 'Loading step transcript...'
-                        : selectedStepId || selectedAgentId
-                          ? 'No messages matching current isolation'
-                          : 'Waiting for execution messages...'}
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {visibleTranscript.map((entry) => {
-                        if (entry.entry_type === 'approval_request') {
-                          const meta = parseTranscriptMeta(entry.meta_json);
-                          const resolved = meta?.resolved === true;
-                          return (
-                            <ApprovalCard
-                              key={entry.id}
-                              title={entry.content}
-                              description={typeof meta?.description === 'string' ? meta.description : undefined}
-                              stepId={entry.step_id ?? ''}
-                              transcriptId={entry.id}
-                              onApprove={(stepId, transcriptId) =>
-                                onApproval?.(stepId, 'approved', transcriptId)
-                              }
-                              onReject={(stepId, transcriptId) =>
-                                onApproval?.(stepId, 'rejected', transcriptId)
-                              }
-                              disabled={
-                                !entry.step_id ||
-                                resolved ||
-                                !onApproval ||
-                                pendingActionId === entry.id
-                              }
-                            />
-                          );
-                        }
-                        if (entry.entry_type === 'permission_request') {
-                          const meta = parseTranscriptMeta(entry.meta_json);
-                          const resolved = meta?.resolved === true;
-                          return (
-                            <PermissionRequestCard
-                              key={entry.id}
-                              title={entry.content}
-                              description={typeof meta?.description === 'string' ? meta.description : undefined}
-                              stepId={entry.step_id ?? ''}
-                              transcriptId={entry.id}
-                              onGrant={(stepId, transcriptId) =>
-                                onApproval?.(stepId, 'granted', transcriptId)
-                              }
-                              onDeny={(stepId, transcriptId) =>
-                                onApproval?.(stepId, 'denied', transcriptId)
-                              }
-                              disabled={
-                                !entry.step_id ||
-                                resolved ||
-                                !onApproval ||
-                                pendingActionId === entry.id
-                              }
-                            />
-                          );
-                        }
-                        if (entry.entry_type === 'continue_confirmation') {
-                          const resolved =
-                            parseTranscriptMeta(entry.meta_json)?.resolved === true;
-                          return (
-                            <ContinueConfirmationCard
-                              key={entry.id}
-                              message={entry.content}
-                              stepId={entry.step_id ?? ''}
-                              transcriptId={entry.id}
-                              onContinue={(stepId, transcriptId) =>
-                                onApproval?.(stepId, 'continued', transcriptId)
-                              }
-                              disabled={
-                                !entry.step_id ||
-                                resolved ||
-                                !onApproval ||
-                                pendingActionId === entry.id
-                              }
-                            />
-                          );
-                        }
-                        if (entry.entry_type === 'input_request') {
-                          const meta = parseTranscriptMeta(entry.meta_json);
-                          const resolved = meta?.resolved === true;
-                          return (
-                            <InputRequestCard
-                              key={entry.id}
-                              prompt={entry.content}
-                              description={
-                                typeof meta?.description === 'string'
-                                  ? meta.description
-                                  : undefined
-                              }
-                              placeholder={
-                                typeof meta?.placeholder === 'string'
-                                  ? meta.placeholder
-                                  : undefined
-                              }
-                              stepId={entry.step_id ?? ''}
-                              transcriptId={entry.id}
-                              onSubmit={(stepId, transcriptId, inputText) =>
-                                onApproval?.(stepId, 'submitted', transcriptId, inputText)
-                              }
-                              disabled={
-                                !entry.step_id ||
-                                resolved ||
-                                !onApproval ||
-                                pendingActionId === entry.id
-                              }
-                            />
-                          );
-                        }
-                        return (
-                          <div
-                            key={entry.id}
-                            className={cn(
-                              'rounded-[18px] border px-3 py-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]',
-                              entry.message_type === 'system' &&
-                                'border-[#E2E8F0] bg-[#F8FAFC] text-[#475569]',
-                              entry.message_type === 'agent' &&
-                                'border-[#BFDBFE] bg-[#EFF6FF] text-[#1E3A8A]',
-                              entry.message_type === 'control' &&
-                                'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]',
-                              entry.message_type === 'user' &&
-                                'border-[#BBF7D0] bg-[#F0FDF4] text-[#166534]'
-                            )}
-                          >
-                            <div className="mb-1 flex items-center justify-between gap-3">
-                              <div className="truncate text-[10px] font-bold uppercase tracking-[0.16em] text-current/75">
-                                {entry.agent_name ?? entry.message_type}
-                              </div>
-                              <div className="text-[10px] uppercase tracking-[0.16em] text-current/60">
-                                {entry.entry_type}
-                              </div>
-                            </div>
-                            <div className="whitespace-pre-wrap leading-5">
-                              {entry.content}
-                            </div>
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-white/96 via-white/82 to-transparent px-5 pb-3 pt-8 dark:from-[rgba(15,23,42,0.96)] dark:via-[rgba(15,23,42,0.72)] dark:to-transparent md:px-6">
+                    <div className="pointer-events-auto relative">
+                      {selectedStepInputRequest && (
+                        <div className="mb-2 rounded-2xl border border-[#C7D2FE] bg-[#EEF2FF] px-4 py-3 text-xs text-[#3730A3] dark:border-[#312E81] dark:bg-[rgba(49,46,129,0.24)] dark:text-[#C7D2FE]">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#4338CA] dark:text-[#A5B4FC]">
+                            Input Prompt
                           </div>
-                        );
-                      })}
+                          <div className="mt-1 whitespace-pre-wrap text-xs leading-5 text-[#312E81] dark:text-[#E0E7FF]">
+                            {selectedStepInputRequest.prompt}
+                          </div>
+                          {selectedStepInputRequest.description && (
+                            <div className="mt-1 whitespace-pre-wrap text-xs leading-5 text-[#4338CA]/90 dark:text-[#C7D2FE]/90">
+                              {selectedStepInputRequest.description}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <textarea
+                        ref={composerTextareaRef}
+                        value={composerValue}
+                        onChange={(event) =>
+                          setComposerValue(event.target.value)
+                        }
+                        placeholder={composerPlaceholder}
+                        rows={4}
+                        disabled={!selectedStep || !onSubmitStepInput}
+                        className="w-full resize-none overflow-y-hidden rounded-[24px] border border-[#CBD5E1] bg-white/96 px-4 py-3 pb-12 pr-12 text-[14px] leading-5 text-[#0F172A] shadow-[0_16px_34px_rgba(15,23,42,0.12)] outline-none transition-colors placeholder:text-[#94A3B8] focus:border-[#60A5FA] disabled:cursor-not-allowed disabled:bg-[#F8FAFC] disabled:text-[#94A3B8] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.92)] dark:text-white dark:shadow-[0_18px_36px_rgba(0,0,0,0.28)]"
+                        style={{
+                          height: WORKFLOW_COMPOSER_MIN_HEIGHT,
+                          maxHeight: WORKFLOW_COMPOSER_MAX_HEIGHT,
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!selectedStep || !onSubmitStepInput) {
+                            return;
+                          }
+                          const nextValue = composerValue.trim();
+                          if (!nextValue) {
+                            return;
+                          }
+                          onSubmitStepInput(selectedStep.id, nextValue);
+                          setComposerValue('');
+                        }}
+                        disabled={
+                          !selectedStep ||
+                          !onSubmitStepInput ||
+                          composerValue.trim().length === 0
+                        }
+                        className="absolute bottom-3 right-3 inline-flex size-8 items-center justify-center rounded-full bg-[#0F172A] text-white transition-colors hover:bg-[#1E293B] disabled:opacity-40"
+                        aria-label="Send step input"
+                      >
+                        <ArrowUpIcon className="size-3" weight="bold" />
+                      </button>
                     </div>
-                  )}
-                </div>
-
-                <div className="border-t border-[#E2E8F0] bg-white/90 px-5 py-3 dark:border-[#243041] dark:bg-[rgba(15,23,42,0.78)] md:px-6">
-                  <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-[#94A3B8]">
-                    {selectedStep
-                      ? `Route input to ${selectedStep.title}`
-                      : 'Select a step to route input'}
                   </div>
-                  <div className="flex gap-2">
-                    <textarea
-                      value={composerValue}
-                      onChange={(event) => setComposerValue(event.target.value)}
-                      placeholder={
-                        selectedStep
-                          ? 'Send step-scoped input or context'
-                          : 'Pick a node before sending input'
-                      }
-                      rows={2}
-                      disabled={!selectedStep || !onSubmitStepInput}
-                      className="min-h-[54px] flex-1 resize-y rounded-2xl border border-[#CBD5E1] bg-white px-3 py-2 text-xs text-[#0F172A] outline-none transition-colors placeholder:text-[#94A3B8] focus:border-[#60A5FA] disabled:cursor-not-allowed disabled:bg-[#F8FAFC] disabled:text-[#94A3B8]"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!selectedStep || !onSubmitStepInput) {
-                          return;
-                        }
-                        const nextValue = composerValue.trim();
-                        if (!nextValue) {
-                          return;
-                        }
-                        onSubmitStepInput(selectedStep.id, nextValue);
-                        setComposerValue('');
-                      }}
-                      disabled={!selectedStep || !onSubmitStepInput || composerValue.trim().length === 0}
-                      className="self-end rounded-full bg-[#0F172A] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#1E293B] disabled:opacity-40"
-                    >
-                      Send
-                    </button>
-                  </div>
-                </div>
-
-                {/* Status bar */}
-                <div className="border-t border-[#E2E8F0] bg-[#F8FAFC] px-5 py-3 text-xs text-[#64748B] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.7)] dark:text-[#94A3B8] md:px-6">
-                  {projection.completed_step_count}/{projection.total_step_count} steps completed
-                  {projection.error_message && (
-                    <span className="ml-2 text-[#DC2626]">{projection.error_message}</span>
-                  )}
-                  {projection.result_summary && (
-                    <span className="ml-2 text-[#16A34A]">{projection.result_summary}</span>
-                  )}
                 </div>
               </>
             )}
           </div>
         </div>
+
+        {detailStep && (
+          <div
+            className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/24 p-4 md:p-6"
+            onClick={() => setDetailStepId(null)}
+          >
+            <div
+              className="flex max-h-full w-full max-w-[980px] flex-col overflow-hidden rounded-[28px] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(248,250,252,0.98)_100%)] shadow-[0_28px_90px_rgba(15,23,42,0.28)] dark:border-[#243041] dark:bg-[linear-gradient(180deg,rgba(11,16,23,0.98)_0%,rgba(15,23,42,0.96)_100%)] dark:shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-[#E2E8F0] px-5 py-4 dark:border-[#243041] md:px-6">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-[#64748B]">
+                    Step Details
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <div className="truncate text-lg font-semibold text-[#0F172A] dark:text-white">
+                      {detailStep.title}
+                    </div>
+                    <span
+                      className={cn(
+                        'rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em]',
+                        workflowStatusBadgeClass(detailStep.status)
+                      )}
+                    >
+                      {detailStep.status}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-xs text-[#64748B] dark:text-[#94A3B8]">
+                    {detailStep.step_type}
+                    {detailStep.agent_name ? ` · ${detailStep.agent_name}` : ''}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {detailStep.status === 'running' &&
+                    (onInterruptStep || onStopStep) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onInterruptStep) {
+                            onInterruptStep(detailStep.id);
+                            return;
+                          }
+                          onStopStep?.(detailStep.id);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full bg-[#991B1B] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#7F1D1D]"
+                      >
+                        <StopIcon className="size-3.5" weight="bold" />
+                        Terminate
+                      </button>
+                    )}
+                  <button
+                    type="button"
+                    onClick={() => setDetailStepId(null)}
+                    className="inline-flex size-10 items-center justify-center rounded-2xl border border-white/70 bg-white/75 text-[#64748B] shadow-sm transition-colors hover:bg-white hover:text-[#0F172A] dark:border-[#2A3445] dark:bg-[rgba(25,34,51,0.82)] dark:text-[#94A3B8] dark:hover:text-white"
+                    aria-label="Close step details"
+                  >
+                    <svg
+                      className="size-5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid min-h-0 flex-1 gap-4 overflow-hidden p-5 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.35fr)] md:p-6">
+                <div className="min-h-0 space-y-4 overflow-auto pr-1">
+                  <div className="rounded-[22px] border border-white/70 bg-white/82 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.72)]">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
+                      Task Instruction
+                    </div>
+                    <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#334155] dark:text-[#CBD5E1]">
+                      {detailStepNode?.data.instructions?.trim() ||
+                        'No task instructions were provided for this step.'}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[22px] border border-white/70 bg-white/82 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.72)]">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
+                      Task Summary
+                    </div>
+                    <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#334155] dark:text-[#CBD5E1]">
+                      {detailStep.summary_text?.trim() ||
+                        'No summary has been generated for this step yet.'}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-[22px] border border-white/70 bg-white/82 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.72)]">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
+                        Agent
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-[#0F172A] dark:text-white">
+                        {detailStep.agent_name?.trim() || 'Lead'}
+                      </div>
+                    </div>
+                    <div className="rounded-[22px] border border-white/70 bg-white/82 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.72)]">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
+                        Current Status
+                      </div>
+                      <div className="mt-2">
+                        <span
+                          className={cn(
+                            'inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em]',
+                            workflowStatusBadgeClass(detailStep.status)
+                          )}
+                        >
+                          {detailStep.status}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex min-h-0 flex-col rounded-[24px] border border-white/70 bg-white/82 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] dark:border-[#243041] dark:bg-[rgba(15,23,42,0.72)]">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#94A3B8]">
+                    Transcript
+                  </div>
+                  <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
+                    <WorkflowTranscriptFeed
+                      entries={visibleDetailTranscript}
+                      isLoading={isFetchingDetailStepTranscript}
+                      emptyMessage={
+                        isPreview
+                          ? 'Preview mode does not have transcript messages yet.'
+                          : 'No transcript messages for this step yet.'
+                      }
+                      pendingActionId={pendingActionId}
+                      onApproval={onApproval}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
