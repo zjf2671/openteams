@@ -283,6 +283,18 @@
     color: #3a4556;
   }
 
+  .new-design.dark .chat-session-input-icon-btn-active,
+  .dark .new-design .chat-session-input-icon-btn-active {
+    border-color: rgba(94, 162, 255, 0.36);
+    background: rgba(94, 162, 255, 0.18);
+    color: #93c5fd;
+  }
+
+  .new-design.dark .chat-session-workflow-mode-label,
+  .dark .new-design .chat-session-workflow-mode-label {
+    color: #93c5fd;
+  }
+
   .new-design.dark .chat-session-input-status,
   .dark .new-design .chat-session-input-status {
     color: var(--chat-session-text-tertiary);

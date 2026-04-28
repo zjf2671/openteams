@@ -89,6 +89,12 @@
   },
   "input": {
     "mentionAgents": "Mention agents",
+    "switchToFreeMode": "Switch to free chat mode",
+    "switchToWorkflowMode": "Switch to workflow mode",
+    "freeModeDescription": "Free chat mode: use @ to route messages to members.",
+    "workflowModeDescription": "Workflow mode: messages route to the lead agent.",
+    "workflowModeLabel": "- Workflow mode",
+    "workflowPlaceholder": "Describe the workflow request...",
     "mentionAllOption": "All members (@all)",
     "mentionAllSuggestion": "@All members",
     "mentionAllBadge": "@all",

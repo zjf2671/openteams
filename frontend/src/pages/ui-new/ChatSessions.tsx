@@ -126,6 +126,8 @@ import { ChatSystemMessage } from '@/components/ui-new/primitives/conversation/C
 
 import type { ChatProtocolNotice } from './chat/hooks/useChatWebSocket';
 
+type ChatInputMode = 'free' | 'workflow';
+
 const mentionStatusPriority: Record<MentionStatus, number> = {
   received: 0,
   running: 1,
@@ -674,6 +676,13 @@ export function ChatSessions() {
       ? sessionId
       : null
     : (sortedSessions[0]?.id ?? null);
+  const [chatInputModeBySessionId, setChatInputModeBySessionId] = useState<
+    Record<string, ChatInputMode>
+  >({});
+  const activeChatInputMode: ChatInputMode = activeSessionId
+    ? (chatInputModeBySessionId[activeSessionId] ?? 'free')
+    : 'free';
+  const isWorkflowInputMode = activeChatInputMode === 'workflow';
   const visibleMessagesData = useMemo(() => messagesData, [messagesData]);
   const visibleWorkItemsData = useMemo(() => workItemsData, [workItemsData]);
   const notificationsRef = useRef(config?.notifications ?? null);
@@ -1452,6 +1461,7 @@ export function ChatSessions() {
     selectedMentions,
     setSelectedMentions,
     mentionQuery,
+    setMentionQuery,
     showMentionAllSuggestion,
     replyToMessage,
     setReplyToMessage,
@@ -1464,7 +1474,20 @@ export function ChatSessions() {
     resetInput,
     highlightedMentionIndex,
     handleMentionKeyDown,
-  } = useMessageInput(activeSessionId, mentionAgents);
+  } = useMessageInput(activeSessionId, mentionAgents, !isWorkflowInputMode);
+
+  const handleToggleChatInputMode = useCallback(() => {
+    if (!activeSessionId) return;
+    setChatInputModeBySessionId((prev) => {
+      const nextMode: ChatInputMode =
+        (prev[activeSessionId] ?? 'free') === 'workflow' ? 'free' : 'workflow';
+      return {
+        ...prev,
+        [activeSessionId]: nextMode,
+      };
+    });
+    setMentionQuery(null);
+  }, [activeSessionId, setMentionQuery]);
 
   const agentOptionsWithAll = useMemo(
     () => [
@@ -2438,7 +2461,7 @@ export function ChatSessions() {
     !!activeSessionId &&
     !isArchived &&
     (draft.trim().length > 0 ||
-      selectedMentions.length > 0 ||
+      (!isWorkflowInputMode && selectedMentions.length > 0) ||
       attachedFiles.length > 0) &&
     !sendMessage.isPending &&
     !isUploadingAttachments;
@@ -3296,6 +3319,13 @@ export function ChatSessions() {
   const handleSend = async () => {
     if (!activeSessionId || isArchived) return;
     const trimmed = draft.trim();
+
+    if (isWorkflowInputMode) {
+      if (!trimmed && attachedFiles.length === 0) return;
+      await doSendMessage(trimmed, 'workflow');
+      return;
+    }
+
     const sanitizedTrimmed = stripMentionAllAliases(trimmed);
     const contentMentions = extractMentions(draft);
     const directContentMentions = new Set(
@@ -3345,7 +3375,7 @@ export function ChatSessions() {
 
     if (runningMentionedAgents.length > 0) {
       if (hasShownAgentRunningWarningRef.current.has(activeSessionId)) {
-        await doSendMessage(content);
+        await doSendMessage(content, 'free');
         return;
       }
       hasShownAgentRunningWarningRef.current.add(activeSessionId);
@@ -3356,20 +3386,24 @@ export function ChatSessions() {
         }),
         tone: 'info',
         onConfirm: async () => {
-          await doSendMessage(content);
+          await doSendMessage(content, 'free');
         },
       });
       return;
     }
 
-    await doSendMessage(content);
+    await doSendMessage(content, 'free');
   };
 
-  const doSendMessage = async (content: string) => {
+  const doSendMessage = async (
+    content: string,
+    chatInputMode: ChatInputMode
+  ) => {
     if (!activeSessionId) return;
     const meta: JsonValue = {
       app_language: appLanguage,
       sender_handle: senderHandle,
+      ...(chatInputMode === 'workflow' ? { chat_input_mode: 'workflow' } : {}),
       ...(replyToMessage
         ? { reference: { message_id: replyToMessage.id } }
         : {}),
@@ -3380,6 +3414,7 @@ export function ChatSessions() {
         await handleAttachmentUpload(attachedFiles, {
           content: content || undefined,
           referenceMessageId: replyToMessage?.id,
+          chatInputMode,
         });
       } else {
         await sendMessage.mutateAsync({
@@ -3399,7 +3434,11 @@ export function ChatSessions() {
 
   const handleAttachmentUpload = async (
     files: FileList | File[],
-    options?: { content?: string; referenceMessageId?: string }
+    options?: {
+      content?: string;
+      referenceMessageId?: string;
+      chatInputMode?: ChatInputMode;
+    }
   ) => {
     if (!activeSessionId || isArchived) return;
     const list = Array.from(files);
@@ -3423,6 +3462,7 @@ export function ChatSessions() {
           senderHandle,
           content: options?.content,
           referenceMessageId: options?.referenceMessageId,
+          chatInputMode: options?.chatInputMode,
         }
       );
       upsertMessage(message);
@@ -4349,7 +4389,7 @@ export function ChatSessions() {
         },
       });
     }
-  }, [activeSessionId, sendMessage, t]);
+  }, [activeSessionId, generatePlanAndRun, t]);
 
   const handleCancelTitleEdit = () => {
     setTitleDraft(activeSession?.title ?? '');
@@ -5131,6 +5171,10 @@ export function ChatSessions() {
                   canSend={canSend}
                   isSending={sendMessage.isPending}
                   onSend={handleSend}
+                  chatInputMode={activeChatInputMode}
+                  onToggleChatInputMode={handleToggleChatInputMode}
+                  isWorkflowMode={isWorkflowInputMode}
+                  leadAgentName={sessionMembers[0]?.agent.name ?? null}
                   isArchived={isArchived}
                   activeSessionId={activeSessionId}
                 />

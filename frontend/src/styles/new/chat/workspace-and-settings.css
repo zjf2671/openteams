@@ -630,6 +630,12 @@
     cursor: not-allowed;
   }
 
+  .new-design .chat-session-input-icon-btn-active {
+    border-color: rgba(80, 148, 251, 0.34);
+    background: rgba(80, 148, 251, 0.14);
+    color: #2563eb;
+  }
+
   .new-design .chat-session-input-status {
     color: #9ca3af;
     font-size: 12px;
@@ -956,6 +962,18 @@
 
   .new-design .chat-session-input-editor {
     min-height: auto;
+  }
+
+  .new-design .chat-session-workflow-mode-label {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    margin-bottom: 6px;
+    border-radius: 999px;
+    color: #2563eb;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
   }
 
   .new-design .chat-session-textarea {

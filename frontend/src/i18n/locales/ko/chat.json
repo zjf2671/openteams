@@ -99,6 +99,12 @@
       }
     },
     "mentionAgents": "에이전트 멘션",
+    "switchToFreeMode": "자유 채팅 모드로 전환",
+    "switchToWorkflowMode": "워크플로 모드로 전환",
+    "freeModeDescription": "자유 채팅 모드: @로 메시지를 멤버에게 라우팅합니다.",
+    "workflowModeDescription": "워크플로 모드: 메시지가 리드 에이전트로 라우팅됩니다.",
+    "workflowModeLabel": "- 워크플로 모드",
+    "workflowPlaceholder": "워크플로 요청을 설명하세요...",
     "mentionAllOption": "모든 멤버 (@all)",
     "mentionAllSuggestion": "@모든 멤버",
     "mentionAllBadge": "@all",

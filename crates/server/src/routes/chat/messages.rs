@@ -120,6 +120,14 @@ fn resolve_relative_path(relative_path: &str) -> Option<PathBuf> {
     Some(asset_dir().join(rel))
 }
 
+fn normalize_chat_input_mode(value: &str) -> Option<&'static str> {
+    if value.trim() == "workflow" {
+        Some("workflow")
+    } else {
+        None
+    }
+}
+
 pub async fn get_messages(
     Extension(session): Extension<ChatSession>,
     State(deployment): State<DeploymentImpl>,
@@ -185,6 +193,7 @@ pub async fn upload_message_attachments(
     let mut content: Option<String> = None;
     let mut sender_handle: Option<String> = None;
     let mut reference_message_id: Option<Uuid> = None;
+    let mut chat_input_mode: Option<&'static str> = None;
     let mut attachments: Vec<ChatAttachmentMeta> = Vec::new();
 
     while let Some(field) = multipart.next_field().await? {
@@ -213,6 +222,10 @@ pub async fn upload_message_attachments(
                 if let Ok(parsed) = Uuid::parse_str(text.trim()) {
                     reference_message_id = Some(parsed);
                 }
+            }
+            Some("chat_input_mode") => {
+                let text = field.text().await?;
+                chat_input_mode = normalize_chat_input_mode(&text);
             }
             _ => {
                 let filename = field.file_name().map(|name| name.to_string());
@@ -279,6 +292,9 @@ pub async fn upload_message_attachments(
     }
     if let Some(reference_id) = reference_message_id {
         meta["reference"] = serde_json::json!({ "message_id": reference_id });
+    }
+    if let Some(mode) = chat_input_mode {
+        meta["chat_input_mode"] = serde_json::json!(mode);
     }
 
     let message = services::services::chat::create_message_with_id(
@@ -609,4 +625,17 @@ pub async fn resend_message(
         .await;
 
     Ok(ResponseJson(ApiResponse::success(())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_chat_input_mode;
+
+    #[test]
+    fn normalize_chat_input_mode_accepts_only_workflow() {
+        assert_eq!(normalize_chat_input_mode("workflow"), Some("workflow"));
+        assert_eq!(normalize_chat_input_mode(" workflow "), Some("workflow"));
+        assert_eq!(normalize_chat_input_mode("free"), None);
+        assert_eq!(normalize_chat_input_mode(""), None);
+    }
 }

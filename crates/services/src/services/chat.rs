@@ -219,6 +219,12 @@ pub fn parse_agent_send_mentions(meta: &Value) -> Vec<String> {
         .collect()
 }
 
+pub fn is_workflow_chat_input_mode(meta: &Value) -> bool {
+    meta.get("chat_input_mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode.trim() == "workflow")
+}
+
 pub async fn create_message(
     pool: &SqlitePool,
     session_id: Uuid,
@@ -268,6 +274,7 @@ pub async fn create_message_with_id(
     }
     let mentions = match sender_type {
         ChatSenderType::Agent => parse_agent_send_mentions(&meta),
+        ChatSenderType::User if is_workflow_chat_input_mode(&meta) => Vec::new(),
         _ => parse_mentions(&content),
     };
     if content.trim().is_empty() && !has_attachments(&meta) {
@@ -1797,9 +1804,10 @@ mod tests {
 
     use super::{
         CompressionType, SimplifiedMessage, all_agents_running, compress_messages_if_needed,
-        create_message, is_protocol_notice_history_message, limit_summary_input_messages,
-        parse_agent_send_mentions, parse_mentions, prioritize_summary_agents,
-        select_messages_to_compress_by_token, should_include_message_in_history,
+        create_message, is_protocol_notice_history_message, is_workflow_chat_input_mode,
+        limit_summary_input_messages, parse_agent_send_mentions, parse_mentions,
+        prioritize_summary_agents, select_messages_to_compress_by_token,
+        should_include_message_in_history,
     };
 
     #[test]
@@ -1948,6 +1956,73 @@ mod tests {
         .expect("create user message");
 
         assert_eq!(message.mentions.0, vec!["backend"]);
+    }
+
+    #[test]
+    fn workflow_chat_input_mode_is_read_from_meta() {
+        assert!(is_workflow_chat_input_mode(&serde_json::json!({
+            "chat_input_mode": "workflow"
+        })));
+        assert!(!is_workflow_chat_input_mode(&serde_json::json!({
+            "chat_input_mode": "free"
+        })));
+        assert!(!is_workflow_chat_input_mode(&serde_json::json!({})));
+    }
+
+    #[tokio::test]
+    async fn create_message_skips_user_mentions_in_workflow_mode() {
+        let pool = setup_chat_message_pool().await;
+        let session = create_active_session(&pool).await;
+
+        let message = create_message(
+            &pool,
+            session.id,
+            ChatSenderType::User,
+            None,
+            "@backend please review".to_string(),
+            Some(serde_json::json!({ "chat_input_mode": "workflow" })),
+        )
+        .await
+        .expect("create workflow user message");
+
+        assert!(message.mentions.0.is_empty());
+        assert_eq!(
+            message
+                .meta
+                .0
+                .get("chat_input_mode")
+                .and_then(serde_json::Value::as_str),
+            Some("workflow")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_attachment_message_skips_user_mentions_in_workflow_mode() {
+        let pool = setup_chat_message_pool().await;
+        let session = create_active_session(&pool).await;
+
+        let message = create_message(
+            &pool,
+            session.id,
+            ChatSenderType::User,
+            None,
+            "@backend see attached".to_string(),
+            Some(serde_json::json!({
+                "chat_input_mode": "workflow",
+                "attachments": [{
+                    "id": Uuid::new_v4(),
+                    "name": "notes.txt",
+                    "mime_type": "text/plain",
+                    "size_bytes": 12,
+                    "kind": "file",
+                    "relative_path": "chat/session/demo/attachments/message/notes.txt"
+                }]
+            })),
+        )
+        .await
+        .expect("create workflow attachment message");
+
+        assert!(message.mentions.0.is_empty());
     }
 
     #[tokio::test]

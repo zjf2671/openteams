@@ -99,6 +99,12 @@
       }
     },
     "mentionAgents": "Mentionner des agents",
+    "switchToFreeMode": "Basculer en discussion libre",
+    "switchToWorkflowMode": "Basculer en mode workflow",
+    "freeModeDescription": "Discussion libre : utilisez @ pour router les messages aux membres.",
+    "workflowModeDescription": "Mode workflow : les messages sont routés vers l'agent principal.",
+    "workflowModeLabel": "- Mode workflow",
+    "workflowPlaceholder": "Décrivez la demande de workflow...",
     "mentionAllOption": "Tous les membres (@all)",
     "mentionAllSuggestion": "@Tous les membres",
     "mentionAllBadge": "@all",

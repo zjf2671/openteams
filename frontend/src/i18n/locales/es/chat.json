@@ -99,6 +99,12 @@
       }
     },
     "mentionAgents": "Mencionar agentes",
+    "switchToFreeMode": "Cambiar a chat libre",
+    "switchToWorkflowMode": "Cambiar a modo de flujo de trabajo",
+    "freeModeDescription": "Chat libre: usa @ para enrutar mensajes a los miembros.",
+    "workflowModeDescription": "Modo de flujo de trabajo: los mensajes se enrutan al agente principal.",
+    "workflowModeLabel": "- Modo de flujo de trabajo",
+    "workflowPlaceholder": "Describe la solicitud del flujo de trabajo...",
     "mentionAllOption": "Todos los miembros (@all)",
     "mentionAllSuggestion": "@Todos los miembros",
     "mentionAllBadge": "@all",

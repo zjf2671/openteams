@@ -89,6 +89,12 @@
   },
   "input": {
     "mentionAgents": "提及 Agent",
+    "switchToFreeMode": "切换到自由聊天模式",
+    "switchToWorkflowMode": "切换到工作流模式",
+    "freeModeDescription": "自由聊天模式：使用 @ 将消息指派给成员。",
+    "workflowModeDescription": "工作流模式：消息统一路由到 lead agent。",
+    "workflowModeLabel": "- 工作流模式",
+    "workflowPlaceholder": "描述工作流请求...",
     "mentionAllOption": "所有成员（@all）",
     "mentionAllSuggestion": "@所有成员",
     "mentionAllBadge": "@all",

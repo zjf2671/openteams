@@ -99,6 +99,12 @@
       }
     },
     "mentionAgents": "エージェントをメンション",
+    "switchToFreeMode": "自由チャットモードに切り替え",
+    "switchToWorkflowMode": "ワークフローモードに切り替え",
+    "freeModeDescription": "自由チャットモード: @ でメンバーにメッセージをルーティングします。",
+    "workflowModeDescription": "ワークフローモード: メッセージはリードエージェントにルーティングされます。",
+    "workflowModeLabel": "- ワークフローモード",
+    "workflowPlaceholder": "ワークフローの依頼を入力...",
     "mentionAllOption": "全員（@all）",
     "mentionAllSuggestion": "@全員",
     "mentionAllBadge": "@all",

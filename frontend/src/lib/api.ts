@@ -800,6 +800,7 @@ export const chatApi = {
       content?: string;
       referenceMessageId?: string;
       appLanguage?: string;
+      chatInputMode?: 'free' | 'workflow';
     }
   ): Promise<ChatMessage> => {
     const form = new FormData();
@@ -817,6 +818,9 @@ export const chatApi = {
     }
     if (options?.appLanguage) {
       form.append('app_language', options.appLanguage);
+    }
+    if (options?.chatInputMode === 'workflow') {
+      form.append('chat_input_mode', 'workflow');
     }
 
     const response = await fetch(

@@ -99,6 +99,12 @@
       }
     },
     "mentionAgents": "提及 Agent",
+    "switchToFreeMode": "切換到自由聊天模式",
+    "switchToWorkflowMode": "切換到工作流模式",
+    "freeModeDescription": "自由聊天模式：使用 @ 將訊息指派給成員。",
+    "workflowModeDescription": "工作流模式：訊息統一路由到 lead agent。",
+    "workflowModeLabel": "- 工作流模式",
+    "workflowPlaceholder": "描述工作流請求...",
     "mentionAllOption": "所有成員（@all）",
     "mentionAllSuggestion": "@所有成員",
     "mentionAllBadge": "@all",
