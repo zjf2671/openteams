@@ -77,7 +77,10 @@ import { AgentSkillsSection } from './AgentSkillsSection';
 import { TeamProtocolEditorModal } from './TeamProtocolEditorModal';
 import { TeamImportPreviewModal } from './TeamImportPreviewModal';
 import { SearchableDropdownContainer } from '@/components/ui-new/containers/SearchableDropdownContainer';
-import { SaveTeamPresetSnapshotModal } from './SaveTeamPresetSnapshotModal';
+import {
+  SaveTeamPresetSnapshotModal,
+  type SaveTeamPresetInitialValues,
+} from './SaveTeamPresetSnapshotModal';
 
 const truncateByChars = (value: string, maxChars: number): string => {
   const chars = Array.from(value);
@@ -570,6 +573,11 @@ export function AiMembersSidebar({
   const [teamPresetSnapshotError, setTeamPresetSnapshotError] = useState<
     string | null
   >(null);
+  const [savedPresetInfo, setSavedPresetInfo] =
+    useState<SaveTeamPresetInitialValues | null>(null);
+  useEffect(() => {
+    setSavedPresetInfo(null);
+  }, [activeSessionId]);
   const [teamProtocolContent, setTeamProtocolContent] = useState('');
   const [teamProtocolEnabled, setTeamProtocolEnabled] = useState(false);
   const [isTeamProtocolLoading, setIsTeamProtocolLoading] = useState(false);
@@ -757,6 +765,11 @@ export function AiMembersSidebar({
           queryClient.invalidateQueries({ queryKey: ['user-system'] }),
           queryClient.invalidateQueries({ queryKey: ['chatPresets'] }),
         ]);
+        setSavedPresetInfo({
+          team_preset_id: payload.team_preset_id,
+          name: saved.team.name ?? '',
+          description: saved.team.description ?? '',
+        });
         const savedMessage = saved.overwritten
           ? t('members.teamPresetSnapshot.overwritten', {
               name: saved.team.name,
@@ -1530,6 +1543,7 @@ export function AiMembersSidebar({
         isOpen={isTeamPresetSnapshotOpen}
         isSaving={isTeamPresetSnapshotSaving}
         error={teamPresetSnapshotError}
+        initialValues={savedPresetInfo}
         onClose={() => {
           if (isTeamPresetSnapshotSaving) return;
           setIsTeamPresetSnapshotOpen(false);
