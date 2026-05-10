@@ -430,7 +430,7 @@ pub async fn get_workflow_card(
     Ok(ResponseJson(ApiResponse::success(projection)))
 }
 
-async fn build_execution_workflow_card_projection(
+pub(super) async fn build_execution_workflow_card_projection(
     pool: &sqlx::SqlitePool,
     message: &ChatMessage,
 ) -> Result<WorkflowCardProjection, ApiError> {

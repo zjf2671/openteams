@@ -129,6 +129,28 @@ impl WorkflowLoop {
         .await
     }
 
+    pub async fn update_user_review_required(
+        pool: &SqlitePool,
+        id: Uuid,
+        user_review_required: bool,
+    ) -> Result<Self, sqlx::Error> {
+        sqlx::query_as::<_, Self>(
+            r#"
+            UPDATE chat_workflow_loops
+            SET user_review_required = ?2,
+                updated_at = datetime('now', 'subsec')
+            WHERE id = ?1
+            RETURNING id, execution_id, round_id, loop_key, review_step_id,
+                      member_step_ids_json, status, retry_count, max_retry,
+                      user_review_required, rejection_reason, created_at, updated_at
+            "#,
+        )
+        .bind(id)
+        .bind(user_review_required)
+        .fetch_one(pool)
+        .await
+    }
+
     pub async fn increment_retry(
         pool: &SqlitePool,
         id: Uuid,

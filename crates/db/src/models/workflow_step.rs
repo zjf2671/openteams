@@ -273,6 +273,34 @@ impl WorkflowStep {
         .await
     }
 
+    pub async fn update_review_requirements(
+        pool: &SqlitePool,
+        id: Uuid,
+        lead_review_required: bool,
+        user_review_required: bool,
+    ) -> Result<Self, sqlx::Error> {
+        sqlx::query_as::<_, Self>(
+            r#"
+            UPDATE chat_workflow_steps
+            SET lead_review_required = ?2,
+                user_review_required = ?3,
+                updated_at = datetime('now', 'subsec')
+            WHERE id = ?1
+            RETURNING id, execution_id, round_id, compiled_revision_id, step_key,
+                      step_type, title, instructions, assigned_workflow_agent_session_id,
+                      status, retry_count, max_retry, round_index, display_order,
+                      latest_run_id, summary_text, content, loop_id,
+                      lead_review_required, user_review_required, revision_context,
+                      created_at, updated_at, started_at, completed_at
+            "#,
+        )
+        .bind(id)
+        .bind(lead_review_required)
+        .bind(user_review_required)
+        .fetch_one(pool)
+        .await
+    }
+
     pub async fn update_loop_id(
         pool: &SqlitePool,
         id: Uuid,
