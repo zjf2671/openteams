@@ -1001,7 +1001,7 @@ export function ChatSessions() {
         userReview: boolean;
       }>
     ) => {
-      updateWorkflowReviewSettingsMutation.mutate({
+      return updateWorkflowReviewSettingsMutation.mutateAsync({
         executionId,
         overrides,
       });
@@ -3841,9 +3841,7 @@ export function ChatSessions() {
   }, []);
 
   const importMembersFromPlan = useCallback(
-    async (
-      plan: MemberPresetImportPlan[]
-    ): Promise<Map<string, string>> => {
+    async (plan: MemberPresetImportPlan[]): Promise<Map<string, string>> => {
       const presetToAgentMap = new Map<string, string>();
       if (!activeSessionId) return presetToAgentMap;
 

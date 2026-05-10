@@ -110,18 +110,34 @@ const REVIEW_READY_STEP_STATUSES = new Set([
   'skipped',
   'cancelled',
 ]);
+const REVIEW_SETTINGS_EXECUTION_FINISHED_ERROR =
+  'Review settings cannot be changed after execution has finished.';
+const REVIEW_SETTINGS_FINISHED_MESSAGE =
+  '当前工作流状态不支持修改审核设置。';
+
+function getReviewSettingsErrorMessage(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : 'Unable to update review settings.';
+  return message.includes(REVIEW_SETTINGS_EXECUTION_FINISHED_ERROR)
+    ? REVIEW_SETTINGS_FINISHED_MESSAGE
+    : message;
+}
 
 function ReviewSwitch({
   icon: Icon,
   label,
   tooltip,
   checked,
+  disabled = false,
   onChange,
 }: {
   icon: LucideIcon;
   label: string;
   tooltip: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (checked: boolean) => void;
 }) {
   return (
@@ -129,12 +145,16 @@ function ReviewSwitch({
       type="button"
       role="switch"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) onChange(!checked);
+      }}
       className={cn(
         'group relative flex h-9 items-center justify-between gap-2 rounded-lg border px-2.5 text-left transition-all',
         checked
           ? 'border-[#5094fb]/30 bg-[#5094fb]/5'
-          : 'border-slate-100 bg-white hover:border-slate-200 hover:bg-slate-50'
+          : 'border-slate-100 bg-white hover:border-slate-200 hover:bg-slate-50',
+        disabled && 'cursor-not-allowed opacity-50 hover:bg-white'
       )}
     >
       <span className="flex min-w-0 items-center gap-1.5">
@@ -480,7 +500,7 @@ export type WorkflowWindowProps = {
   onUpdateReviewSettings?: (
     executionId: string,
     overrides: WorkflowReviewSettingOverride[]
-  ) => void;
+  ) => Promise<unknown> | void;
   onSubmitStepInput?: (stepId: string, inputText: string) => void;
   onApproval?: (
     stepId: string,
@@ -1475,6 +1495,10 @@ export function WorkflowWindow({
   const [reviewSettingsDraft, setReviewSettingsDraft] = useState<
     Record<string, { leadReview: boolean; userReview: boolean }>
   >({});
+  const [reviewSettingsError, setReviewSettingsError] = useState<string | null>(
+    null
+  );
+  const [isSavingReviewSettings, setIsSavingReviewSettings] = useState(false);
   const initializedWorkflowKeyRef = useRef<string | null>(null);
   const previousExecutionIdRef = useRef<string | null>(null);
 
@@ -1504,6 +1528,12 @@ export function WorkflowWindow({
     projection.state === 'failed' ||
     projection.execution_status === 'failed' ||
     (normalizedErrorMessage.length > 0 && hasFailedWorkflowStep);
+  const isReviewSettingsLocked = hasWorkflowCompleted || hasWorkflowFailed;
+  const reviewSettingsDisabled =
+    isReviewSettingsLocked || isSavingReviewSettings || !onUpdateReviewSettings;
+  const reviewSettingsDisplayError =
+    reviewSettingsError ??
+    (isReviewSettingsLocked ? REVIEW_SETTINGS_FINISHED_MESSAGE : null);
   const agents = useMemo(() => projection.agents ?? [], [projection.agents]);
   const leadAgentId =
     agents[0]?.workflow_agent_session_id ?? agents[0]?.session_agent_id ?? null;
@@ -1627,6 +1657,12 @@ export function WorkflowWindow({
     );
   }, [loopReviewSettingsRows, taskReviewSettingsRows]);
 
+  useEffect(() => {
+    if (isReviewSettingsOpen) {
+      setReviewSettingsError(null);
+    }
+  }, [isReviewSettingsOpen, projection.execution_id]);
+
   const updateReviewSettingDraft = useCallback(
     (stepId: string, key: 'leadReview' | 'userReview', value: boolean) => {
       setReviewSettingsDraft((prev) => ({
@@ -1641,25 +1677,38 @@ export function WorkflowWindow({
     []
   );
 
-  const handleSaveReviewSettings = useCallback(() => {
+  const handleSaveReviewSettings = useCallback(async () => {
     if (!projection.execution_id || !onUpdateReviewSettings) return;
-    onUpdateReviewSettings(projection.execution_id, [
-      ...taskReviewSettingsRows.map((row) => ({
-        stepId: row.stepId,
-        leadReview:
-          reviewSettingsDraft[row.stepId]?.leadReview ?? row.leadReview,
-        userReview:
-          reviewSettingsDraft[row.stepId]?.userReview ?? row.userReview,
-      })),
-      ...loopReviewSettingsRows.map((row) => ({
-        stepId: row.stepId,
-        leadReview: null,
-        userReview:
-          reviewSettingsDraft[row.stepId]?.userReview ?? row.userReview,
-      })),
-    ]);
-    setIsReviewSettingsOpen(false);
+    if (isReviewSettingsLocked) {
+      setReviewSettingsError(REVIEW_SETTINGS_FINISHED_MESSAGE);
+      return;
+    }
+    setReviewSettingsError(null);
+    setIsSavingReviewSettings(true);
+    try {
+      await onUpdateReviewSettings(projection.execution_id, [
+        ...taskReviewSettingsRows.map((row) => ({
+          stepId: row.stepId,
+          leadReview:
+            reviewSettingsDraft[row.stepId]?.leadReview ?? row.leadReview,
+          userReview:
+            reviewSettingsDraft[row.stepId]?.userReview ?? row.userReview,
+        })),
+        ...loopReviewSettingsRows.map((row) => ({
+          stepId: row.stepId,
+          leadReview: null,
+          userReview:
+            reviewSettingsDraft[row.stepId]?.userReview ?? row.userReview,
+        })),
+      ]);
+      setIsReviewSettingsOpen(false);
+    } catch (error) {
+      setReviewSettingsError(getReviewSettingsErrorMessage(error));
+    } finally {
+      setIsSavingReviewSettings(false);
+    }
   }, [
+    isReviewSettingsLocked,
     onUpdateReviewSettings,
     projection.execution_id,
     loopReviewSettingsRows,
@@ -2144,6 +2193,7 @@ export function WorkflowWindow({
                                   : '开启此任务节点的主Agent审核'
                               }
                               checked={draft.leadReview}
+                              disabled={reviewSettingsDisabled}
                               onChange={(checked) =>
                                 updateReviewSettingDraft(
                                   row.stepId,
@@ -2161,6 +2211,7 @@ export function WorkflowWindow({
                                   : '开启此任务节点的用户审核'
                               }
                               checked={draft.userReview}
+                              disabled={reviewSettingsDisabled}
                               onChange={(checked) =>
                                 updateReviewSettingDraft(
                                   row.stepId,
@@ -2219,6 +2270,7 @@ export function WorkflowWindow({
                                   : '开启此工作流循环的用户审核'
                               }
                               checked={draft.userReview}
+                              disabled={reviewSettingsDisabled}
                               onChange={(checked) =>
                                 updateReviewSettingDraft(
                                   row.stepId,
@@ -2235,6 +2287,12 @@ export function WorkflowWindow({
                 </div>
               )}
             </div>
+            {reviewSettingsDisplayError && (
+              <div className="mx-5 mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 shadow-sm">
+                <Bell className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{reviewSettingsDisplayError}</span>
+              </div>
+            )}
             <div className="flex justify-end gap-2 border-t border-slate-100 bg-white px-5 py-4">
               <button
                 type="button"
@@ -2246,10 +2304,14 @@ export function WorkflowWindow({
               <button
                 type="button"
                 onClick={handleSaveReviewSettings}
-                disabled={!projection.execution_id || !onUpdateReviewSettings}
+                disabled={
+                  !projection.execution_id ||
+                  !onUpdateReviewSettings ||
+                  reviewSettingsDisabled
+                }
                 className="rounded-md bg-[#5094fb] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#4080e0] disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
               >
-                Save Changes
+                {isSavingReviewSettings ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
           </div>
