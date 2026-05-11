@@ -222,7 +222,7 @@ type ChatWorkflowCardProps = {
   onExecute?: (planId: string) => void;
   onPauseAll?: (executionId: string) => void;
   onResume?: (executionId: string) => void;
-  onRetryStep?: (stepId: string) => void;
+  onRetryStep?: (stepId: string, retryTarget?: 'task' | 'review') => void;
   onOpenWindow?: () => void;
   onRetryPlanGeneration?: (messageId: string) => void;
   retryPlanGenerationPending?: boolean;
@@ -320,7 +320,7 @@ export function ChatWorkflowCard({
   ) : isPlanGenerationPending ? (
     <ClockIcon className="size-icon-sm text-[#2563EB]" weight="fill" />
   ) : isExecutionRecompiling ? (
-    <ClockIcon className="size-icon-sm text-[#0F766E]" weight="fill" />
+    <ClockIcon className="size-icon-sm text-[#5094fb]" weight="fill" />
   ) : projection.state === 'completed' ? (
     <CheckCircleIcon className="size-icon-sm text-[#15803D]" weight="fill" />
   ) : projection.state === 'failed' || isInvalid ? (
@@ -340,7 +340,7 @@ export function ChatWorkflowCard({
     : isPlanGenerationPending
       ? t('workflow.card.stateLabels.generatingPlan', { defaultValue: 'Generating Plan' })
       : isExecutionRecompiling
-        ? t('workflow.card.stateLabels.recompilingPlan', { defaultValue: 'Recompiling Plan' })
+        ? t('workflow.iterationFeedback.regeneratingPlan', { defaultValue: 'Regenerating plan' })
         : projection.state === 'completed'
           ? t('workflow.card.stateLabels.workItem', { defaultValue: 'Work Item' })
           : projection.state === 'failed'
@@ -468,6 +468,7 @@ export function ChatWorkflowCard({
               currentRound={projection.current_round}
               completedSteps={projection.completed_step_count}
               totalSteps={projection.total_step_count}
+              isRegeneratingPlan={isExecutionRecompiling}
               runningStepTitle={
                 projection.steps.find(
                   (s) => s.status === 'running' || s.status === 'failed'

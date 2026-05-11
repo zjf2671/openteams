@@ -940,6 +940,7 @@
       "steps": "단계",
       "status": "상태",
       "running": "실행 중",
+      "regeneratingPlan": "계획 재생성 중",
       "idle": "대기",
       "currentStep": "현재 단계",
       "reviewRequired": "리뷰 필요",
@@ -989,6 +990,7 @@
       "leadFallback": "리드"
     },
     "statusLabels": {
+      "interrupted": "중단됨",
       "stopRequested": "중지 요청됨",
       "waitingInput": "입력 대기",
       "reviewing": "리뷰 중",
@@ -1031,5 +1033,8 @@
     "chat": "채팅"
   },
   "workflow_plan_generation_unavailable": "이 세션에서는 워크플로 계획 생성을 사용할 수 없습니다.",
-  "workflow_retry": "다시 시도"
+  "workflow_retry": "다시 시도",
+  "workflow_retry_task": "작업 다시 시도",
+  "workflow_retry_review": "검토 다시 시도",
+  "workflow_retry_cancel": "취소"
 }

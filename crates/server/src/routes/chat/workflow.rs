@@ -958,14 +958,32 @@ pub async fn retry_step(
     Extension(session): Extension<ChatSession>,
     State(deployment): State<DeploymentImpl>,
     axum::extract::Path((_session_id, step_id)): axum::extract::Path<(Uuid, Uuid)>,
+    Query(query): Query<RetryStepQuery>,
 ) -> Result<Response, ApiError> {
     let pool = &deployment.db().pool;
     let (_step, _execution) = load_step_for_session(pool, &session, step_id).await?;
 
-    let (execution, step) =
-        WorkflowOrchestrator::retry_step(deployment.db(), deployment.chat_runner(), step_id)
+    let retry_target = query.retry_target.as_deref().unwrap_or("task");
+    let (execution, step) = match retry_target {
+        "review" => {
+            WorkflowOrchestrator::retry_step_review(
+                deployment.db(),
+                deployment.chat_runner(),
+                step_id,
+            )
             .await
-            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?
+        }
+        _ => {
+            WorkflowOrchestrator::retry_step(
+                deployment.db(),
+                deployment.chat_runner(),
+                step_id,
+            )
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?
+        }
+    };
 
     Ok((
         StatusCode::OK,
@@ -1293,6 +1311,11 @@ pub struct WorkflowTranscriptEntry {
     pub meta_json: Option<String>,
     pub created_at: String,
     pub agent_name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct RetryStepQuery {
+    pub retry_target: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, TS)]

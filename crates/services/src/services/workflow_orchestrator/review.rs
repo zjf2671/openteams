@@ -373,7 +373,7 @@ impl WorkflowOrchestrator {
                 Ok(ResolvedTranscriptAction {
                     transcript: updated_transcript,
                     execution: refreshed_execution,
-                    should_wake_scheduler: false,
+                    should_wake_scheduler: true,
                 })
             }
             "rejected" | "reject" => {

@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils';
 import { ChatMarkdown } from '@/components/ui-new/primitives/conversation/ChatMarkdown';
 import { WorkflowIterationFeedbackCard } from './WorkflowIterationFeedbackCard';
 import { WorkflowGraphBoard } from './WorkflowGraphBoard';
+import { WorkflowPendingReviewCard } from './WorkflowPendingReviewCard';
 import {
   workflowLatestReviewFeedback,
   workflowLatestReviewLabel,
@@ -109,6 +110,11 @@ const REVIEW_READY_STEP_STATUSES = new Set([
   'completed',
   'skipped',
   'cancelled',
+]);
+const WORKFLOW_REVIEW_ENTRY_TYPES = new Set([
+  'lead_review',
+  'step_review',
+  'loop_review',
 ]);
 const REVIEW_SETTINGS_EXECUTION_FINISHED_ERROR =
   'Review settings cannot be changed after execution has finished.';
@@ -314,7 +320,7 @@ function getTranscriptMarkdown(entry: WorkflowTranscriptEntry): string | null {
   if (
     (entry.entry_type === 'message' && entry.message_type === 'agent') ||
     entry.entry_type === 'error' ||
-    entry.entry_type === 'lead_review'
+    WORKFLOW_REVIEW_ENTRY_TYPES.has(entry.entry_type)
   ) {
     const content = entry.content.trim();
     return content.length > 0 ? content : null;
@@ -355,6 +361,24 @@ function isWorkflowRuntimeThinkingEntry(
     entry.entry_type === 'thinking' &&
     getTranscriptMetaSource(entry) === 'workflow_runtime_stream'
   );
+}
+
+function isWorkflowReviewEntry(entry: WorkflowTranscriptEntry): boolean {
+  return WORKFLOW_REVIEW_ENTRY_TYPES.has(entry.entry_type);
+}
+
+function isWorkflowChatPanelEntry(entry: WorkflowTranscriptEntry): boolean {
+  return entry.entry_type === 'message' || isWorkflowReviewEntry(entry);
+}
+
+function getWorkflowReviewAgentName(
+  entry: WorkflowTranscriptEntry,
+  fallbackAgentName: string
+): string {
+  const rawAgentName = entry.agent_name?.trim();
+  if (rawAgentName) return rawAgentName;
+  if (entry.entry_type === 'lead_review') return 'Lead';
+  return fallbackAgentName;
 }
 
 function getWorkflowOutputEntryLabel(entry: WorkflowTranscriptEntry): string {
@@ -494,7 +518,7 @@ export type WorkflowWindowProps = {
   onResume?: (executionId: string) => void;
   onInterruptStep?: (stepId: string) => void;
   onStopStep?: (stepId: string) => void;
-  onRetryStep?: (stepId: string) => void;
+  onRetryStep?: (stepId: string, retryTarget?: 'task' | 'review') => void;
   onUpdateReviewSettings?: (
     executionId: string,
     overrides: WorkflowReviewSettingOverride[]
@@ -766,7 +790,7 @@ function InspectorCard({
   isChatVisible: boolean;
   onInterruptStep?: (stepId: string) => void;
   onStopStep?: (stepId: string) => void;
-  onRetryStep?: (stepId: string) => void;
+  onRetryStep?: (stepId: string, retryTarget?: 'task' | 'review') => void;
   pendingActionId?: string | null;
   transcriptEntries: WorkflowTranscriptEntry[];
   isLoadingTranscript: boolean;
@@ -784,7 +808,7 @@ function InspectorCard({
   const statusColors: Record<string, string> = {
     failed: 'bg-rose-50 text-rose-600 border-rose-200',
     completed: 'bg-emerald-50 text-emerald-600 border-emerald-200',
-    waiting_review: 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-200',
+    waiting_review: 'bg-violet-50 text-violet-600 border-violet-200',
     pre_completed: 'bg-amber-50 text-amber-600 border-amber-200',
     running: 'bg-blue-50 text-blue-600 border-blue-200',
     revising: 'bg-blue-50 text-blue-600 border-blue-200',
@@ -804,9 +828,11 @@ function InspectorCard({
   const isFailed = WORKFLOW_FAILURE_STEP_STATUSES.has(step.status);
   const isCompleted = step.status === 'completed';
   const hasError = isFailed || loopRejectionReason.length > 0;
+  const canRetryReviewStep = step.latest_review?.feedback !== null && isRetryableWorkflowStepStatus(step.status);
   const hasFooterActions =
     step.status === 'running' ||
     step.status === 'waiting_review' ||
+    step.status === 'waiting_input' ||
     step.status === 'pre_completed' ||
     isFailed;
 
@@ -911,7 +937,7 @@ function InspectorCard({
           className={cn(
             'inline-flex items-center gap-2 py-3 text-sm font-semibold transition-colors border-b-2 -mb-[1px]',
             activeTab === 'DETAILS'
-              ? 'text-indigo-600 border-indigo-600'
+              ? 'text-[#5094fb] border-[#5094fb]'
               : 'text-slate-500 border-transparent hover:text-slate-700 hover:border-slate-300'
           )}
         >
@@ -924,7 +950,7 @@ function InspectorCard({
           className={cn(
             'inline-flex items-center gap-2 py-3 text-sm font-semibold transition-colors border-b-2 -mb-[1px]',
             activeTab === 'LOGS'
-              ? 'text-indigo-600 border-indigo-600'
+              ? 'text-[#5094fb] border-[#5094fb]'
               : 'text-slate-500 border-transparent hover:text-slate-700 hover:border-slate-300'
           )}
         >
@@ -975,7 +1001,7 @@ function InspectorCard({
             </div>
 
             <div className="mb-6">
-              <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-indigo-500 capitalize">
+              <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-[#5094fb] capitalize">
                 {t('workflow.inspector.instructionHeading', { defaultValue: 'Instruction' })}
               </h3>
               <div className="bg-slate-50/80 border border-slate-100 rounded-xl p-4 text-[13px] leading-relaxed text-slate-700 whitespace-pre-wrap">
@@ -985,7 +1011,7 @@ function InspectorCard({
 
             {(isFailed || isCompleted) && (
               <div className="mb-6">
-                <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-indigo-500 capitalize">
+                <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-[#5094fb] capitalize">
                 {t('workflow.inspector.summaryHeading', { defaultValue: 'Summary' })}
               </h3>
                 <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
@@ -1001,7 +1027,7 @@ function InspectorCard({
 
             {latestReviewLabel && (
               <div className="mb-6">
-                <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-indigo-500 capitalize">
+                <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-[#5094fb] capitalize">
                   {t('workflow.inspector.feedbackHeading', { defaultValue: 'Feedback' })}
                 </h3>
                 <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl p-4">
@@ -1016,7 +1042,7 @@ function InspectorCard({
             )}
 
             <div className="mb-6">
-              <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-indigo-500 capitalize">
+              <h3 className="text-base font-bold text-slate-800 mb-3 pl-3 border-l-4 border-[#5094fb] capitalize">
                 {t('workflow.inspector.executionRecordHeading', { defaultValue: 'Execution Record Output' })}
               </h3>
               <div className="text-[13px] text-slate-600 leading-relaxed">
@@ -1173,53 +1199,100 @@ function InspectorCard({
       </div>
 
       {hasFooterActions && (
-        <footer className="p-4 shrink-0 bg-slate-50/80 border-t border-slate-100 flex gap-3 relative z-10">
+        <footer className="px-4 py-3 shrink-0 bg-white border-t border-slate-100 flex items-center gap-2 relative z-10">
+          {/* Open Chat — ghost/subtle style, always left */}
           <button
             type="button"
             onClick={onOpenChat}
             className={cn(
-              'flex-1 py-2.5 px-4 rounded-xl font-semibold text-sm cursor-pointer transition-all flex items-center justify-center gap-2 shadow-sm',
+              'flex-none flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-colors',
               isChatVisible
-                ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-200'
-                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 hover:text-indigo-600'
+                ? 'text-[#5094fb] bg-[#5094fb]/10 hover:bg-[#5094fb]/15'
+                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
             )}
           >
-            <MessageSquare className="w-4 h-4" />
-            {isChatVisible ? t('workflow.inspector.closeChat', { defaultValue: 'Close Chat' }) : t('workflow.inspector.openChat', { defaultValue: 'Open Chat' })}
+            <MessageSquare className="w-3.5 h-3.5" />
+            {isChatVisible
+              ? t('workflow.inspector.closeChat', { defaultValue: 'Close Chat' })
+              : t('workflow.inspector.openChat', { defaultValue: 'Open Chat' })}
           </button>
 
-          {(step.status === 'running' || step.status === 'waiting_review' || step.status === 'waiting_input') && (onInterruptStep || onStopStep) && (
-            <button
-              type="button"
-              onClick={() => {
-                if (onInterruptStep) {
-                  onInterruptStep(step.id);
-                  return;
-                }
-                onStopStep?.(step.id);
-              }}
-              className="flex-1 py-2.5 px-4 rounded-xl font-semibold text-sm cursor-pointer transition-all flex items-center justify-center gap-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 shadow-sm"
-            >
-              <Ban className="w-4 h-4" />
-              {t('workflow.inspector.terminate', { defaultValue: 'Terminate' })}
-            </button>
-          )}
-          {isRetryableWorkflowStepStatus(step.status) && onRetryStep && (
-            <button
-              type="button"
-              onClick={() => onRetryStep(step.id)}
-              disabled={pendingActionId === step.id}
-              className="flex-1 py-2.5 px-4 rounded-xl font-semibold text-sm cursor-pointer transition-all flex items-center justify-center gap-2 bg-slate-800 text-white hover:bg-slate-900 shadow-sm shadow-slate-300 disabled:opacity-50 border border-slate-900"
-            >
-              <RotateCcw
-                className={cn(
-                  'w-4 h-4',
-                  pendingActionId === step.id && 'animate-spin'
-                )}
-              />
-              {t('workflow_retry', { defaultValue: 'Retry' })}
-            </button>
-          )}
+          {/* Right-side action buttons */}
+          <div className="flex-1 flex gap-2 justify-end">
+            {(step.status === 'running' || step.status === 'waiting_review' || step.status === 'waiting_input') && (onInterruptStep || onStopStep) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (onInterruptStep) {
+                    onInterruptStep(step.id);
+                    return;
+                  }
+                  onStopStep?.(step.id);
+                }}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-2xl text-xs font-medium bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 shadow-sm transition-all min-w-[100px]"
+              >
+                <Ban className="w-3.5 h-3.5" />
+                {t('workflow.inspector.terminate', { defaultValue: 'Terminate' })}
+              </button>
+            )}
+            {isRetryableWorkflowStepStatus(step.status) && onRetryStep && (
+              planNode?.data.leadReview ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onRetryStep(step.id)}
+                    disabled={pendingActionId === step.id}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-2xl text-xs font-medium bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 shadow-sm transition-all disabled:opacity-50"
+                  >
+                    <RotateCcw
+                      className={cn(
+                        'w-3.5 h-3.5',
+                        pendingActionId === step.id && 'animate-spin'
+                      )}
+                    />
+                    {t('workflow_retry_task', { defaultValue: '重试任务' })}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!canRetryReviewStep) return;
+                      onRetryStep(step.id, 'review');
+                    }}
+                    disabled={pendingActionId === step.id || !canRetryReviewStep}
+                    className={cn(
+                      'flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-2xl text-xs font-medium bg-white border shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed',
+                      canRetryReviewStep
+                        ? 'border-slate-200 text-amber-600 hover:bg-amber-50 hover:border-amber-200'
+                        : 'border-slate-100 text-slate-400'
+                    )}
+                  >
+                    <RotateCcw
+                      className={cn(
+                        'w-3.5 h-3.5',
+                        pendingActionId === step.id && 'animate-spin'
+                      )}
+                    />
+                    {t('workflow_retry_review', { defaultValue: '重试审核' })}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onRetryStep(step.id)}
+                  disabled={pendingActionId === step.id}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-2xl text-xs font-medium bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 shadow-sm transition-all disabled:opacity-50"
+                >
+                  <RotateCcw
+                    className={cn(
+                      'w-3.5 h-3.5',
+                      pendingActionId === step.id && 'animate-spin'
+                    )}
+                  />
+                  {t('workflow_retry', { defaultValue: 'Retry' })}
+                </button>
+              )
+            )}
+          </div>
         </footer>
       )}
     </motion.div>
@@ -1234,8 +1307,10 @@ function ChatPanel({
   step,
   agentName,
   entries,
+  pendingReview,
   pendingActionId,
   onApproval,
+  onRespondPendingReview,
   onClose,
   onSendInput,
   canSendInput,
@@ -1243,12 +1318,18 @@ function ChatPanel({
   step: WorkflowCardStep;
   agentName: string;
   entries: WorkflowTranscriptEntry[];
+  pendingReview?: WorkflowCardData['pending_review'];
   pendingActionId?: string | null;
   onApproval?: (
     stepId: string,
     action: string,
     transcriptId: string,
     inputText?: string
+  ) => void;
+  onRespondPendingReview?: (
+    reviewId: string,
+    action: 'approve' | 'reject',
+    feedback?: string
   ) => void;
   onClose: () => void;
   onSendInput?: (stepId: string, inputText: string) => void;
@@ -1259,7 +1340,7 @@ function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const outputEntries = useMemo(
-    () => entries.filter((e) => e.entry_type === 'message'),
+    () => entries.filter(isWorkflowChatPanelEntry),
     [entries]
   );
 
@@ -1279,7 +1360,7 @@ function ChatPanel({
   return (
     <div className="w-[24vw] min-w-[320px] max-w-[480px] bg-[#F8FAFC] h-[calc(100vh-80px)] max-h-none border-l border-slate-200 flex flex-col shadow-2xl">
       <div className="p-4 border-b border-slate-200 bg-white flex items-center gap-3 shrink-0">
-        <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white text-xs font-bold shadow-sm">
+        <div className="w-8 h-8 rounded-full bg-[#5094fb] flex items-center justify-center text-white text-xs font-bold shadow-sm">
           {agentName.substring(0, 2).toUpperCase()}
         </div>
         <div className="flex-1 min-w-0">
@@ -1307,14 +1388,15 @@ function ChatPanel({
         className="flex-1 p-4 space-y-4 overflow-y-auto flex flex-col py-6"
       >
         {outputEntries.map((entry) => {
+          const isReviewEntry = isWorkflowReviewEntry(entry);
           const isUser =
-            entry.message_type === 'user' && entry.entry_type !== 'lead_review';
+            entry.message_type === 'user' && !isReviewEntry;
           const markdownContent = getTranscriptMarkdown(entry);
           const entryAgentName =
-            !isUser && entry.agent_name?.trim()
-              ? entry.agent_name.trim()
-              : entry.entry_type === 'lead_review'
-                ? 'Lead'
+            !isUser && isReviewEntry
+              ? getWorkflowReviewAgentName(entry, agentName)
+              : !isUser && entry.agent_name?.trim()
+                ? entry.agent_name.trim()
                 : null;
 
           if (
@@ -1399,13 +1481,18 @@ function ChatPanel({
                   <span className="text-[10px] font-semibold text-slate-500">
                     {entryAgentName}
                   </span>
+                  {isReviewEntry && (
+                    <span className="rounded-full bg-[#5094fb]/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#5094fb]">
+                      {t('workflow.chatPanel.reviewOutput', { defaultValue: 'Review' })}
+                    </span>
+                  )}
                 </div>
               )}
               <div
                 className={cn(
                   'text-xs leading-relaxed',
                   isUser
-                    ? 'max-w-[85%] p-3 bg-indigo-500 text-white rounded-2xl rounded-tr-none shadow-sm'
+                    ? 'max-w-[85%] p-3 bg-[#5094fb] text-white rounded-2xl rounded-tr-none shadow-sm'
                     : 'w-full py-2 bg-transparent text-slate-800'
                 )}
               >
@@ -1427,7 +1514,25 @@ function ChatPanel({
         })}
       </div>
 
-      <div className="p-4 bg-white border-t border-slate-200 shrink-0">
+      <div className="space-y-3 p-4 bg-white border-t border-slate-200 shrink-0">
+        {pendingReview && (
+          <div className="max-h-[45vh] overflow-y-auto rounded-xl">
+            <WorkflowPendingReviewCard
+              pendingReview={pendingReview}
+              pendingActionId={pendingActionId}
+              onSubmit={
+                onRespondPendingReview
+                  ? (action, feedback) =>
+                      onRespondPendingReview(
+                        pendingReview.review_id,
+                        action,
+                        feedback
+                      )
+                  : undefined
+              }
+            />
+          </div>
+        )}
         <div className="relative">
           <input
             type="text"
@@ -1490,6 +1595,8 @@ export function WorkflowWindow({
   const { t } = useTranslation('chat');
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [isChatVisible, setIsChatVisible] = useState(false);
+  const [openedReviewNotificationId, setOpenedReviewNotificationId] =
+    useState<string | null>(null);
   const [executionRecordTab, setExecutionRecordTab] =
     useState<ExecutionRecordTab>('DETAILS');
   const [runtimeInputTranscripts, setRuntimeInputTranscripts] = useState<
@@ -1973,6 +2080,19 @@ export function WorkflowWindow({
       (projection.state === 'waiting' ||
         projection.execution_status === 'waiting'));
 
+  const pendingReviewNodeId = useMemo(() => {
+    const pendingReview = projection.pending_review;
+    if (!pendingReview) return undefined;
+
+    const directStep = stepById.get(pendingReview.target_id);
+    if (directStep) return directStep.step_key;
+
+    const loop = workflowLoops.find((item) => item.id === pendingReview.target_id);
+    if (!loop) return undefined;
+
+    return stepById.get(loop.review_step_id)?.step_key;
+  }, [projection.pending_review, stepById, workflowLoops]);
+
   // Notification items from pending reviews
   const notifications = useMemo(() => {
     const items: Array<{
@@ -1983,7 +2103,14 @@ export function WorkflowWindow({
       nodeId?: string;
     }> = [];
 
-    if (projection.pending_review) {
+    if (
+      projection.pending_review &&
+      !(
+        openedReviewNotificationId === projection.pending_review.review_id &&
+        isChatVisible &&
+        activeNodeId === pendingReviewNodeId
+      )
+    ) {
       items.push({
         id: projection.pending_review.review_id,
         type: projection.pending_review.review_type,
@@ -1991,6 +2118,7 @@ export function WorkflowWindow({
         message:
           projection.pending_review.prompt_template.message ||
           t('workflow.notifications.reviewRequired', { defaultValue: 'Review required' }),
+        nodeId: pendingReviewNodeId,
       });
     }
 
@@ -2004,15 +2132,50 @@ export function WorkflowWindow({
     }
 
     return items;
-  }, [projection.pending_review, workflowFinalReviewAction]);
+  }, [
+    activeNodeId,
+    isChatVisible,
+    openedReviewNotificationId,
+    pendingReviewNodeId,
+    projection.pending_review,
+    workflowFinalReviewAction,
+  ]);
 
-  const handleNodeClick = useCallback(
-    (id: string) => {
+  const openStepDetails = useCallback(
+    (id: string, options?: { forceChat?: boolean }) => {
       if (!stepByKey.has(id)) return;
+      const step = stepByKey.get(id);
       setActiveNodeId(id);
+      setIsChatVisible(
+        (current) =>
+          current || !!options?.forceChat || step?.status === 'waiting_input'
+      );
     },
     [stepByKey]
   );
+
+  const handleNodeClick = useCallback(
+    (id: string) => {
+      openStepDetails(id);
+    },
+    [openStepDetails]
+  );
+
+  const openPendingReviewInChat = useCallback(
+    (notificationId: string, nodeId?: string) => {
+      setOpenedReviewNotificationId(notificationId);
+
+      if (nodeId) {
+        openStepDetails(nodeId, { forceChat: true });
+      }
+    },
+    [openStepDetails]
+  );
+
+  const activeStepPendingReview =
+    activeNodeId && activeNodeId === pendingReviewNodeId
+      ? projection.pending_review
+      : null;
 
   const handleSendStepInput = useCallback(
     (stepId: string, inputText: string) => {
@@ -2347,20 +2510,20 @@ export function WorkflowWindow({
                 initial={{ opacity: 0, x: 100, scale: 0.95 }}
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, x: 100, scale: 0.95 }}
-                className="w-72 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden ring-4 ring-indigo-500/10 pointer-events-auto"
+                className="w-72 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden ring-4 ring-[#5094fb]/10 pointer-events-auto"
               >
-                <div className="bg-indigo-600 p-2.5 flex items-center justify-between text-white">
+                <div className="bg-[#5094fb] p-2.5 flex items-center justify-between text-white">
                   <span className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5">
                     <Bell className="w-3.5 h-3.5" /> {t('workflow.notifications.pendingReview', { defaultValue: 'Pending Review' })}
                   </span>
-                  <span className="text-[10px] bg-indigo-400/50 px-1.5 py-0.5 rounded">
+                  <span className="text-[10px] bg-white/20 px-1.5 py-0.5 rounded">
                     {notif.type === 'final_review' ? t('workflow.notifications.typeFinal', { defaultValue: 'Final' }) : t('workflow.notifications.typeStep', { defaultValue: 'Step' })}
                   </span>
                 </div>
                 <div className="p-4 space-y-3">
                   <div className="flex gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
-                      <AlertCircle className="w-5 h-5 text-amber-600" />
+                    <div className="w-8 h-8 rounded-lg bg-[#5094fb]/10 flex items-center justify-center shrink-0">
+                      <AlertCircle className="w-5 h-5 text-[#5094fb]" />
                     </div>
                     <div className="min-w-0">
                       <p className="text-xs font-semibold text-slate-900 truncate">
@@ -2389,7 +2552,7 @@ export function WorkflowWindow({
                             pendingActionId ===
                             workflowFinalReviewAction.transcriptId
                           }
-                          className="flex-1 py-1.5 bg-indigo-600 text-white rounded-md text-[10px] font-bold shadow-sm hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                          className="flex-1 py-1.5 bg-[#5094fb] text-white rounded-md text-[10px] font-bold shadow-sm hover:bg-[#4080e0] transition-colors disabled:opacity-50"
                         >
                           {t('workflow.notifications.accept', { defaultValue: 'ACCEPT' })}
                         </button>
@@ -2416,27 +2579,21 @@ export function WorkflowWindow({
                         <button
                           type="button"
                           onClick={() =>
-                            onRespondPendingReview(
-                              projection.pending_review!.review_id,
-                              'approve'
-                            )
+                            openPendingReviewInChat(notif.id, notif.nodeId)
                           }
                           disabled={
                             pendingActionId ===
                             projection.pending_review.review_id
                           }
-                          className="flex-1 py-1.5 bg-indigo-600 text-white rounded-md text-[10px] font-bold shadow-sm hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                          className="flex-1 py-1.5 bg-[#5094fb] text-white rounded-md text-[10px] font-bold shadow-sm hover:bg-[#4080e0] transition-colors disabled:opacity-50"
                         >
                           {t('workflow.notifications.approve', { defaultValue: 'APPROVE' })}
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (notif.nodeId) {
-                              setActiveNodeId(notif.nodeId);
-                              setIsChatVisible(true);
-                            }
-                          }}
+                          onClick={() =>
+                            openPendingReviewInChat(notif.id, notif.nodeId)
+                          }
                           className="flex-1 py-1.5 bg-slate-100 text-slate-700 rounded-md text-[10px] font-bold hover:bg-slate-200 transition-colors"
                         >
                           {t('workflow.notifications.viewDetails', { defaultValue: 'VIEW DETAILS' })}
@@ -2459,6 +2616,7 @@ export function WorkflowWindow({
                 currentRound={projection.current_round}
                 completedSteps={projection.completed_step_count}
                 totalSteps={projection.total_step_count}
+                isRegeneratingPlan={isExecutionRecompiling}
                 runningStepTitle={
                   projection.steps.find(
                     (s) => s.status === 'running' || s.status === 'failed'
@@ -2555,8 +2713,10 @@ export function WorkflowWindow({
                   step={activeStep}
                   agentName={resolveStepAgentName(activeStep)}
                   entries={visibleActiveTranscript}
+                  pendingReview={activeStepPendingReview}
                   pendingActionId={pendingActionId}
                   onApproval={onApproval}
+                  onRespondPendingReview={onRespondPendingReview}
                   onClose={() => setIsChatVisible(false)}
                   onSendInput={handleSendStepInput}
                   canSendInput={

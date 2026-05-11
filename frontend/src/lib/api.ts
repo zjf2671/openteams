@@ -1125,10 +1125,12 @@ export const chatApi = {
 
   retryWorkflowStep: async (
     sessionId: string,
-    stepId: string
+    stepId: string,
+    retryTarget?: 'task' | 'review'
   ): Promise<ResolveActionResponse> => {
+    const params = retryTarget ? `?retry_target=${retryTarget}` : '';
     const response = await makeRequest(
-      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/retry`,
+      `/api/chat/sessions/${sessionId}/workflow-steps/${stepId}/retry${params}`,
       { method: 'POST' }
     );
     return handleApiResponse<ResolveActionResponse>(response);

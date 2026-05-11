@@ -940,6 +940,7 @@
       "steps": "步骤",
       "status": "状态",
       "running": "运行中",
+      "regeneratingPlan": "正在重新生成计划",
       "idle": "空闲",
       "currentStep": "当前步骤",
       "reviewRequired": "需要审核",
@@ -989,6 +990,7 @@
       "leadFallback": "主 Agent"
     },
     "statusLabels": {
+      "interrupted": "已中断",
       "stopRequested": "停止请求中",
       "waitingInput": "等待输入",
       "reviewing": "审核中",
@@ -1031,5 +1033,8 @@
     "chat": "聊天"
   },
   "workflow_plan_generation_unavailable": "当前会话未开启工作流计划生成。",
-  "workflow_retry": "重试"
+  "workflow_retry": "重试",
+  "workflow_retry_task": "重试任务",
+  "workflow_retry_review": "重试审核",
+  "workflow_retry_cancel": "取消"
 }

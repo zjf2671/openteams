@@ -940,6 +940,7 @@
       "steps": "Steps",
       "status": "Status",
       "running": "Running",
+      "regeneratingPlan": "Regenerating plan",
       "idle": "Idle",
       "currentStep": "Current Step",
       "reviewRequired": "Review Required",
@@ -989,6 +990,7 @@
       "leadFallback": "Lead"
     },
     "statusLabels": {
+      "interrupted": "Interrupted",
       "stopRequested": "Stop Requested",
       "waitingInput": "Waiting Input",
       "reviewing": "Reviewing",
@@ -1031,5 +1033,8 @@
     "chat": "Chat"
   },
   "workflow_plan_generation_unavailable": "Workflow plan generation is unavailable for this session.",
-  "workflow_retry": "Retry"
+  "workflow_retry": "Retry",
+  "workflow_retry_task": "Retry Task",
+  "workflow_retry_review": "Retry Review",
+  "workflow_retry_cancel": "Cancel"
 }

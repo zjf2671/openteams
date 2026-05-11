@@ -940,6 +940,7 @@
       "steps": "步驟",
       "status": "狀態",
       "running": "執行中",
+      "regeneratingPlan": "正在重新產生計劃",
       "idle": "閒置",
       "currentStep": "目前步驟",
       "reviewRequired": "需要審核",
@@ -989,6 +990,7 @@
       "leadFallback": "主 Agent"
     },
     "statusLabels": {
+      "interrupted": "已中斷",
       "stopRequested": "停止請求中",
       "waitingInput": "等待輸入",
       "reviewing": "審核中",
@@ -1031,5 +1033,8 @@
     "chat": "聊天"
   },
   "workflow_plan_generation_unavailable": "目前會話未啟用工作流程計畫生成。",
-  "workflow_retry": "重試"
+  "workflow_retry": "重試",
+  "workflow_retry_task": "重試任務",
+  "workflow_retry_review": "重試審核",
+  "workflow_retry_cancel": "取消"
 }

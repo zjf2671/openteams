@@ -940,6 +940,7 @@
       "steps": "ステップ",
       "status": "ステータス",
       "running": "実行中",
+      "regeneratingPlan": "計画を再生成中",
       "idle": "アイドル",
       "currentStep": "現在のステップ",
       "reviewRequired": "レビューが必要",
@@ -989,6 +990,7 @@
       "leadFallback": "リード"
     },
     "statusLabels": {
+      "interrupted": "中断済み",
       "stopRequested": "停止リクエスト中",
       "waitingInput": "入力待ち",
       "reviewing": "レビュー中",
@@ -1031,5 +1033,8 @@
     "chat": "チャット"
   },
   "workflow_plan_generation_unavailable": "このセッションではワークフロープラン生成を利用できません。",
-  "workflow_retry": "再試行"
+  "workflow_retry": "再試行",
+  "workflow_retry_task": "タスクを再試行",
+  "workflow_retry_review": "レビューを再試行",
+  "workflow_retry_cancel": "キャンセル"
 }

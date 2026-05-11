@@ -31,6 +31,8 @@ const toTitleCase = (value: string) =>
 
 export function workflowStatusLabel(status?: string | null, t?: TFunction) {
   switch (status) {
+    case 'interrupted':
+      return t?.('workflow.statusLabels.interrupted', { defaultValue: 'Interrupted' }) ?? 'Interrupted';
     case 'interrupt_requested':
       return t?.('workflow.statusLabels.stopRequested', { defaultValue: 'Stop Requested' }) ?? 'Stop Requested';
     case 'waiting_input':

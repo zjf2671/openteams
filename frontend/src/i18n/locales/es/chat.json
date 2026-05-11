@@ -940,6 +940,7 @@
       "steps": "Pasos",
       "status": "Estado",
       "running": "Ejecutando",
+      "regeneratingPlan": "Regenerando el plan",
       "idle": "Inactivo",
       "currentStep": "Paso actual",
       "reviewRequired": "Revisión requerida",
@@ -989,6 +990,7 @@
       "leadFallback": "Lead"
     },
     "statusLabels": {
+      "interrupted": "Interrumpido",
       "stopRequested": "Detención solicitada",
       "waitingInput": "Esperando entrada",
       "reviewing": "En revisión",
@@ -1031,5 +1033,8 @@
     "chat": "Chat"
   },
   "workflow_plan_generation_unavailable": "La generación de planes de flujo de trabajo no está disponible para esta sesión.",
-  "workflow_retry": "Reintentar"
+  "workflow_retry": "Reintentar",
+  "workflow_retry_task": "Reintentar tarea",
+  "workflow_retry_review": "Reintentar revisión",
+  "workflow_retry_cancel": "Cancelar"
 }

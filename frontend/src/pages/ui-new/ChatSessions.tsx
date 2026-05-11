@@ -1088,9 +1088,15 @@ export function ChatSessions() {
   });
 
   const retryWorkflowStepMutation = useMutation({
-    mutationFn: async (stepId: string) => {
+    mutationFn: async ({
+      stepId,
+      retryTarget,
+    }: {
+      stepId: string;
+      retryTarget?: 'task' | 'review';
+    }) => {
       if (!activeSessionId) throw new Error('No active session');
-      return chatApi.retryWorkflowStep(activeSessionId, stepId);
+      return chatApi.retryWorkflowStep(activeSessionId, stepId, retryTarget);
     },
     onSuccess: () => {
       if (!activeSessionId) return;
@@ -1593,7 +1599,7 @@ export function ChatSessions() {
       return submitWorkflowStepInputMutation.variables?.stepId ?? null;
     }
     if (retryWorkflowStepMutation.isPending) {
-      return retryWorkflowStepMutation.variables ?? null;
+      return retryWorkflowStepMutation.variables?.stepId ?? null;
     }
     if (respondWorkflowReviewMutation.isPending) {
       return respondWorkflowReviewMutation.variables?.reviewId ?? null;
@@ -5185,8 +5191,11 @@ export function ChatSessions() {
                           onResumeWorkflow={(executionId) =>
                             resumeWorkflowMutation.mutate(executionId)
                           }
-                          onRetryWorkflowStep={(stepId) =>
-                            retryWorkflowStepMutation.mutate(stepId)
+                          onRetryWorkflowStep={(stepId, retryTarget) =>
+                            retryWorkflowStepMutation.mutate({
+                              stepId,
+                              retryTarget,
+                            })
                           }
                           onRetryWorkflowPlanGeneration={(messageId) =>
                             retryWorkflowPlanGenerationMutation.mutate(
@@ -5551,7 +5560,9 @@ export function ChatSessions() {
           onResume={(executionId) => resumeWorkflowMutation.mutate(executionId)}
           onInterruptStep={handleInterruptStep}
           onStopStep={(stepId) => stopWorkflowStepMutation.mutate(stepId)}
-          onRetryStep={(stepId) => retryWorkflowStepMutation.mutate(stepId)}
+          onRetryStep={(stepId, retryTarget) =>
+            retryWorkflowStepMutation.mutate({ stepId, retryTarget })
+          }
           onUpdateReviewSettings={handleUpdateWorkflowReviewSettings}
           onSubmitStepInput={(stepId, inputText) =>
             submitWorkflowStepInputMutation.mutate({ stepId, inputText })

@@ -33,7 +33,7 @@ type WorkflowGraphBoardProps = {
   agents?: WorkflowGraphAgent[];
   selectedStepId?: string | null;
   onSelectStep?: (id: string) => void;
-  onRetryStep?: (stepId: string) => void;
+  onRetryStep?: (stepId: string, retryTarget?: 'task' | 'review') => void;
   pendingActionId?: string | null;
   compact?: boolean;
   className?: string;
@@ -373,6 +373,7 @@ export function WorkflowGraphBoard({
   const [layoutError, setLayoutError] = useState<string | null>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [retryDialogStepId, setRetryDialogStepId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
@@ -662,6 +663,8 @@ export function WorkflowGraphBoard({
         const step = stepByKey.get(child.id);
         const status = step?.status ?? dataNode.data.status ?? 'pending';
         const retryStepId = step?.id ?? null;
+        const canRetryReviewStep = !!step && step.latest_review?.feedback !== null && isRetryableWorkflowStepStatus(step.status);
+
         const canRetryStep =
           !!onRetryStep &&
           !!retryStepId &&
@@ -747,21 +750,71 @@ export function WorkflowGraphBoard({
             )}
 
             {canRetryStep && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (retryStepId) onRetryStep?.(retryStepId);
-                }}
-                disabled={isRetryPending}
-                className="absolute -bottom-3 right-3 inline-flex items-center gap-1 rounded-full bg-rose-600 px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm hover:bg-rose-700 disabled:opacity-60 transition-colors"
-              >
-                <ArrowClockwiseIcon
-                  className={cn('size-3', isRetryPending && 'animate-spin')}
-                  weight="bold"
-                />
-                {t('workflow_retry', { defaultValue: '重试' })}
-              </button>
+              <div className="absolute -bottom-3 right-3 z-50">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!retryStepId) return;
+                    if (dataNode?.data.leadReview) {
+                      setRetryDialogStepId(retryStepId);
+                    } else {
+                      onRetryStep?.(retryStepId);
+                    }
+                  }}
+                  disabled={isRetryPending}
+                    className="inline-flex items-center gap-1 rounded-2xl bg-rose-600 px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm hover:bg-rose-700 disabled:opacity-60 transition-colors"
+                >
+                  <ArrowClockwiseIcon
+                    className={cn('size-3', isRetryPending && 'animate-spin')}
+                    weight="bold"
+                  />
+                  {t('workflow_retry', { defaultValue: '重试' })}
+                </button>
+                {retryDialogStepId === retryStepId && (
+                  <div className="absolute right-0 bottom-full mb-1.5 z-[100] flex flex-col gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg min-w-[140px]">
+                    <button
+                      type="button"
+                      className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100 transition-colors text-left"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRetryDialogStepId(null);
+                        onRetryStep?.(retryStepId);
+                      }}
+                    >
+                      {t('workflow_retry_task', { defaultValue: '重试任务' })}
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        'flex items-center gap-2 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors text-left',
+                        canRetryReviewStep
+                          ? 'text-slate-700 hover:bg-slate-100'
+                          : 'text-slate-400 cursor-not-allowed'
+                      )}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!canRetryReviewStep) return;
+                        setRetryDialogStepId(null);
+                        onRetryStep?.(retryStepId, 'review');
+                      }}
+                      disabled={!canRetryReviewStep}
+                    >
+                      {t('workflow_retry_review', { defaultValue: '重试审核' })}
+                    </button>
+                    <button
+                      type="button"
+                      className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-[11px] font-medium text-black hover:bg-slate-100 transition-colors text-left"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRetryDialogStepId(null);
+                      }}
+                    >
+                      {t('workflow_retry_cancel', { defaultValue: '取消' })}
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         );

@@ -15,7 +15,11 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    super::{chat_runner::ChatRunner, workflow_loop_executor::LoopExecutor},
+    super::{
+        chat_runner::ChatRunner,
+        workflow_loop_executor::LoopExecutor,
+        workflow_runtime::{WorkflowStepRunResult, parse_summary_payload},
+    },
     OrchestratorError, StepOutcome, WorkflowOrchestrator, load_agents_for_session,
 };
 
@@ -47,6 +51,199 @@ impl WorkflowOrchestrator {
             .ok_or_else(|| OrchestratorError::NotFound(format!("step {} 未找到", ready_step.id)))?;
 
         Ok((latest_execution, latest_step))
+    }
+
+    /// Retry only the review phase of a step, keeping the existing task output.
+    pub async fn retry_step_review(
+        db: &DBService,
+        chat_runner: &ChatRunner,
+        step_id: Uuid,
+    ) -> Result<(WorkflowExecution, WorkflowStep), OrchestratorError> {
+        let pool = &db.pool;
+        let step = WorkflowStep::find_by_id(pool, step_id)
+            .await?
+            .ok_or_else(|| OrchestratorError::NotFound(format!("step {} 未找到", step_id)))?;
+        let execution = WorkflowExecution::find_by_id(pool, step.execution_id)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::NotFound(format!("execution {} 未找到", step.execution_id))
+            })?;
+
+        Self::validate_step_retry_candidate(&step)?;
+
+        if !step.lead_review_required {
+            return Err(OrchestratorError::IllegalTransition(
+                "step does not have lead review enabled, cannot retry review".to_string(),
+            ));
+        }
+
+        // Reconstruct the task result from persisted data
+        let summary_payload = parse_summary_payload(step.summary_text.as_deref())
+            .ok_or_else(|| {
+                OrchestratorError::IllegalTransition(
+                    "step has no persisted task output, cannot retry review only".to_string(),
+                )
+            })?;
+        let run_id = step.latest_run_id.ok_or_else(|| {
+            OrchestratorError::IllegalTransition(
+                "step has no run_id, cannot retry review only".to_string(),
+            )
+        })?;
+        let result = WorkflowStepRunResult {
+            run_id,
+            summary: summary_payload.summary,
+            content: summary_payload
+                .content
+                .or_else(|| step.content.clone())
+                .unwrap_or_default(),
+            outputs: summary_payload.outputs,
+        };
+
+        // Prepare retry keeping task outputs
+        let prepared_step = WorkflowStep::prepare_retry_review(pool, step.id).await?;
+        let ready_step = Self::transition_step_and_sync(
+            pool,
+            chat_runner,
+            &execution,
+            &prepared_step,
+            WorkflowStepStatus::Ready,
+            "step_retry_review_prepared",
+        )
+        .await?;
+
+        let execution =
+            Self::activate_execution_for_step_retry(pool, chat_runner, &execution).await?;
+
+        // Run only the review phase
+        let execution = Self::retry_review_only(
+            db,
+            chat_runner,
+            &execution,
+            &ready_step,
+            result,
+        )
+        .await?;
+
+        let latest_execution = WorkflowExecution::find_by_id(pool, execution.id)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::NotFound(format!("execution {} 未找到", execution.id))
+            })?;
+        let latest_step = WorkflowStep::find_by_id(pool, ready_step.id)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::NotFound(format!("step {} 未找到", ready_step.id))
+            })?;
+
+        Ok((latest_execution, latest_step))
+    }
+
+    async fn retry_review_only(
+        db: &DBService,
+        chat_runner: &ChatRunner,
+        execution: &WorkflowExecution,
+        step: &WorkflowStep,
+        result: WorkflowStepRunResult,
+    ) -> Result<WorkflowExecution, OrchestratorError> {
+        let pool = &db.pool;
+        let plan = WorkflowPlan::find_by_id(pool, execution.plan_id)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::NotFound(format!("plan {} 未找到", execution.plan_id))
+            })?;
+        let session = ChatSession::find_by_id(pool, execution.session_id)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::NotFound(format!("session {} 未找到", execution.session_id))
+            })?;
+        let session_agents = ChatSessionAgent::find_all_for_session(pool, session.id).await?;
+        let workflow_agent_sessions =
+            WorkflowAgentSession::find_by_execution(pool, execution.id).await?;
+        let current_steps = WorkflowStep::find_by_execution(pool, execution.id).await?;
+        let edges = WorkflowStepEdge::find_by_execution(pool, execution.id).await?;
+        let agents = load_agents_for_session(pool, &session_agents).await?;
+
+        let workflow_session =
+            super::resolve_step_workflow_session(execution, &workflow_agent_sessions, step)?;
+        let session_agent = session_agents
+            .iter()
+            .find(|sa| sa.id == workflow_session.session_agent_id)
+            .ok_or_else(|| {
+                OrchestratorError::NotFound(format!(
+                    "session agent {} 未找到",
+                    workflow_session.session_agent_id
+                ))
+            })?;
+        let agent = agents
+            .iter()
+            .find(|a| a.id == session_agent.agent_id)
+            .ok_or_else(|| {
+                OrchestratorError::NotFound(format!("agent {} 未找到", session_agent.agent_id))
+            })?;
+
+        // Transition step to Running, then call execute_step_with_feedback for review
+        let running_step = Self::transition_step_and_sync(
+            pool,
+            chat_runner,
+            execution,
+            step,
+            WorkflowStepStatus::Running,
+            "step_review_retry_started",
+        )
+        .await?;
+
+        let outcome = Self::execute_step_with_feedback(
+            db,
+            pool,
+            chat_runner,
+            execution,
+            &running_step,
+            &workflow_session,
+            &session,
+            session_agent,
+            agent,
+            &workflow_agent_sessions,
+            &session_agents,
+            &agents,
+            &plan,
+            &current_steps,
+            &edges,
+            result,
+        )
+        .await?;
+
+        match outcome {
+            StepOutcome::Completed => {
+                Self::finalize_single_step_retry_completion(pool, chat_runner, execution, step.id)
+                    .await
+            }
+            StepOutcome::Parked => {
+                let waiting_execution =
+                    Self::synchronize_runtime_state(pool, execution.id, false).await?;
+                Self::refresh_execution_projection_with_reason(
+                    pool,
+                    chat_runner,
+                    waiting_execution.id,
+                    None,
+                    "step_retry_review_waiting",
+                    vec![step.id.to_string()],
+                )
+                .await
+            }
+            StepOutcome::Failed(reason) => {
+                let failed_execution =
+                    Self::synchronize_runtime_state(pool, execution.id, false).await?;
+                Self::refresh_execution_projection_with_reason(
+                    pool,
+                    chat_runner,
+                    failed_execution.id,
+                    Some(reason),
+                    "step_retry_review_failed",
+                    vec![step.id.to_string()],
+                )
+                .await
+            }
+        }
     }
 
     pub(super) async fn activate_execution_for_step_retry(

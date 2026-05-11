@@ -578,7 +578,7 @@ impl WorkflowOrchestrator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn execute_step_with_feedback(
+    pub(super) async fn execute_step_with_feedback(
         db: &DBService,
         pool: &SqlitePool,
         chat_runner: &ChatRunner,

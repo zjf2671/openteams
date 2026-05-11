@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { WorkflowIterationSummaryData } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -19,6 +19,7 @@ type WorkflowIterationFeedbackCardProps = {
   completedSteps: number;
   totalSteps: number;
   runningStepTitle?: string | null;
+  isRegeneratingPlan?: boolean;
   iterationHistory: WorkflowIterationSummaryData[];
   canReviewCurrentRound?: boolean;
   pendingActionId?: string | null;
@@ -30,6 +31,7 @@ export function WorkflowIterationFeedbackCard({
   completedSteps,
   totalSteps,
   runningStepTitle,
+  isRegeneratingPlan = false,
   iterationHistory,
   canReviewCurrentRound: canReviewCurrentRoundProp = false,
   pendingActionId,
@@ -37,7 +39,6 @@ export function WorkflowIterationFeedbackCard({
 }: WorkflowIterationFeedbackCardProps) {
   const { t } = useTranslation('chat');
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [showReview, setShowReview] = useState(false);
   const [expandedReject, setExpandedReject] = useState(false);
   const [whatWrong, setWhatWrong] = useState('');
   const [expected, setExpected] = useState('');
@@ -60,12 +61,6 @@ export function WorkflowIterationFeedbackCard({
     latestIteration?.round_index === currentRound;
   const canSubmit = !!onSubmit;
   const disabled = !!pendingActionId;
-
-  useEffect(() => {
-    if (canReviewCurrentRound) {
-      setShowReview(true);
-    }
-  }, [canReviewCurrentRound]);
 
   const handleAccept = () => {
     setExpandedReject(false);
@@ -98,6 +93,23 @@ export function WorkflowIterationFeedbackCard({
 
   const progressPercent =
     totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
+  const statusLabel = isRegeneratingPlan
+    ? t('workflow.iterationFeedback.regeneratingPlan', {
+        defaultValue: 'Regenerating plan',
+      })
+    : runningStepTitle
+      ? t('workflow.iterationFeedback.running', { defaultValue: 'Running' })
+      : t('workflow.iterationFeedback.idle', { defaultValue: 'Idle' });
+  const statusDotClass = isRegeneratingPlan
+    ? 'bg-[#5094fb] animate-pulse shadow-[0_0_8px_rgba(80,148,251,0.5)]'
+    : runningStepTitle
+      ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+      : 'bg-slate-300';
+  const statusTextClass = isRegeneratingPlan
+    ? 'text-[#5094fb]'
+    : runningStepTitle
+      ? 'text-emerald-600'
+      : 'text-slate-400';
 
   if (isCollapsed) {
     return (
@@ -105,13 +117,10 @@ export function WorkflowIterationFeedbackCard({
         type="button"
         onClick={() => setIsCollapsed(false)}
         className="flex items-center gap-3 bg-white border border-slate-200 rounded-full px-4 py-1.5 shadow-sm hover:border-blue-400 transition-all group"
-        title={t('workflow.iterationFeedback.round', { round: currentRound, defaultValue: `Round ${currentRound}` }) + ` · ${completedSteps}/${totalSteps} ${t('workflow.iterationFeedback.steps', { defaultValue: 'Steps' }).toLowerCase()}${runningStepTitle ? ` · ${t('workflow.iterationFeedback.running', { defaultValue: 'Running' })}: ${runningStepTitle}` : ''}`}
+        title={t('workflow.iterationFeedback.round', { round: currentRound, defaultValue: `Round ${currentRound}` }) + ` · ${completedSteps}/${totalSteps} ${t('workflow.iterationFeedback.steps', { defaultValue: 'Steps' }).toLowerCase()} · ${statusLabel}${runningStepTitle && !isRegeneratingPlan ? `: ${runningStepTitle}` : ''}`}
       >
         <div className="flex items-center gap-1.5">
-          <div className={cn(
-            "w-2 h-2 bg-blue-500 rounded-full",
-            runningStepTitle && "animate-pulse"
-          )} />
+          <div className={cn("w-2 h-2 rounded-full", statusDotClass)} />
           <span className="text-xs font-bold text-slate-700">R{currentRound}</span>
         </div>
         <div className="h-3 w-[1px] bg-slate-200" />
@@ -153,17 +162,10 @@ export function WorkflowIterationFeedbackCard({
             <div className="flex flex-col">
               <span className="text-[10px] text-slate-400 uppercase font-medium">{t('workflow.iterationFeedback.status', { defaultValue: 'Status' })}</span>
               <div className="flex items-center gap-1.5">
-                {runningStepTitle ? (
-                  <>
-                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-                    <span className="text-xs font-bold text-emerald-600">{t('workflow.iterationFeedback.running', { defaultValue: 'Running' })}</span>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-2 h-2 bg-slate-300 rounded-full" />
-                    <span className="text-xs font-bold text-slate-400">{t('workflow.iterationFeedback.idle', { defaultValue: 'Idle' })}</span>
-                  </>
-                )}
+                <div className={cn("w-2 h-2 rounded-full", statusDotClass)} />
+                <span className={cn("text-xs font-bold", statusTextClass)}>
+                  {statusLabel}
+                </span>
               </div>
             </div>
           </div>
@@ -179,31 +181,24 @@ export function WorkflowIterationFeedbackCard({
       </button>
 
       {/* Review Section */}
-      {canReviewCurrentRound && showReview && (
+      {canReviewCurrentRound && (
         <div className={cn(
           "border-t transition-all duration-300",
-          expandedReject ? "bg-rose-50/50 border-rose-100 p-4" : "bg-indigo-50/50 border-indigo-100 p-4"
+          expandedReject ? "bg-rose-50/50 border-rose-100 p-4" : "bg-[#5094fb]/10 border-[#5094fb]/20 p-4"
         )}>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <div className={cn(
                 "w-1.5 h-1.5 rounded-full",
-                expandedReject ? "bg-rose-500" : "bg-indigo-500"
+                expandedReject ? "bg-rose-500" : "bg-[#5094fb]"
               )} />
               <span className={cn(
                 "text-[10px] font-bold uppercase tracking-wider",
-                expandedReject ? "text-rose-700" : "text-indigo-700"
+                expandedReject ? "text-rose-700" : "text-[#5094fb]"
               )}>
                 {expandedReject ? t('workflow.iterationFeedback.rejectWithFeedback', { defaultValue: 'Reject with Feedback' }) : t('workflow.iterationFeedback.reviewRequired', { defaultValue: 'Review Required' })}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowReview(false)}
-              className="text-slate-400 hover:text-slate-600 transition-colors"
-            >
-              <ChevronDown className="w-4 h-4" />
-            </button>
           </div>
 
           {expandedReject && (
@@ -270,7 +265,7 @@ export function WorkflowIterationFeedbackCard({
                 type="button"
                 onClick={handleAccept}
                 disabled={disabled || !canSubmit}
-                className="flex-1 bg-indigo-50 border border-indigo-100 text-indigo-700 py-2.5 rounded-xl text-xs font-bold hover:bg-indigo-100 hover:border-indigo-200 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm"
+                className="flex-1 bg-[#5094fb] border border-[#5094fb] text-white py-2.5 rounded-xl text-xs font-bold hover:bg-[#4080e0] hover:border-[#4080e0] transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-sm"
               >
                 {t('workflow.iterationFeedback.accept', { defaultValue: 'ACCEPT' })}
               </button>
@@ -306,4 +301,3 @@ export function WorkflowIterationFeedbackCard({
     </div>
   );
 }
-

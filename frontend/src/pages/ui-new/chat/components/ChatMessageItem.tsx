@@ -141,7 +141,7 @@ export interface ChatMessageItemProps {
   onExecutePlan?: (planId: string) => void;
   onPauseAll?: (executionId: string) => void;
   onResumeWorkflow?: (executionId: string) => void;
-  onRetryWorkflowStep?: (stepId: string) => void;
+  onRetryWorkflowStep?: (stepId: string, retryTarget?: 'task' | 'review') => void;
   onOpenWorkflowWindow?: (projection: unknown) => void;
   onRetryWorkflowPlanGeneration?: (messageId: string) => void;
   workflowPlanGenerationRetryPending?: boolean;
