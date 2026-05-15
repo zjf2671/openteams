@@ -276,7 +276,7 @@ export function extractWorkflowCardProjection(
 type ChatWorkflowCardProps = {
   message: ChatMessage;
   projection?: WorkflowCardProjection | null;
-  onExecute?: (planId: string) => void;
+  onExecute?: (projection: WorkflowCardProjection) => void;
   onPauseAll?: (executionId: string) => void;
   onResume?: (executionId: string) => void;
   onRetryStep?: (stepId: string, retryTarget?: 'task' | 'review') => void;
@@ -680,7 +680,7 @@ export function ChatWorkflowCard({
           onExecute && (
             <button
               type="button"
-              onClick={() => onExecute(projection.plan_id!)}
+              onClick={() => onExecute(projection)}
               className="flex items-center gap-2 rounded-full bg-[#2563EB] px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#1D4ED8]"
             >
               <PlayIcon className="size-4" weight="bold" />

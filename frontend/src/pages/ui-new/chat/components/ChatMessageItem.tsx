@@ -139,7 +139,7 @@ export interface ChatMessageItemProps {
   isSelected: boolean;
   onToggleSelect: () => void;
   // Workflow controls
-  onExecutePlan?: (planId: string) => void;
+  onExecutePlan?: (projection: WorkflowCardProjection) => void;
   onPauseAll?: (executionId: string) => void;
   onResumeWorkflow?: (executionId: string) => void;
   onRetryWorkflowStep?: (

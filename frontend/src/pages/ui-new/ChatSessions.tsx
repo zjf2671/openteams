@@ -126,8 +126,21 @@ import { AiTeamPresetsModal } from './chat/components/AiTeamPresetsModal';
 import { WorkflowWindow } from './chat/components/WorkflowWindow';
 import type { WorkflowWindowProjection } from './chat/components/WorkflowWindow';
 import type { WorkflowCardProjection } from './chat/components/ChatWorkflowCard';
+import {
+  WorkflowReviewSettingsDialog,
+  type WorkflowReviewSettingOverride,
+} from './chat/components/WorkflowReviewSettingsDialog';
 import { toWorkflowFinalReviewAction } from './chat/components/WorkflowFinalReviewCard';
 import { ChatSystemMessage } from '@/components/ui-new/primitives/conversation/ChatSystemMessage';
+import {
+  recordWorkflowEvent as baseRecordWorkflowEvent,
+  messageLengthBucket,
+  fileSizeBucket,
+} from '@/lib/workflowAnalytics';
+import {
+  createWorkflowEventRecorder,
+  type WorkflowEventContext,
+} from '@/lib/workflowEventCore';
 
 import type { ChatProtocolNotice } from './chat/hooks/useChatWebSocket';
 
@@ -222,6 +235,28 @@ const isTextAttachment = (file: File) =>
     '.bash',
     '.svg',
   ].some((ext) => file.name.toLowerCase().endsWith(ext));
+
+const attachmentTypeBucket = (files: File[]): 'text' | 'image' | 'mixed' | 'other' => {
+  let hasImage = false;
+  let hasText = false;
+
+  files.forEach((file) => {
+    if (isImageAttachment(file)) {
+      hasImage = true;
+      return;
+    }
+
+    if (isTextAttachment(file)) {
+      hasText = true;
+      return;
+    }
+  });
+
+  if (hasImage && hasText) return 'mixed';
+  if (hasImage) return 'image';
+  if (hasText) return 'text';
+  return 'other';
+};
 
 const isProtocolErrorMessage = (message: ChatMessage) =>
   message.sender_type === ChatSenderType.system &&
@@ -680,7 +715,8 @@ export function ChatSessions() {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const promptFileInputRef = useRef<HTMLInputElement | null>(null);
-  const { config, profiles, loginStatus, homeDirectory } = useUserSystem();
+  const { config, profiles, analyticsUserId, loginStatus, homeDirectory } =
+    useUserSystem();
   const { canSelfUpdate, currentVersion, hasUpdate, latestVersion } =
     useVersionCheck();
   const appLanguage = resolveAppLanguageCode(
@@ -690,6 +726,20 @@ export function ChatSessions() {
   );
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
+  const analyticsUserIdRef = useRef<string | null>(analyticsUserId ?? null);
+
+  useEffect(() => {
+    analyticsUserIdRef.current = analyticsUserId ?? null;
+  }, [analyticsUserId]);
+
+  const recordWorkflowEvent = useMemo(
+    () =>
+      createWorkflowEventRecorder(
+        () => analyticsUserIdRef.current,
+        baseRecordWorkflowEvent
+      ),
+    []
+  );
 
   // Data queries
   const {
@@ -747,6 +797,10 @@ export function ChatSessions() {
   // Messages state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [workItems, setWorkItems] = useState<ChatWorkItem[]>([]);
+  const [
+    executePlanConfirmationProjection,
+    setExecutePlanConfirmationProjection,
+  ] = useState<WorkflowCardProjection | null>(null);
   const upsertMessage = useCallback(
     (message: ChatMessage) => {
       setMessages((prev) => {
@@ -943,7 +997,14 @@ export function ChatSessions() {
     sendMessage,
     deleteMessages,
   } = useChatMutations(
-    (session) => navigate(`/chat/${session.id}`),
+    (session) => {
+      recordWorkflowEvent('workflow.session_created', {
+        session_id: session.id,
+      }, {
+        status: 'succeeded',
+      });
+      navigate(`/chat/${session.id}`);
+    },
     (session) => navigate(`/chat/${session.id}`),
     upsertMessage,
     () => {
@@ -959,11 +1020,25 @@ export function ChatSessions() {
   );
 
   const executePlanMutation = useMutation({
-    mutationFn: async (planId: string) => {
+    mutationFn: async ({
+      planId,
+      overrides,
+    }: {
+      planId: string;
+      overrides: ExecutePlanReviewOverride[];
+    }) => {
       if (!activeSessionId) throw new Error('No active session');
-      return chatApi.executePlan(activeSessionId, planId);
+      return chatApi.executePlan(activeSessionId, planId, {
+        stepReviewOverrides: overrides,
+      });
     },
   });
+  const {
+    error: executePlanError,
+    isPending: executePlanPending,
+    mutateAsync: executePlanAsync,
+    reset: resetExecutePlanMutation,
+  } = executePlanMutation;
 
   const updateWorkflowReviewSettingsMutation = useMutation({
     mutationFn: async ({
@@ -1002,8 +1077,14 @@ export function ChatSessions() {
       if (!activeSessionId) throw new Error('No active session');
       return chatApi.pauseAll(activeSessionId, executionId);
     },
-    onSuccess: () => {
+    onSuccess: (_data, executionId) => {
       if (!activeSessionId) return;
+      recordWorkflowEvent('workflow.execution_state_changed', {
+        session_id: activeSessionId,
+        workflow_id: executionId,
+      }, {
+        status: 'paused',
+      });
       queryClient.invalidateQueries({
         queryKey: ['chatMessages', activeSessionId],
       });
@@ -1018,10 +1099,43 @@ export function ChatSessions() {
   });
 
   const handleExecutePlan = useCallback(
-    (planId: string) => {
-      executePlanMutation.mutate(planId);
+    (projection: WorkflowCardProjection) => {
+      resetExecutePlanMutation();
+      setExecutePlanConfirmationProjection(projection);
     },
-    [executePlanMutation]
+    [resetExecutePlanMutation]
+  );
+
+  const handleCloseExecutePlanConfirmation = useCallback(() => {
+    if (executePlanPending) {
+      return;
+    }
+    resetExecutePlanMutation();
+    setExecutePlanConfirmationProjection(null);
+  }, [executePlanPending, resetExecutePlanMutation]);
+
+  const handleConfirmExecutePlan = useCallback(
+    async (overrides: WorkflowReviewSettingOverride[]) => {
+      const planId = executePlanConfirmationProjection?.plan_id;
+      if (!planId) return;
+      recordWorkflowEvent('workflow.plan_executed', {
+        session_id: activeSessionId,
+        plan_id: planId,
+      }, {
+        status: 'started',
+      });
+      await executePlanAsync({
+        planId,
+        overrides,
+      });
+      setExecutePlanConfirmationProjection(null);
+    },
+    [
+      activeSessionId,
+      executePlanConfirmationProjection?.plan_id,
+      executePlanAsync,
+      recordWorkflowEvent,
+    ]
   );
 
   const handlePauseAll = useCallback(
@@ -1067,9 +1181,13 @@ export function ChatSessions() {
 
   const handleInterruptStep = useCallback(
     (stepId: string) => {
+      recordWorkflowEvent('risk.runner_interrupted', {
+        session_id: activeSessionId,
+        task_id: stepId,
+      });
       interruptStepMutation.mutate({ stepId });
     },
-    [interruptStepMutation]
+    [activeSessionId, interruptStepMutation, recordWorkflowEvent]
   );
 
   const stopWorkflowStepMutation = useMutation({
@@ -1097,8 +1215,14 @@ export function ChatSessions() {
       if (!activeSessionId) throw new Error('No active session');
       return chatApi.resumeWorkflowExecution(activeSessionId, executionId);
     },
-    onSuccess: () => {
+    onSuccess: (_data, executionId) => {
       if (!activeSessionId) return;
+      recordWorkflowEvent('workflow.execution_state_changed', {
+        session_id: activeSessionId,
+        workflow_id: executionId,
+      }, {
+        status: 'running',
+      });
       queryClient.invalidateQueries({
         queryKey: ['chatMessages', activeSessionId],
       });
@@ -1112,9 +1236,53 @@ export function ChatSessions() {
     },
   });
 
+  const handleResumeWorkflowExecution = useCallback(
+    (executionId: string) => {
+      resumeWorkflowMutation.mutate(executionId);
+    },
+    [resumeWorkflowMutation]
+  );
+
+  const handleArchiveSession = useCallback(
+    async (sessionIdToArchive: string) => {
+      try {
+        await archiveSession.mutateAsync(sessionIdToArchive);
+        recordWorkflowEvent('engagement.session_archived', {
+          session_id: sessionIdToArchive,
+        }, {
+          status: 'archived',
+        });
+      } catch {
+        // archive mutation already handles UI state
+      }
+    },
+    [archiveSession, recordWorkflowEvent]
+  );
+
+  const handleRestoreSession = useCallback(
+    async (sessionIdToRestore: string) => {
+      try {
+        await restoreSession.mutateAsync(sessionIdToRestore);
+        recordWorkflowEvent('engagement.session_archived', {
+          session_id: sessionIdToRestore,
+        }, {
+          status: 'restored',
+        });
+      } catch {
+        // restore mutation already handles UI state
+      }
+    },
+    [recordWorkflowEvent, restoreSession]
+  );
+
   const retryWorkflowPlanGenerationMutation = useMutation({
     mutationFn: async (messageId: string) => {
       if (!activeSessionId) throw new Error('No active session');
+      recordWorkflowEvent('quality.retry_triggered', {
+        session_id: activeSessionId,
+      }, {
+        metadata: { retry_target: 'plan_generation' },
+      });
       return chatApi.retryWorkflowPlanGeneration(activeSessionId, messageId);
     },
     onSuccess: () => {
@@ -1135,6 +1303,12 @@ export function ChatSessions() {
       retryTarget?: 'task' | 'review';
     }) => {
       if (!activeSessionId) throw new Error('No active session');
+      recordWorkflowEvent('quality.retry_triggered', {
+        session_id: activeSessionId,
+        task_id: stepId,
+      }, {
+        metadata: { retry_target: retryTarget ?? 'task' },
+      });
       return chatApi.retryWorkflowStep(activeSessionId, stepId, retryTarget);
     },
     onSuccess: () => {
@@ -1205,8 +1379,10 @@ export function ChatSessions() {
     setWorkflowCardProjectionByMessageId({});
     setWorkflowCardDetailProjectionByMessageId({});
     setWorkflowWindowFallbackProjection(null);
+    setExecutePlanConfirmationProjection(null);
+    resetExecutePlanMutation();
     workflowCardRefreshNonceRef.current = 0;
-  }, [activeSessionId]);
+  }, [activeSessionId, resetExecutePlanMutation]);
 
   useEffect(() => {
     setWorkflowCardDetailProjectionByMessageId({});
@@ -1373,6 +1549,10 @@ export function ChatSessions() {
     queryKey: ['workflowTranscripts', activeSessionId, workflowExecutionId],
     queryFn: () => {
       if (!activeSessionId || !workflowExecutionId) return [];
+      recordWorkflowEvent('engagement.transcript_opened', {
+        session_id: activeSessionId,
+        workflow_id: workflowExecutionId,
+      });
       return chatApi.getWorkflowTranscripts(
         activeSessionId,
         workflowExecutionId
@@ -1549,8 +1729,13 @@ export function ChatSessions() {
       setWorkflowWindowFallbackProjection(projection);
       setWorkflowWindowCardMessageId(cardMsgId);
       setWorkflowWindowOpen(true);
+      recordWorkflowEvent('engagement.workflow_card_opened', {
+        session_id: activeSessionId,
+        workflow_id: projection.execution_id ?? undefined,
+        plan_id: projection.plan_id ?? undefined,
+      });
     },
-    [messages, workflowCardProjectionByMessageId]
+    [activeSessionId, messages, recordWorkflowEvent, workflowCardProjectionByMessageId]
   );
 
   useEffect(() => {
@@ -3268,6 +3453,9 @@ export function ChatSessions() {
       }
       if (artifact.kind === 'diff' && artifact.hasDiff) {
         void handleLoadDiff(artifact.runId);
+        recordWorkflowEvent('engagement.diff_viewed', { session_id: activeSessionId }, {
+          metadata: { diff_file_count: artifact.untrackedFiles.length },
+        });
       }
     },
     [activeSessionId, handleLoadDiff, queryClient]
@@ -3679,11 +3867,36 @@ export function ChatSessions() {
         });
       }
 
+      const mentions = extractMentions(content);
+      const ctx: WorkflowEventContext = { session_id: activeSessionId };
+      recordWorkflowEvent('engagement.message_sent', ctx, {
+        metadata: {
+          message_length_bucket: messageLengthBucket(content.length),
+          mention_count: mentions.size,
+          attachment_count: attachedFiles.length,
+        },
+      });
+      if (mentions.size > 0) {
+        recordWorkflowEvent('collaboration.agent_mentioned', ctx, {
+          metadata: { mention_count: mentions.size },
+        });
+      }
+
       resetInput();
       inputRef.current?.focus();
       setAttachedFiles([]);
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === 'ATTACHMENT_UPLOAD_FAILED'
+      ) {
+        return;
+      }
       console.warn('Failed to send chat message', error);
+      recordWorkflowEvent('risk.api_failure', { session_id: activeSessionId }, {
+        error_code: 'MESSAGE_SEND_FAILED',
+        metadata: { api_route_key: 'chat_message_create' },
+      });
     }
   };
 
@@ -3723,9 +3936,21 @@ export function ChatSessions() {
       upsertMessage(message);
       queryClient.invalidateQueries({ queryKey: ['chatSessions'] });
       setAttachedFiles([]);
+      recordWorkflowEvent('engagement.attachment_added', { session_id: activeSessionId }, {
+        metadata: {
+          attachment_count: allowedFiles.length,
+          size_bucket: fileSizeBucket(allowedFiles.reduce((s, f) => s + f.size, 0)),
+          attachment_type: attachmentTypeBucket(allowedFiles),
+        },
+      });
     } catch (error) {
       console.warn('Failed to upload attachments', error);
       setAttachmentError('Unable to upload attachments.');
+      recordWorkflowEvent('risk.api_failure', { session_id: activeSessionId }, {
+        error_code: 'ATTACHMENT_UPLOAD_FAILED',
+        metadata: { api_route_key: 'chat_attachment_upload' },
+      });
+      throw new Error('ATTACHMENT_UPLOAD_FAILED');
     } finally {
       setIsUploadingAttachments(false);
     }
@@ -4515,6 +4740,9 @@ export function ChatSessions() {
           workspace_path: workspacePathVal,
           allowed_skill_ids: normalizedSelectedSkillIds,
         });
+        recordWorkflowEvent('workflow.agent_added', { session_id: activeSessionId }, {
+          metadata: { runner_type: runnerType },
+        });
       }
 
       await Promise.all([
@@ -4700,6 +4928,7 @@ export function ChatSessions() {
     async (sessionAgentId: string, agentId: string) => {
       if (!activeSessionId) return;
       setStoppingAgents((prev) => new Set(prev).add(agentId));
+      recordWorkflowEvent('risk.runner_interrupted', { session_id: activeSessionId });
       try {
         await chatApi.stopSessionAgent(activeSessionId, sessionAgentId);
       } catch (error) {
@@ -4711,7 +4940,7 @@ export function ChatSessions() {
         });
       }
     },
-    [activeSessionId]
+    [activeSessionId, recordWorkflowEvent]
   );
 
   useEffect(() => {
@@ -4863,8 +5092,12 @@ export function ChatSessions() {
         width={leftSidebarWidth}
         isCollapsed={isLeftSidebarCollapsed}
         onToggleCollapsed={handleToggleLeftSidebar}
-        onArchiveSession={(id) => archiveSession.mutate(id)}
-        onRestoreSession={(id) => restoreSession.mutate(id)}
+        onArchiveSession={(id) => {
+          void handleArchiveSession(id);
+        }}
+        onRestoreSession={(id) => {
+          void handleRestoreSession(id);
+        }}
         onDeleteSession={(id, title) => {
           setConfirmModal({
             title: t('modals.confirm.titles.deleteSession'),
@@ -4974,10 +5207,14 @@ export function ChatSessions() {
               });
             }}
             onArchive={() => {
-              if (activeSessionId) archiveSession.mutate(activeSessionId);
+              if (activeSessionId) {
+                void handleArchiveSession(activeSessionId);
+              }
             }}
             onRestore={() => {
-              if (activeSessionId) restoreSession.mutate(activeSessionId);
+              if (activeSessionId) {
+                void handleRestoreSession(activeSessionId);
+              }
             }}
             isArchiving={archiveSession.isPending || restoreSession.isPending}
             isCleanupMode={isCleanupMode}
@@ -5257,9 +5494,7 @@ export function ChatSessions() {
                           }
                           onExecutePlan={handleExecutePlan}
                           onPauseAll={handlePauseAll}
-                          onResumeWorkflow={(executionId) =>
-                            resumeWorkflowMutation.mutate(executionId)
-                          }
+                          onResumeWorkflow={handleResumeWorkflowExecution}
                           onRetryWorkflowStep={(stepId, retryTarget) =>
                             retryWorkflowStepMutation.mutate({
                               stepId,
@@ -5614,6 +5849,31 @@ export function ChatSessions() {
         }}
       />
 
+      {executePlanConfirmationProjection && (
+        <WorkflowReviewSettingsDialog
+          projection={executePlanConfirmationProjection}
+          isOpen
+          onClose={handleCloseExecutePlanConfirmation}
+          onSubmit={handleConfirmExecutePlan}
+          submitLabel={t('workflow.card.buttons.executePlan', {
+            defaultValue: 'Execute Plan',
+          })}
+          submittingLabel={t('workflow.executePlan.executing', {
+            defaultValue: 'Executing...',
+          })}
+          isSubmitting={executePlanPending}
+          error={
+            executePlanError instanceof Error
+              ? executePlanError.message
+              : executePlanError
+                ? t('workflow.executePlan.error', {
+                    defaultValue: 'Unable to execute plan.',
+                  })
+                : null
+          }
+        />
+      )}
+
       {/* Workflow Window */}
       {workflowWindowOpen && workflowWindowProjection && (
         <WorkflowWindow
@@ -5629,7 +5889,7 @@ export function ChatSessions() {
           }}
           onExecute={handleExecutePlan}
           onPauseAll={handlePauseAll}
-          onResume={(executionId) => resumeWorkflowMutation.mutate(executionId)}
+          onResume={handleResumeWorkflowExecution}
           onInterruptStep={handleInterruptStep}
           onStopStep={(stepId) => stopWorkflowStepMutation.mutate(stepId)}
           onRetryStep={(stepId, retryTarget) =>
