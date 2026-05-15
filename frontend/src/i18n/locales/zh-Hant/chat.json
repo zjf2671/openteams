@@ -98,6 +98,20 @@
         "value": "請評審目前 UI 的視覺風格，從排版、色彩、間距、層級和互動一致性方面給出具體建議，並指出最值得優先優化的部分。"
       }
     },
+    "modeCards": {
+      "label": "工作模式選項",
+      "workflow": {
+        "label": "工作流模式",
+        "description": "使用者與主 agent 先確認需求、設計方案，再生成計畫並協同執行。",
+        "detail": "工作流模式會由主 agent 引導完成需求確認和方案設計，隨後生成執行計畫並協調成員逐步推進，適合複雜專案和需要明確產出的任務。"
+      },
+      "free": {
+        "label": "自由聊天模式",
+        "description": "使用者可與任意 agent 對話，agent 之間也能在會話中對話協作。",
+        "detail": "自由聊天模式保持開放對話體驗，使用者可以直接 @ 任意成員，也允許 agent 與 agent 之間進行討論、交接和協作。"
+      },
+      "switchHint": "點擊卡片即可切換底部輸入框的工作模式。"
+    },
     "mentionAgents": "提及 Agent",
     "switchToFreeMode": "切換到自由聊天模式",
     "switchToWorkflowMode": "切換到工作流模式",

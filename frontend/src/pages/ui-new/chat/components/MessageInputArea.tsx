@@ -143,7 +143,7 @@ export interface MessageInputAreaProps {
   onSend: () => void;
   // Input mode
   chatInputMode: 'free' | 'workflow';
-  onToggleChatInputMode: () => void;
+  onToggleChatInputMode: (mode?: 'free' | 'workflow') => void;
   isWorkflowMode: boolean;
   leadAgentName?: string | null;
   // State
@@ -223,42 +223,73 @@ export function MessageInputArea({
       <div className="flex items-end pl-6 gap-1 z-10 relative pointer-events-none w-fit">
         <button
           type="button"
-          onClick={() => { if (!isWorkflowMode && !isArchived && activeSessionId) onToggleChatInputMode(); }}
+          onClick={() => {
+            if (!isWorkflowMode && !isArchived && activeSessionId)
+              onToggleChatInputMode();
+          }}
           disabled={isArchived || !activeSessionId}
           className={cn(
-            "pointer-events-auto group flex items-center gap-1.5 px-4 py-2 rounded-t-xl text-[13px] font-semibold transition-all duration-200 select-none border relative",
+            'pointer-events-auto group flex items-center gap-1.5 px-4 py-2 rounded-t-xl text-[13px] font-semibold transition-all duration-200 select-none border relative',
             isWorkflowMode
-              ? "bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 border-b-transparent dark:border-b-transparent text-blue-600 dark:text-blue-400 z-20 pb-2.5 -mb-[1px]"
-              : "bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 pb-2"
+              ? 'bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 border-b-transparent dark:border-b-transparent text-blue-600 dark:text-blue-400 z-20 pb-2.5 -mb-[1px]'
+              : 'bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 pb-2'
           )}
         >
-          <GitBranchIcon weight={isWorkflowMode ? "bold" : "regular"} className={cn("size-4 transition-colors", isWorkflowMode ? "text-blue-500" : "text-slate-400 group-hover:text-slate-500 dark:text-slate-500 dark:group-hover:text-slate-400")} />
+          <GitBranchIcon
+            weight={isWorkflowMode ? 'bold' : 'regular'}
+            className={cn(
+              'size-4 transition-colors',
+              isWorkflowMode
+                ? 'text-blue-500'
+                : 'text-slate-400 group-hover:text-slate-500 dark:text-slate-500 dark:group-hover:text-slate-400'
+            )}
+          />
           {t('input_tabs.workflow')}
-          {isWorkflowMode && <div className="absolute -bottom-[2px] left-0 right-0 h-[3px] bg-transparent" />}
+          {isWorkflowMode && (
+            <div className="absolute -bottom-[2px] left-0 right-0 h-[3px] bg-transparent" />
+          )}
         </button>
         <button
           type="button"
-          onClick={() => { if (isWorkflowMode && !isArchived && activeSessionId) onToggleChatInputMode(); }}
+          onClick={() => {
+            if (isWorkflowMode && !isArchived && activeSessionId)
+              onToggleChatInputMode();
+          }}
           disabled={isArchived || !activeSessionId}
           className={cn(
-            "pointer-events-auto group flex items-center gap-1.5 px-4 py-2 rounded-t-xl text-[13px] font-semibold transition-all duration-200 select-none border relative",
+            'pointer-events-auto group flex items-center gap-1.5 px-4 py-2 rounded-t-xl text-[13px] font-semibold transition-all duration-200 select-none border relative',
             !isWorkflowMode
-              ? "bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 border-b-transparent dark:border-b-transparent text-slate-800 dark:text-slate-200 z-20 pb-2.5 -mb-[1px]"
-              : "bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 pb-2"
+              ? 'bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 border-b-transparent dark:border-b-transparent text-slate-800 dark:text-slate-200 z-20 pb-2.5 -mb-[1px]'
+              : 'bg-white dark:bg-[#0a0a0a] border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 pb-2'
           )}
         >
-          <ChatCircleDotsIcon weight={!isWorkflowMode ? "bold" : "regular"} className={cn("size-4 transition-colors", !isWorkflowMode ? "text-slate-700 dark:text-slate-300" : "text-slate-400 group-hover:text-slate-500 dark:text-slate-500 dark:group-hover:text-slate-400")} />
+          <ChatCircleDotsIcon
+            weight={!isWorkflowMode ? 'bold' : 'regular'}
+            className={cn(
+              'size-4 transition-colors',
+              !isWorkflowMode
+                ? 'text-slate-700 dark:text-slate-300'
+                : 'text-slate-400 group-hover:text-slate-500 dark:text-slate-500 dark:group-hover:text-slate-400'
+            )}
+          />
           {t('input_tabs.chat')}
-          {!isWorkflowMode && <div className="absolute -bottom-[2px] left-0 right-0 h-[3px] bg-transparent" />}
+          {!isWorkflowMode && (
+            <div className="absolute -bottom-[2px] left-0 right-0 h-[3px] bg-transparent" />
+          )}
         </button>
       </div>
 
-      <div className={cn(
-        "chat-session-input-shell flex flex-col transition-all duration-300 overflow-hidden relative z-0",
-        "bg-white dark:bg-[#0a0a0a] border border-slate-200 dark:border-slate-800 shadow-sm",
-        isWorkflowMode ? "rounded-b-2xl rounded-tr-2xl rounded-tl-sm ring-1 ring-blue-500/10" : "rounded-2xl"
-      )}>
-        {replyToMessage && (          <div className="chat-session-reply-card" title={replySummaryText}>
+      <div
+        className={cn(
+          'chat-session-input-shell flex flex-col transition-all duration-300 overflow-hidden relative z-0',
+          'bg-white dark:bg-[#0a0a0a] border border-slate-200 dark:border-slate-800 shadow-sm',
+          isWorkflowMode
+            ? 'rounded-b-2xl rounded-tr-2xl rounded-tl-sm ring-1 ring-blue-500/10'
+            : 'rounded-2xl'
+        )}
+      >
+        {replyToMessage && (
+          <div className="chat-session-reply-card" title={replySummaryText}>
             <div className="chat-session-reply-main">
               <QuotesIcon className="chat-session-reply-quote" weight="fill" />
               <div className="chat-session-reply-content">

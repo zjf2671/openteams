@@ -98,6 +98,20 @@
         "value": "Evaluez le style visuel actuel de l'interface. Donnez des retours concrets sur la typographie, la couleur, l'espacement, la hierarchie et la coherence des interactions, puis proposez les ameliorations les plus impactantes."
       }
     },
+    "modeCards": {
+      "label": "Options de mode de travail",
+      "workflow": {
+        "label": "Mode workflow",
+        "description": "L'utilisateur et l'agent principal confirment les besoins, conçoivent la solution, puis generent et executent un plan.",
+        "detail": "Le mode workflow fait passer la demande par l'agent principal pour confirmer les besoins et concevoir la solution, puis generer un plan d'execution et coordonner les membres etape par etape."
+      },
+      "free": {
+        "label": "Mode discussion libre",
+        "description": "L'utilisateur peut parler avec n'importe quel agent, et les agents peuvent aussi echanger et collaborer entre eux.",
+        "detail": "Le mode discussion libre garde une conversation ouverte : vous pouvez mentionner directement n'importe quel membre, et les agents peuvent discuter, transmettre le contexte et collaborer entre eux."
+      },
+      "switchHint": "Cliquez sur une carte pour changer le mode de travail du champ de saisie."
+    },
     "mentionAgents": "Mentionner des agents",
     "switchToFreeMode": "Basculer en discussion libre",
     "switchToWorkflowMode": "Basculer en mode workflow",
