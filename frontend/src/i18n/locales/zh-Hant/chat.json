@@ -99,6 +99,9 @@
       }
     },
     "mentionAgents": "提及 Agent",
+    "chatModeName": "聊天模式",
+    "workflowModeName": "工作流模式",
+    "modeSwitchTooltip": "當前{{currentMode}}，點擊切換到{{targetMode}}。",
     "switchToFreeMode": "切換到自由聊天模式",
     "switchToWorkflowMode": "切換到工作流模式",
     "freeModeDescription": "自由聊天模式：使用 @ 將訊息指派給成員。",
