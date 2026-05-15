@@ -144,7 +144,7 @@ export interface MessageInputAreaProps {
   onSend: () => void;
   // Input mode
   chatInputMode: 'free' | 'workflow';
-  onToggleChatInputMode: () => void;
+  onToggleChatInputMode: (mode?: 'free' | 'workflow') => void;
   isWorkflowMode: boolean;
   leadAgentName?: string | null;
   // State

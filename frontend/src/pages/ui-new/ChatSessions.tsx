@@ -1710,18 +1710,24 @@ export function ChatSessions() {
     handleMentionKeyDown,
   } = useMessageInput(activeSessionId, mentionAgents, !isWorkflowInputMode);
 
-  const handleToggleChatInputMode = useCallback(() => {
-    if (!activeSessionId) return;
-    setChatInputModeBySessionId((prev) => {
-      const nextMode: ChatInputMode =
-        (prev[activeSessionId] ?? 'free') === 'workflow' ? 'free' : 'workflow';
-      return {
-        ...prev,
-        [activeSessionId]: nextMode,
-      };
-    });
-    setMentionQuery(null);
-  }, [activeSessionId, setMentionQuery]);
+  const handleToggleChatInputMode = useCallback(
+    (mode?: ChatInputMode) => {
+      if (!activeSessionId) return;
+      setChatInputModeBySessionId((prev) => {
+        const nextMode: ChatInputMode =
+          mode ??
+          ((prev[activeSessionId] ?? 'free') === 'workflow'
+            ? 'free'
+            : 'workflow');
+        return {
+          ...prev,
+          [activeSessionId]: nextMode,
+        };
+      });
+      setMentionQuery(null);
+    },
+    [activeSessionId, setMentionQuery]
+  );
 
   const agentOptionsWithAll = useMemo(
     () => [
@@ -2729,20 +2735,16 @@ export function ChatSessions() {
   const emptyTimelineVariant =
     sessionMembers.length === 0 ? 'no-members' : 'empty-messages';
 
-  const handleSelectPromptTemplate = useCallback(
-    (templateValue: string) => {
-      handleDraftChange(templateValue);
+  const handleSelectEmptyStateMode = useCallback(
+    (mode: ChatInputMode) => {
+      handleToggleChatInputMode(mode);
       requestAnimationFrame(() => {
         const textarea = inputRef.current;
         if (!textarea) return;
-        textarea.style.height = 'auto';
-        const nextHeight = Math.min(textarea.scrollHeight, 200);
-        textarea.style.height = `${Math.max(44, nextHeight)}px`;
         textarea.focus();
-        textarea.setSelectionRange(templateValue.length, templateValue.length);
       });
     },
-    [handleDraftChange, inputRef]
+    [handleToggleChatInputMode, inputRef]
   );
 
   const handleOpenAddMemberPanel = useCallback(() => {
@@ -5098,9 +5100,10 @@ export function ChatSessions() {
                       <ChatEmptyStateIndicator
                         variant={emptyTimelineVariant}
                         onAction={handleOpenAddMemberPanel}
-                        onTemplateSelect={
+                        selectedMode={activeChatInputMode}
+                        onModeSelect={
                           emptyTimelineVariant === 'empty-messages'
-                            ? handleSelectPromptTemplate
+                            ? handleSelectEmptyStateMode
                             : undefined
                         }
                         disabled={isArchived}

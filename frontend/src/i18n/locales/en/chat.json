@@ -129,6 +129,20 @@
         "label": "Review visual style",
         "value": "Review the current UI visual style. Give concrete feedback on typography, color, spacing, hierarchy, and interaction consistency, then suggest the highest-impact improvements."
       }
+    },
+    "modeCards": {
+      "label": "Work mode options",
+      "workflow": {
+        "label": "Workflow mode",
+        "description": "Confirm requirements with the lead agent, design the approach, then generate and execute a plan.",
+        "detail": "Workflow mode routes your request through the lead agent for requirement confirmation, solution design, plan generation, and coordinated execution."
+      },
+      "free": {
+        "label": "Free chat mode",
+        "description": "Talk with any agent directly, while agents can also collaborate with each other in the session.",
+        "detail": "Free chat mode keeps conversation open: you can message any agent, and agents can discuss, hand off, and collaborate with each other."
+      },
+      "switchHint": "Click a card to switch the input work mode."
     }
   },
   "message": {

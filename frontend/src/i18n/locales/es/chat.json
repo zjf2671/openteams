@@ -98,6 +98,20 @@
         "value": "Revisa el estilo visual actual de la interfaz. Da comentarios concretos sobre tipografia, color, espaciado, jerarquia y consistencia de interaccion, y sugiere las mejoras de mayor impacto."
       }
     },
+    "modeCards": {
+      "label": "Opciones de modo de trabajo",
+      "workflow": {
+        "label": "Modo de flujo de trabajo",
+        "description": "El usuario y el agente principal confirman requisitos, diseñan la solucion y luego generan y ejecutan un plan.",
+        "detail": "El modo de flujo de trabajo guia la confirmacion de requisitos y el diseño de la solucion mediante el agente principal; despues genera un plan de ejecucion y coordina a los miembros paso a paso."
+      },
+      "free": {
+        "label": "Modo de chat libre",
+        "description": "El usuario puede hablar con cualquier agente, y los agentes tambien pueden conversar y colaborar entre si.",
+        "detail": "El modo de chat libre mantiene una conversacion abierta: puedes mencionar directamente a cualquier miembro, y los agentes pueden debatir, transferir contexto y colaborar entre si."
+      },
+      "switchHint": "Haz clic en una tarjeta para cambiar el modo de trabajo del cuadro de entrada."
+    },
     "mentionAgents": "Mencionar agentes",
     "chatModeName": "modo chat",
     "workflowModeName": "modo de flujo de trabajo",
