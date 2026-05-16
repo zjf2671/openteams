@@ -888,7 +888,7 @@ export const chatApi = {
 
   updateSession: async (
     sessionId: string,
-    data: UpdateChatSession
+    data: Partial<UpdateChatSession>
   ): Promise<ChatSession> => {
     const response = await makeRequest(`/api/chat/sessions/${sessionId}`, {
       method: 'PUT',

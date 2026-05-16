@@ -112,6 +112,7 @@ pub async fn update_team_protocol(
             team_protocol: Some(content),
             team_protocol_enabled: Some(effective.enabled),
             default_workspace_path: None,
+            chat_input_mode: None,
         },
     )
     .await?;

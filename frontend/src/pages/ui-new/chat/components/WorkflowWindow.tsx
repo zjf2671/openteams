@@ -2232,7 +2232,7 @@ export function WorkflowWindow({
   if (!isOpen) return null;
 
   const windowContent = (
-    <div className="fixed inset-0 z-[1000] flex h-dvh min-h-dvh w-dvw flex-col overflow-hidden bg-slate-100 font-sans text-slate-900">
+    <div className="workflow-window-root fixed inset-0 z-[1000] flex h-dvh min-h-dvh w-dvw flex-col overflow-hidden bg-slate-100 font-sans text-slate-900">
       {/* Header */}
       <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-20">
         <div className="flex items-center gap-4">

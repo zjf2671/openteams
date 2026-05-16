@@ -121,7 +121,7 @@ export function WorkflowIterationFeedbackCard({
       <button
         type="button"
         onClick={() => setIsCollapsed(false)}
-        className="flex items-center gap-3 bg-white border border-slate-200 rounded-full px-4 py-1.5 shadow-sm hover:border-blue-400 transition-all group"
+        className="workflow-iteration-feedback-card flex items-center gap-3 bg-white border border-slate-200 rounded-full px-4 py-1.5 shadow-sm hover:border-blue-400 transition-all group"
         title={
           t('workflow.iterationFeedback.round', {
             round: currentRound,
@@ -150,7 +150,7 @@ export function WorkflowIterationFeedbackCard({
   }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden transition-all duration-300 hover:border-blue-200 w-full">
+    <div className="workflow-iteration-feedback-card bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden transition-all duration-300 hover:border-blue-200 w-full">
       {/* Header/Expandable Area */}
       <button
         type="button"

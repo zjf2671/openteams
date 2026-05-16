@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id as \"id!: Uuid\",\n                          title,\n                          status as \"status!: ChatSessionStatus\",\n                          lead_agent_id as \"lead_agent_id: Uuid\",\n                          summary_text,\n                          archive_ref,\n                          last_seen_diff_key,\n                          team_protocol,\n                          team_protocol_enabled as \"team_protocol_enabled!: bool\",\n                          default_workspace_path,\n                          created_at as \"created_at!: DateTime<Utc>\",\n                          updated_at as \"updated_at!: DateTime<Utc>\",\n                          archived_at as \"archived_at: DateTime<Utc>\"\n                   FROM chat_sessions\n                   ORDER BY updated_at DESC",
+  "query": "INSERT INTO chat_sessions (id, title, status, default_workspace_path)\n               VALUES ($1, $2, $3, $4)\n               RETURNING id as \"id!: Uuid\",\n                         title,\n                         status as \"status!: ChatSessionStatus\",\n                         lead_agent_id as \"lead_agent_id: Uuid\",\n                         summary_text,\n                         archive_ref,\n                         last_seen_diff_key,\n                         team_protocol,\n                         team_protocol_enabled as \"team_protocol_enabled!: bool\",\n                         default_workspace_path,\n                         chat_input_mode,\n                         created_at as \"created_at!: DateTime<Utc>\",\n                         updated_at as \"updated_at!: DateTime<Utc>\",\n                         archived_at as \"archived_at: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -54,23 +54,28 @@
         "type_info": "Text"
       },
       {
-        "name": "created_at!: DateTime<Utc>",
+        "name": "chat_input_mode",
         "ordinal": 10,
         "type_info": "Text"
       },
       {
-        "name": "updated_at!: DateTime<Utc>",
+        "name": "created_at!: DateTime<Utc>",
         "ordinal": 11,
         "type_info": "Text"
       },
       {
-        "name": "archived_at: DateTime<Utc>",
+        "name": "updated_at!: DateTime<Utc>",
         "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "archived_at: DateTime<Utc>",
+        "ordinal": 13,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 4
     },
     "nullable": [
       true,
@@ -80,7 +85,8 @@
       true,
       true,
       true,
-      true,
+      false,
+      false,
       true,
       true,
       false,
@@ -88,5 +94,5 @@
       true
     ]
   },
-  "hash": "4a1d3c3afd7fadee687cd53ff5a73fde346850aad630385919d582611860c362"
+  "hash": "283e759c32f6f5aa34859ed8584c491e198cb9d056c44d8cd56d3d31733d7e69"
 }

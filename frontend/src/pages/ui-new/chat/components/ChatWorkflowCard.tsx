@@ -481,7 +481,7 @@ export function ChatWorkflowCard({
             : executionStatusLabel;
 
   return (
-    <div className="w-full max-w-[640px] rounded-[24px] border border-[#D8E2F0] bg-white p-4 shadow-sm flex flex-col">
+    <div className="workflow-card-surface w-full max-w-[640px] rounded-[24px] border border-[#D8E2F0] bg-white p-4 shadow-sm flex flex-col">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1 select-text">
           <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-[#64748B]">

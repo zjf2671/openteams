@@ -368,7 +368,7 @@
         "invalidWorkspacePath": "Échec de l'import : Chemin d'espace de travail invalide.",
         "nothingToImport": "Échec de l'import : Rien à importer de ce preset d'équipe.",
         "baseCodingAgentRequired": "Échec de l'import : Un agent de codage de base est requis.",
-        "selectedCodingAgentUnavailable": "Échec de l'import : L'agent de codage sélectionné n'est pas disponible.",
+        "selectedCodingAgentUnavailable": "Échec de l'import : L'Agent de codage sélectionné n'est pas disponible.",
         "memberNameRequired": "Échec de l'import : Le nom du membre IA est obligatoire.",
         "memberNameInvalidChars": "Échec de l'import : Le nom ne peut contenir que des lettres, des chiffres, \"_\" ou \"-\".",
         "memberNameTooLong": "Échec de l'import : Le nom du membre IA ne peut pas dépasser {{max}} caractères.",
@@ -377,7 +377,8 @@
         "selectSessionFirst": "Veuillez d'abord sélectionner une session de chat.",
         "sessionArchived": "Cette session est archivée et en lecture seule.",
         "noAvailableCodingAgent": "Échec de l'import : Aucun agent de codage disponible pour importer ce preset.",
-        "failedToImportTeam": "Échec de l'importation du preset d'équipe."
+        "failedToImportTeam": "Échec de l'importation du preset d'équipe.",
+        "memberError": "{{member}} - {{message}}"
       }
     },
     "addMemberErrors": {
@@ -388,7 +389,7 @@
       "workspacePathMustBeAbsolute": "Échec de l'ajout : Le chemin de l'espace de travail doit être un chemin absolu.",
       "invalidWorkspacePath": "Échec de l'ajout : Chemin de l'espace de travail invalide.",
       "baseCodingAgentRequired": "Échec de l'ajout : L'agent de codage de base est obligatoire.",
-      "selectedCodingAgentUnavailable": "Échec de l'ajout : L'agent de codage sélectionné n'est pas disponible.",
+      "selectedCodingAgentUnavailable": "Échec de l'ajout : L'Agent de codage sélectionné n'est pas disponible.",
       "memberNameRequired": "Échec de l'ajout : Le nom du membre IA est obligatoire.",
       "memberNameInvalidChars": "Échec de l'ajout : Le nom ne peut contenir que des lettres, des chiffres, \"_\" ou \"-\".",
       "memberNameTooLong": "Échec de l'ajout : Le nom du membre IA ne peut pas dépasser {{max}} caractères.",

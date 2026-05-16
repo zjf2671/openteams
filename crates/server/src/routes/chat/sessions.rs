@@ -1475,6 +1475,7 @@ pub async fn delete_session_agent(
             team_protocol: None,
             team_protocol_enabled: None,
             default_workspace_path: None,
+            chat_input_mode: None,
         };
         ChatSession::update(&deployment.db().pool, session.id, &update).await?;
     }
@@ -1520,6 +1521,7 @@ pub async fn archive_session(
             team_protocol: None,
             team_protocol_enabled: None,
             default_workspace_path: None,
+            chat_input_mode: None,
         },
     )
     .await?;
@@ -1561,6 +1563,7 @@ pub async fn restore_session(
             team_protocol: None,
             team_protocol_enabled: None,
             default_workspace_path: None,
+            chat_input_mode: None,
         },
     )
     .await?;

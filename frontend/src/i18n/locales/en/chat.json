@@ -374,7 +374,7 @@
         "invalidWorkspacePath": "Import failed: Invalid workspace path.",
         "nothingToImport": "Import failed: Nothing to import from this team preset.",
         "baseCodingAgentRequired": "Import failed: Base coding agent is required.",
-        "selectedCodingAgentUnavailable": "Import failed: Selected coding agent is unavailable.",
+        "selectedCodingAgentUnavailable": "Import failed: Selected coding Agent is unavailable.",
         "memberNameRequired": "Import failed: AI member name is required.",
         "memberNameInvalidChars": "Import failed: Name can only include letters, numbers, \"_\" or \"-\".",
         "memberNameTooLong": "Import failed: AI member name cannot exceed {{max}} characters.",
@@ -383,7 +383,8 @@
         "selectSessionFirst": "Please select a chat session first.",
         "sessionArchived": "This session is archived and read-only.",
         "noAvailableCodingAgent": "Import failed: No available coding agent to import this preset.",
-        "failedToImportTeam": "Failed to import team preset."
+        "failedToImportTeam": "Failed to import team preset.",
+        "memberError": "{{member}} - {{message}}"
       }
     },
     "addMemberErrors": {
@@ -394,7 +395,7 @@
       "workspacePathMustBeAbsolute": "Add failed: Workspace path must be an absolute path.",
       "invalidWorkspacePath": "Add failed: Invalid workspace path.",
       "baseCodingAgentRequired": "Add failed: Base coding agent is required.",
-      "selectedCodingAgentUnavailable": "Add failed: Selected coding agent is unavailable.",
+      "selectedCodingAgentUnavailable": "Add failed: Selected coding Agent is unavailable.",
       "memberNameRequired": "Add failed: AI member name is required.",
       "memberNameInvalidChars": "Add failed: Name can only include letters, numbers, \"_\" or \"-\".",
       "memberNameTooLong": "Add failed: AI member name cannot exceed {{max}} characters.",

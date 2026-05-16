@@ -2,6 +2,7 @@ import {
   type ChangeEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -93,6 +94,7 @@ import {
 import {
   buildMemberPresetImportPlan,
   getLocalizedMemberPresetName,
+  getLocalizedMemberPresetNameById,
   getLocalizedTeamPresetName,
   validateWorkspacePath,
   translateWorkspacePathError,
@@ -145,6 +147,14 @@ import {
 import type { ChatProtocolNotice } from './chat/hooks/useChatWebSocket';
 
 type ChatInputMode = 'free' | 'workflow';
+const DEFAULT_CHAT_INPUT_MODE: ChatInputMode = 'free';
+
+const resolveChatInputMode = (
+  value: string | null | undefined
+): ChatInputMode => (value === 'workflow' ? 'workflow' : 'free');
+
+const toSessionChatInputMode = (mode: ChatInputMode): string | null =>
+  mode === 'workflow' ? 'workflow' : null;
 
 const WORKFLOW_CARD_ACTION_REFRESH_WINDOW_MS = 30_000;
 
@@ -818,8 +828,9 @@ export function ChatSessions() {
     Record<string, ChatInputMode>
   >({});
   const activeChatInputMode: ChatInputMode = activeSessionId
-    ? (chatInputModeBySessionId[activeSessionId] ?? 'workflow')
-    : 'workflow';
+    ? (chatInputModeBySessionId[activeSessionId] ??
+        resolveChatInputMode(activeSession?.chat_input_mode))
+    : DEFAULT_CHAT_INPUT_MODE;
   const isWorkflowInputMode = activeChatInputMode === 'workflow';
   const visibleMessagesData = useMemo(() => messagesData, [messagesData]);
   const visibleWorkItemsData = useMemo(() => workItemsData, [workItemsData]);
@@ -836,6 +847,25 @@ export function ChatSessions() {
   useEffect(() => {
     agentByIdRef.current = agentById;
   }, [agentById]);
+
+  useEffect(() => {
+    if (sortedSessions.length === 0) return;
+
+    setChatInputModeBySessionId((prev) => {
+      let changed = false;
+      const next = { ...prev };
+
+      for (const session of sortedSessions) {
+        const mode = resolveChatInputMode(session.chat_input_mode);
+        if (next[session.id] !== mode) {
+          next[session.id] = mode;
+          changed = true;
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [sortedSessions]);
 
   useEffect(() => {
     notifiedMessageIdsRef.current.clear();
@@ -2181,20 +2211,56 @@ export function ChatSessions() {
   const handleToggleChatInputMode = useCallback(
     (mode?: ChatInputMode) => {
       if (!activeSessionId) return;
-      setChatInputModeBySessionId((prev) => {
-        const nextMode: ChatInputMode =
-          mode ??
-          ((prev[activeSessionId] ?? 'workflow') === 'workflow'
-            ? 'free'
-            : 'workflow');
-        return {
-          ...prev,
-          [activeSessionId]: nextMode,
-        };
-      });
+      const previousMode = activeChatInputMode;
+      const nextMode: ChatInputMode =
+        mode ?? (previousMode === 'workflow' ? 'free' : 'workflow');
+
+      setChatInputModeBySessionId((prev) => ({
+        ...prev,
+        [activeSessionId]: nextMode,
+      }));
       setMentionQuery(null);
+
+      chatApi
+        .updateSession(activeSessionId, {
+          chat_input_mode: toSessionChatInputMode(nextMode),
+        })
+        .then((updatedSession) => {
+          setChatInputModeBySessionId((prev) => ({
+            ...prev,
+            [updatedSession.id]: resolveChatInputMode(
+              updatedSession.chat_input_mode
+            ),
+          }));
+          queryClient.setQueryData<ChatSession[]>(
+            ['chatSessions'],
+            (oldSessions) =>
+              oldSessions?.map((session) =>
+                session.id === updatedSession.id ? updatedSession : session
+              )
+          );
+        })
+        .catch((error) => {
+          setChatInputModeBySessionId((prev) => ({
+            ...prev,
+            [activeSessionId]: previousMode,
+          }));
+          showRequestError(
+            error,
+            nextMode === 'workflow'
+              ? t('input.switchToWorkflowMode')
+              : t('input.switchToFreeMode')
+          );
+        });
     },
-    [activeSessionId, setMentionQuery]
+    [
+      activeChatInputMode,
+      activeSessionId,
+      queryClient,
+      setMentionQuery,
+      showRequestError,
+      t,
+    ]
   );
 
   const agentOptionsWithAll = useMemo(
@@ -2249,10 +2315,26 @@ export function ChatSessions() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const previousSessionIdRef = useRef<string | null>(null);
+  const pendingSessionBottomScrollRef = useRef<string | null>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   const isUserScrolledUpRef = useRef(false);
   const prevLastTimelineEntryKeyRef = useRef<string | null>(null);
+  const scrollMessagesToBottom = useCallback(
+    (behavior: ScrollBehavior = 'auto') => {
+      const container = messagesContainerRef.current;
+      if (container && behavior === 'auto') {
+        container.scrollTop = container.scrollHeight;
+        return;
+      }
+
+      bottomRef.current?.scrollIntoView({
+        behavior,
+        block: 'end',
+      });
+    },
+    []
+  );
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<SessionMember | null>(
     null
@@ -2746,22 +2828,11 @@ export function ChatSessions() {
     }
     return runIds;
   }, [workItemGroups]);
-  const workflowLeadAgentId =
-    activeSession?.lead_agent_id ?? sessionMembers[0]?.agent.id ?? null;
   const visibleMessageList = useMemo(
     () =>
       messageList.filter((message) => {
         const isWorkflowCardMessage = isWorkflowCardMessageMeta(message.meta);
         if (!isWorkflowInputMode && isWorkflowCardMessage) {
-          return false;
-        }
-
-        if (
-          isWorkflowInputMode &&
-          workflowLeadAgentId &&
-          message.sender_type === ChatSenderType.agent &&
-          message.sender_id !== workflowLeadAgentId
-        ) {
           return false;
         }
 
@@ -2786,7 +2857,6 @@ export function ChatSessions() {
       completedWorkflowExecutionIdsWithWorkItems,
       isWorkflowInputMode,
       messageList,
-      workflowLeadAgentId,
       workflowCardProjectionByMessageId,
     ]
   );
@@ -3551,27 +3621,31 @@ export function ChatSessions() {
   }, [activeSessionId]);
 
   // Auto-scroll (skip when user is viewing history; streaming/running changes are not "new messages")
-  useEffect(() => {
+  useLayoutEffect(() => {
     const isSessionChanged = previousSessionIdRef.current !== activeSessionId;
     previousSessionIdRef.current = activeSessionId;
+    if (isSessionChanged) {
+      pendingSessionBottomScrollRef.current = activeSessionId;
+    }
 
     // Detect whether this effect fired because of a genuinely new timeline entry
     const isNewTimelineEntry =
       lastTimelineEntryKey !== prevLastTimelineEntryKeyRef.current;
     prevLastTimelineEntryKeyRef.current = lastTimelineEntryKey;
 
-    if (isSessionChanged) {
-      // Always scroll on session switch
+    const shouldJumpToBottomForSession =
+      activeSessionId != null &&
+      pendingSessionBottomScrollRef.current === activeSessionId;
+
+    if (shouldJumpToBottomForSession) {
       setIsUserScrolledUp(false);
       setHasNewMessages(false);
       isUserScrolledUpRef.current = false;
-      const animationFrame = requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({
-          behavior: 'auto',
-          block: 'end',
-        });
-      });
-      return () => cancelAnimationFrame(animationFrame);
+      scrollMessagesToBottom('auto');
+      if (!isLoading || lastTimelineEntryKey) {
+        pendingSessionBottomScrollRef.current = null;
+      }
+      return;
     }
 
     if (isUserScrolledUpRef.current) {
@@ -3582,16 +3656,12 @@ export function ChatSessions() {
       return;
     }
 
-    const animationFrame = requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'end',
-      });
-    });
-    return () => cancelAnimationFrame(animationFrame);
+    scrollMessagesToBottom('auto');
   }, [
     activeSessionId,
+    isLoading,
     lastTimelineEntryKey,
+    scrollMessagesToBottom,
     streamingRunCount,
     placeholderAgents.length,
     protocolNotices.length,
@@ -4460,6 +4530,29 @@ export function ChatSessions() {
     );
   }, []);
 
+  const getImportPlanEntryLabel = useCallback(
+    (entry: MemberPresetImportPlan) => {
+      const cardTitleName = getLocalizedMemberPresetNameById(
+        entry.presetId,
+        entry.presetName || entry.presetId || 'member',
+        t
+      );
+      if (cardTitleName) return `@${cardTitleName}`;
+
+      return '@member';
+    },
+    [t]
+  );
+
+  const formatImportPlanEntryError = useCallback(
+    (entry: MemberPresetImportPlan, message: string) =>
+      t('members.importPreview.errors.memberError', {
+        member: getImportPlanEntryLabel(entry),
+        message,
+      }),
+    [getImportPlanEntryLabel, t]
+  );
+
   const importMembersFromPlan = useCallback(
     async (plan: MemberPresetImportPlan[]): Promise<Map<string, string>> => {
       const presetToAgentMap = new Map<string, string>();
@@ -4468,33 +4561,43 @@ export function ChatSessions() {
       for (const entry of plan) {
         if (entry.action === 'skip') continue;
 
-        let agentId = entry.agentId;
-        if (entry.action === 'create') {
-          const created = await chatApi.createAgent({
-            name: entry.finalName,
-            runner_type: entry.runnerType,
-            system_prompt: entry.systemPrompt,
-            tools_enabled: entry.toolsEnabled as JsonValue,
-            model_name: null,
+        try {
+          let agentId = entry.agentId;
+          if (entry.action === 'create') {
+            const created = await chatApi.createAgent({
+              name: entry.finalName,
+              runner_type: entry.runnerType,
+              system_prompt: entry.systemPrompt,
+              tools_enabled: entry.toolsEnabled as JsonValue,
+              model_name: null,
+            });
+            agentId = created.id;
+          }
+
+          const selectedSkillIds = normalizeAllowedSkillIds(
+            entry.selectedSkillIds ?? []
+          );
+
+          if (!agentId) {
+            continue;
+          }
+
+          await chatApi.createSessionAgent(activeSessionId, {
+            agent_id: agentId,
+            workspace_path: entry.workspacePath,
+            allowed_skill_ids: selectedSkillIds,
           });
-          agentId = created.id;
+
+          presetToAgentMap.set(entry.presetId, agentId);
+        } catch (error) {
+          const message =
+            error instanceof ApiError && error.message
+              ? error.message
+              : error instanceof Error && error.message
+                ? error.message
+                : t('members.importPreview.errors.failedToImportTeam');
+          throw new Error(formatImportPlanEntryError(entry, message));
         }
-
-        const selectedSkillIds = normalizeAllowedSkillIds(
-          entry.selectedSkillIds ?? []
-        );
-
-        if (!agentId) {
-          continue;
-        }
-
-        await chatApi.createSessionAgent(activeSessionId, {
-          agent_id: agentId,
-          workspace_path: entry.workspacePath,
-          allowed_skill_ids: selectedSkillIds,
-        });
-
-        presetToAgentMap.set(entry.presetId, agentId);
       }
 
       await Promise.all([
@@ -4506,7 +4609,13 @@ export function ChatSessions() {
 
       return presetToAgentMap;
     },
-    [activeSessionId, normalizeAllowedSkillIds, queryClient]
+    [
+      activeSessionId,
+      formatImportPlanEntryError,
+      normalizeAllowedSkillIds,
+      queryClient,
+      t,
+    ]
   );
 
   const validateAndPrepareImportPlan = useCallback(
@@ -4531,42 +4640,64 @@ export function ChatSessions() {
 
         if (!runnerType) {
           setMemberError(
-            t('members.importPreview.errors.baseCodingAgentRequired')
+            formatImportPlanEntryError(
+              entry,
+              t('members.importPreview.errors.baseCodingAgentRequired')
+            )
           );
           return null;
         }
 
         if (!enabledRunnerTypesSet.has(runnerType)) {
           setMemberError(
-            t('members.importPreview.errors.selectedCodingAgentUnavailable')
+            formatImportPlanEntryError(
+              entry,
+              t('members.importPreview.errors.selectedCodingAgentUnavailable')
+            )
           );
           return null;
         }
 
         if (!finalName) {
-          setMemberError(t('members.importPreview.errors.memberNameRequired'));
+          setMemberError(
+            formatImportPlanEntryError(
+              entry,
+              t('members.importPreview.errors.memberNameRequired')
+            )
+          );
           return null;
         }
 
         if (getMemberNameLength(finalName) > MAX_MEMBER_NAME_LENGTH) {
           setMemberError(
-            t('members.importPreview.errors.memberNameTooLong', {
-              max: MAX_MEMBER_NAME_LENGTH,
-            })
+            formatImportPlanEntryError(
+              entry,
+              t('members.importPreview.errors.memberNameTooLong', {
+                max: MAX_MEMBER_NAME_LENGTH,
+              })
+            )
           );
           return null;
         }
 
         if (!memberNameRegex.test(finalName)) {
           setMemberError(
-            t('members.importPreview.errors.memberNameInvalidChars')
+            formatImportPlanEntryError(
+              entry,
+              t('members.importPreview.errors.memberNameInvalidChars')
+            )
           );
           return null;
         }
 
         const workspacePathError = validateWorkspacePath(workspacePath);
         if (workspacePathError) {
-          setMemberError(translateWorkspacePathError(workspacePathError, t));
+          setMemberError(
+            formatImportPlanEntryError(
+              entry,
+              translateWorkspacePathError(workspacePathError, t)
+            )
+          );
           return null;
         }
 
@@ -4593,7 +4724,10 @@ export function ChatSessions() {
             finalNameLower === projectNameLower
           ) {
             setMemberError(
-              t('members.importPreview.errors.memberNameMatchProject')
+              formatImportPlanEntryError(
+                entry,
+                t('members.importPreview.errors.memberNameMatchProject')
+              )
             );
             return null;
           }
@@ -4603,7 +4737,10 @@ export function ChatSessions() {
           }
           if (createNamesLower.has(finalNameLower)) {
             setMemberError(
-              t('members.importPreview.errors.duplicateMemberNames')
+              formatImportPlanEntryError(
+                entry,
+                t('members.importPreview.errors.duplicateMemberNames')
+              )
             );
             return null;
           }
@@ -4618,6 +4755,7 @@ export function ChatSessions() {
     [
       activeSessionTitle,
       enabledRunnerTypes,
+      formatImportPlanEntryError,
       sessionMembers,
       showDuplicateMemberNameWarning,
       t,
@@ -4774,16 +4912,22 @@ export function ChatSessions() {
       return;
     }
 
-    const workspacePathsToValidate = new Set(
-      actionablePlan.map((entry) => entry.workspacePath.trim()).filter(Boolean)
-    );
-    for (const workspacePath of workspacePathsToValidate) {
+    const validatedWorkspacePaths = new Set<string>();
+    for (const entry of actionablePlan) {
+      const workspacePath = entry.workspacePath.trim();
+      if (!workspacePath || validatedWorkspacePaths.has(workspacePath)) {
+        continue;
+      }
+      validatedWorkspacePaths.add(workspacePath);
       const result = await chatApi.validateWorkspacePath(workspacePath);
       if (!result.valid) {
         setMemberError(
-          translateWorkspacePathError(
-            result.error || 'Invalid workspace path.',
-            t
+          formatImportPlanEntryError(
+            entry,
+            translateWorkspacePathError(
+              result.error || 'Invalid workspace path.',
+              t
+            )
           )
         );
         return;
@@ -4847,6 +4991,7 @@ export function ChatSessions() {
     teamImportLeadMemberId,
     teamImportProtocol,
     t,
+    formatImportPlanEntryError,
     validateAndPrepareImportPlan,
   ]);
 

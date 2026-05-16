@@ -82,7 +82,7 @@ export function WorkflowPendingReviewCard({
   };
 
   return (
-    <div className="bg-white border-2 border-amber-400 p-4 rounded-xl shadow-lg">
+    <div className="workflow-pending-review-card bg-white border-2 border-amber-400 p-4 rounded-xl shadow-lg">
       <div className="text-xs font-bold text-amber-800 flex items-center gap-2 mb-2">
         <AlertCircle className="w-4 h-4" />{' '}
         {t('workflow.pendingReview.title', { defaultValue: 'Pending Review' })}

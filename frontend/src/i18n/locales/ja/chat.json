@@ -368,7 +368,7 @@
         "invalidWorkspacePath": "インポート失敗：無効なワークスペースパスです。",
         "nothingToImport": "インポート失敗：このチームプリセットにはインポートする内容がありません。",
         "baseCodingAgentRequired": "インポート失敗：ベースコーディングエージェントが必要です。",
-        "selectedCodingAgentUnavailable": "インポート失敗：選択されたコーディングエージェントは利用できません。",
+        "selectedCodingAgentUnavailable": "インポート失敗：選択されたコーディングAgentは利用できません。",
         "memberNameRequired": "インポート失敗：AIメンバー名は必須です。",
         "memberNameInvalidChars": "インポート失敗：名前には文字、数字、\"_\" または \"-\" のみ使用できます。",
         "memberNameTooLong": "インポート失敗：AIメンバー名は {{max}} 文字を超えることはできません。",
@@ -377,7 +377,8 @@
         "selectSessionFirst": "まずチャットセッションを選択してください。",
         "sessionArchived": "このセッションはアーカイブされ、読み取り専用です。",
         "noAvailableCodingAgent": "インポート失敗：このプリセットをインポートする利用可能なコーディングエージェントがありません。",
-        "failedToImportTeam": "チームプリセットのインポートに失敗しました。"
+        "failedToImportTeam": "チームプリセットのインポートに失敗しました。",
+        "memberError": "{{member}} - {{message}}"
       }
     },
     "addMemberErrors": {
@@ -388,7 +389,7 @@
       "workspacePathMustBeAbsolute": "追加失敗：ワークスペースパスは絶対パスである必要があります。",
       "invalidWorkspacePath": "追加失敗：無効なワークスペースパスです。",
       "baseCodingAgentRequired": "追加失敗：ベースコーディングエージェントは必須です。",
-      "selectedCodingAgentUnavailable": "追加失敗：選択されたコーディングエージェントは利用できません。",
+      "selectedCodingAgentUnavailable": "追加失敗：選択されたコーディングAgentは利用できません。",
       "memberNameRequired": "追加失敗：AIメンバー名は必須です。",
       "memberNameInvalidChars": "追加失敗：名前には文字、数字、\"_\" または \"-\" のみ使用できます。",
       "memberNameTooLong": "追加失敗：AIメンバー名は {{max}} 文字を超えることはできません。",

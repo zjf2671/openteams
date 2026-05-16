@@ -369,7 +369,7 @@
         "invalidWorkspacePath": "Importación fallida: Ruta del espacio de trabajo inválida.",
         "nothingToImport": "Importación fallida: No hay nada que importar de este preset de equipo.",
         "baseCodingAgentRequired": "Importación fallida: Se requiere un agente de codificación base.",
-        "selectedCodingAgentUnavailable": "Importación fallida: El agente de codificación seleccionado no está disponible.",
+        "selectedCodingAgentUnavailable": "Importación fallida: El Agent de codificación seleccionado no está disponible.",
         "memberNameRequired": "Importación fallida: El nombre del miembro IA es obligatorio.",
         "memberNameInvalidChars": "Importación fallida: El nombre solo puede incluir letras, números, \"_\" o \"-\".",
         "memberNameTooLong": "Importación fallida: El nombre del miembro IA no puede exceder {{max}} caracteres.",
@@ -378,7 +378,8 @@
         "selectSessionFirst": "Por favor, selecciona primero una sesión de chat.",
         "sessionArchived": "Esta sesión está archivada y es de solo lectura.",
         "noAvailableCodingAgent": "Importación fallida: No hay agente de codificación disponible para importar este preset.",
-        "failedToImportTeam": "Error al importar el preset de equipo."
+        "failedToImportTeam": "Error al importar el preset de equipo.",
+        "memberError": "{{member}} - {{message}}"
       }
     },
     "addMemberErrors": {
@@ -389,7 +390,7 @@
       "workspacePathMustBeAbsolute": "Error al añadir: La ruta del espacio de trabajo debe ser una ruta absoluta.",
       "invalidWorkspacePath": "Error al añadir: Ruta del espacio de trabajo inválida.",
       "baseCodingAgentRequired": "Error al añadir: El agente de codificación base es obligatorio.",
-      "selectedCodingAgentUnavailable": "Error al añadir: El agente de codificación seleccionado no está disponible.",
+      "selectedCodingAgentUnavailable": "Error al añadir: El Agent de codificación seleccionado no está disponible.",
       "memberNameRequired": "Error al añadir: El nombre del miembro IA es obligatorio.",
       "memberNameInvalidChars": "Error al añadir: El nombre solo puede incluir letras, números, \"_\" o \"-\".",
       "memberNameTooLong": "Error al añadir: El nombre del miembro IA no puede exceder {{max}} caracteres.",

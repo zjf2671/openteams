@@ -271,7 +271,7 @@ export function WorkflowReviewSettingsDialog({
   const content = (
     <div
       className={cn(
-        'overflow-hidden rounded-xl border border-slate-100/70 bg-white shadow-xl',
+        'workflow-review-settings-dialog overflow-hidden rounded-xl border border-slate-100/70 bg-white shadow-xl',
         variant === 'panel'
           ? 'flex w-[400px] flex-col'
           : 'w-full max-w-[440px]',

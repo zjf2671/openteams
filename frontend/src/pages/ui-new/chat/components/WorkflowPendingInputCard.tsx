@@ -27,7 +27,7 @@ export function WorkflowPendingInputCard({
     pendingActionId === pendingInput.input_id;
 
   return (
-    <div className="rounded-xl border-2 border-indigo-300 bg-indigo-50 p-4 shadow-lg">
+    <div className="workflow-pending-input-card rounded-xl border-2 border-indigo-300 bg-indigo-50 p-4 shadow-lg">
       <div className="mb-2 flex items-center gap-2 text-xs font-bold text-indigo-800">
         <MessageSquare className="h-4 w-4" />
         {t('workflow.pendingInput.title', { defaultValue: 'Input Required' })}

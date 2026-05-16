@@ -467,9 +467,16 @@
   }
 
   .new-design .chat-session-message-body .wysiwyg pre,
-  .new-design .chat-session-message-body .wysiwyg code.block,
+  .new-design .chat-session-message-body .wysiwyg code.block {
+    background: #f3f4f6 !important;
+    color: #111827 !important;
+    border-color: rgba(148, 163, 184, 0.32) !important;
+  }
+
   .new-design .chat-session-message-body .wysiwyg pre code {
-    background: #ecedf1 !important;
+    background: transparent !important;
+    color: inherit !important;
+    border-color: transparent !important;
   }
 
   .new-design .chat-session-message-body .wysiwyg code:not(pre code) {
@@ -544,11 +551,17 @@
   .new-design.dark .chat-session-message-body .wysiwyg pre,
   .dark .new-design .chat-session-message-body .wysiwyg pre,
   .new-design.dark .chat-session-message-body .wysiwyg code.block,
-  .dark .new-design .chat-session-message-body .wysiwyg code.block,
+  .dark .new-design .chat-session-message-body .wysiwyg code.block {
+    background: #f3f4f6 !important;
+    color: #111827 !important;
+    border-color: rgba(148, 163, 184, 0.32) !important;
+  }
+
   .new-design.dark .chat-session-message-body .wysiwyg pre code,
   .dark .new-design .chat-session-message-body .wysiwyg pre code {
-    background: #dbe3ee !important;
-    color: #111827 !important;
+    background: transparent !important;
+    color: inherit !important;
+    border-color: transparent !important;
   }
 
   .new-design.dark .chat-session-message-body .wysiwyg code:not(pre code),

@@ -341,7 +341,11 @@ function flattenEdges(
             <path
               d={d}
               fill="none"
-              stroke={isHovered ? '#6366f1' : '#cbd5e1'}
+              stroke={
+                isHovered
+                  ? 'var(--workflow-edge-hover-color, #6366f1)'
+                  : 'var(--workflow-edge-color, #cbd5e1)'
+              }
               strokeWidth={isHovered ? 3 : 2}
               markerEnd={isHovered ? 'url(#arrow-hover)' : 'url(#arrow)'}
               className="transition-colors duration-300"
@@ -656,9 +660,9 @@ export function WorkflowGraphBoard({
                   width: child.width,
                   height: child.height,
                   borderColor: loopTone.borderColor,
-                  backgroundColor: '#FFFFFF',
+                  backgroundColor: 'var(--workflow-loop-bg, #FFFFFF)',
                   boxShadow:
-                    '0 4px 12px rgba(0,0,0,0.03), inset 0 2px 20px 0 rgba(0,0,0,0.01)',
+                    'var(--workflow-loop-shadow, 0 4px 12px rgba(0,0,0,0.03), inset 0 2px 20px 0 rgba(0,0,0,0.01))',
                 }}
               >
                 {/* Floating Header Badge */}
@@ -871,7 +875,11 @@ export function WorkflowGraphBoard({
 
   return (
     <div
-      className={cn('relative overflow-hidden', 'rounded-[16px]', className)}
+      className={cn(
+        'workflow-graph-board relative overflow-hidden',
+        'rounded-[16px]',
+        className
+      )}
       ref={containerRef}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -880,7 +888,7 @@ export function WorkflowGraphBoard({
       onContextMenu={(e) => e.preventDefault()}
       style={{
         touchAction: 'none',
-        backgroundColor: '#F1F5F9',
+        backgroundColor: 'var(--workflow-board-bg, #F1F5F9)',
         height: compact ? 320 : '100%',
         minHeight: compact ? 320 : 0,
       }}
@@ -937,7 +945,10 @@ export function WorkflowGraphBoard({
                   markerHeight="6"
                   orient="auto-start-reverse"
                 >
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1" />
+                  <path
+                    d="M 0 0 L 10 5 L 0 10 z"
+                    fill="var(--workflow-edge-color, #cbd5e1)"
+                  />
                 </marker>
                 <marker
                   id="arrow-hover"

@@ -26,6 +26,7 @@ pub struct ChatSession {
     pub team_protocol: Option<String>,
     pub team_protocol_enabled: bool,
     pub default_workspace_path: Option<String>,
+    pub chat_input_mode: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
@@ -54,6 +55,13 @@ pub struct UpdateChatSession {
     pub team_protocol: Option<String>,
     pub team_protocol_enabled: Option<bool>,
     pub default_workspace_path: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "double_option"
+    )]
+    #[ts(optional, type = "string | null")]
+    pub chat_input_mode: Option<Option<String>>,
 }
 
 impl ChatSession {
@@ -74,6 +82,7 @@ impl ChatSession {
                           team_protocol,
                           team_protocol_enabled as "team_protocol_enabled!: bool",
                           default_workspace_path,
+                          chat_input_mode,
                           created_at as "created_at!: DateTime<Utc>",
                           updated_at as "updated_at!: DateTime<Utc>",
                           archived_at as "archived_at: DateTime<Utc>"
@@ -97,6 +106,7 @@ impl ChatSession {
                           team_protocol,
                           team_protocol_enabled as "team_protocol_enabled!: bool",
                           default_workspace_path,
+                          chat_input_mode,
                           created_at as "created_at!: DateTime<Utc>",
                           updated_at as "updated_at!: DateTime<Utc>",
                           archived_at as "archived_at: DateTime<Utc>"
@@ -123,6 +133,7 @@ impl ChatSession {
                       team_protocol,
                       team_protocol_enabled as "team_protocol_enabled!: bool",
                       default_workspace_path,
+                      chat_input_mode,
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>",
                       archived_at as "archived_at: DateTime<Utc>"
@@ -153,6 +164,7 @@ impl ChatSession {
                          team_protocol,
                          team_protocol_enabled as "team_protocol_enabled!: bool",
                          default_workspace_path,
+                         chat_input_mode,
                          created_at as "created_at!: DateTime<Utc>",
                          updated_at as "updated_at!: DateTime<Utc>",
                          archived_at as "archived_at: DateTime<Utc>""#,
@@ -194,6 +206,10 @@ impl ChatSession {
             .default_workspace_path
             .clone()
             .or(existing.default_workspace_path);
+        let chat_input_mode = match &data.chat_input_mode {
+            Some(value) => value.clone(), // Some(Some("workflow")) = set, Some(None) = clear
+            None => existing.chat_input_mode, // Not provided, keep existing
+        };
 
         let archived_at = if status == ChatSessionStatus::Archived {
             existing.archived_at.or(Some(Utc::now()))
@@ -214,6 +230,7 @@ impl ChatSession {
                    team_protocol_enabled = $9,
                    archived_at = $10,
                    default_workspace_path = $11,
+                   chat_input_mode = $12,
                    updated_at = datetime('now', 'subsec')
                WHERE id = $1
                RETURNING id as "id!: Uuid",
@@ -226,6 +243,7 @@ impl ChatSession {
                          team_protocol,
                          team_protocol_enabled as "team_protocol_enabled!: bool",
                          default_workspace_path,
+                         chat_input_mode,
                          created_at as "created_at!: DateTime<Utc>",
                          updated_at as "updated_at!: DateTime<Utc>",
                          archived_at as "archived_at: DateTime<Utc>""#,
@@ -239,7 +257,8 @@ impl ChatSession {
             team_protocol,
             team_protocol_enabled,
             archived_at,
-            default_workspace_path
+            default_workspace_path,
+            chat_input_mode
         )
         .fetch_one(pool)
         .await
