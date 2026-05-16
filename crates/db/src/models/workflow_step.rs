@@ -431,7 +431,7 @@ impl WorkflowStep {
                    step_type, title, '' AS instructions, assigned_workflow_agent_session_id,
                    status, retry_count, max_retry, round_index, display_order,
                    latest_run_id, summary_text, NULL AS content, loop_id, lead_review_required,
-                   user_review_required, NULL AS revision_context,
+                   user_review_required, revision_context,
                    created_at, updated_at, started_at, completed_at
             FROM chat_workflow_steps
             WHERE execution_id = ?1
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_summary_excludes_instructions_content_and_revision_context() {
+    async fn find_summary_excludes_instructions_and_content_but_keeps_revision_context() {
         let pool = step_test_pool().await;
         let (execution_id, round_id) = create_execution_and_round(&pool).await;
 
@@ -624,7 +624,10 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].instructions, "");
         assert!(summaries[0].content.is_none());
-        assert!(summaries[0].revision_context.is_none());
+        assert_eq!(
+            summaries[0].revision_context.as_deref(),
+            Some("revision context data")
+        );
         assert_eq!(summaries[0].summary_text.as_deref(), Some("summary text"));
         assert_eq!(summaries[0].step_key, "s1");
     }

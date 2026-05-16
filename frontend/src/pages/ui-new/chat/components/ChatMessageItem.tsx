@@ -287,8 +287,9 @@ export function ChatMessageItem({
 
   const protocolError = extractProtocolErrorMeta(message.meta);
   const workflowCardProjection =
-    workflowCardProjectionOverride ??
-    extractWorkflowCardProjection(message.meta);
+    workflowCardProjectionOverride !== undefined
+      ? workflowCardProjectionOverride
+      : extractWorkflowCardProjection(message.meta);
   const isWorkflowCardMessage = isWorkflowCardMessageMeta(message.meta);
   const messageI18nMeta = extractMessageI18nMeta(message.meta);
   const errorInfo = extractErrorFromMeta(message.meta);

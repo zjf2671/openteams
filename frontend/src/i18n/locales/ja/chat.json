@@ -1011,6 +1011,15 @@
       "fitView": "キャンバスに合わせる",
       "leadFallback": "リード"
     },
+    "executionStatus": {
+      "running": "実行中",
+      "failed": "失敗",
+      "paused": "一時停止中",
+      "waiting": "レビュー待ち",
+      "recompiling": "計画を再生成中",
+      "completed": "完了",
+      "pending": "準備中"
+    },
     "statusLabels": {
       "interrupted": "中断済み",
       "stopRequested": "停止リクエスト中",

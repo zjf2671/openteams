@@ -92,6 +92,96 @@ export function workflowStatusLabel(status?: string | null, t?: TFunction) {
   }
 }
 
+export function workflowExecutionStatusLabel(
+  status?: string | null,
+  t?: TFunction
+) {
+  switch (status) {
+    case 'running':
+      return (
+        t?.('workflow.executionStatus.running', { defaultValue: 'Running' }) ??
+        'Running'
+      );
+    case 'failed':
+      return (
+        t?.('workflow.executionStatus.failed', { defaultValue: 'Failed' }) ??
+        'Failed'
+      );
+    case 'paused':
+      return (
+        t?.('workflow.executionStatus.paused', { defaultValue: 'Paused' }) ??
+        'Paused'
+      );
+    case 'waiting':
+      return (
+        t?.('workflow.executionStatus.waiting', {
+          defaultValue: 'Waiting Review',
+        }) ?? 'Waiting Review'
+      );
+    case 'recompiling':
+      return (
+        t?.('workflow.executionStatus.recompiling', {
+          defaultValue: 'Regenerating plan',
+        }) ?? 'Regenerating plan'
+      );
+    case 'completed':
+      return (
+        t?.('workflow.executionStatus.completed', {
+          defaultValue: 'Completed',
+        }) ?? 'Completed'
+      );
+    case 'pending':
+      return (
+        t?.('workflow.executionStatus.pending', {
+          defaultValue: 'Preparing',
+        }) ?? 'Preparing'
+      );
+    default:
+      return status
+        ? toTitleCase(status)
+        : (t?.('workflow.executionStatus.pending', {
+            defaultValue: 'Preparing',
+          }) ?? 'Preparing');
+  }
+}
+
+export function workflowExecutionStatusDotClass(status?: string | null) {
+  switch (status) {
+    case 'running':
+      return 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]';
+    case 'failed':
+      return 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.45)]';
+    case 'paused':
+      return 'bg-amber-500';
+    case 'waiting':
+      return 'bg-violet-500 animate-pulse shadow-[0_0_8px_rgba(139,92,246,0.45)]';
+    case 'recompiling':
+      return 'bg-[#5094fb] animate-pulse shadow-[0_0_8px_rgba(80,148,251,0.5)]';
+    case 'completed':
+      return 'bg-emerald-500';
+    default:
+      return 'bg-slate-300';
+  }
+}
+
+export function workflowExecutionStatusTextClass(status?: string | null) {
+  switch (status) {
+    case 'running':
+    case 'completed':
+      return 'text-emerald-600';
+    case 'failed':
+      return 'text-rose-600';
+    case 'paused':
+      return 'text-amber-600';
+    case 'waiting':
+      return 'text-violet-600';
+    case 'recompiling':
+      return 'text-[#5094fb]';
+    default:
+      return 'text-slate-400';
+  }
+}
+
 export function workflowStatusTone(
   status?: string | null,
   selected = false

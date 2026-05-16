@@ -1011,6 +1011,15 @@
       "fitView": "适应画布",
       "leadFallback": "主 Agent"
     },
+    "executionStatus": {
+      "running": "运行中",
+      "failed": "失败",
+      "paused": "已暂停",
+      "waiting": "等待审核",
+      "recompiling": "正在重新生成计划",
+      "completed": "已完成",
+      "pending": "准备中"
+    },
     "statusLabels": {
       "interrupted": "已中断",
       "stopRequested": "停止请求中",

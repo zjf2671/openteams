@@ -1011,6 +1011,15 @@
       "fitView": "캔버스에 맞추기",
       "leadFallback": "리드"
     },
+    "executionStatus": {
+      "running": "실행 중",
+      "failed": "실패",
+      "paused": "일시 중지됨",
+      "waiting": "검토 대기 중",
+      "recompiling": "계획 재생성 중",
+      "completed": "완료됨",
+      "pending": "준비 중"
+    },
     "statusLabels": {
       "interrupted": "중단됨",
       "stopRequested": "중지 요청됨",

@@ -28,6 +28,13 @@ pub(super) enum TranscriptResolution {
     Fail(String),
 }
 
+fn can_resolve_interactive_transcript(execution_status: &WorkflowExecutionStatus) -> bool {
+    matches!(
+        execution_status,
+        WorkflowExecutionStatus::Waiting | WorkflowExecutionStatus::Running
+    )
+}
+
 impl WorkflowOrchestrator {
     pub(super) fn merge_transcript_meta(
         existing_meta_json: Option<&str>,
@@ -68,17 +75,17 @@ impl WorkflowOrchestrator {
                 OrchestratorError::NotFound(format!("execution {} 未找到", transcript.execution_id))
             })?;
 
-        if execution.status != WorkflowExecutionStatus::Waiting {
-            return Err(OrchestratorError::IllegalTransition(format!(
-                "execution {} is {:?}, expected waiting",
-                execution.id, execution.status
-            )));
-        }
-
         if transcript.entry_type == "final_review" {
             return Err(OrchestratorError::IllegalTransition(
                 "final_review must be resolved through workflow iteration feedback".to_string(),
             ));
+        }
+
+        if !can_resolve_interactive_transcript(&execution.status) {
+            return Err(OrchestratorError::IllegalTransition(format!(
+                "execution {} is {:?}, expected waiting or running",
+                execution.id, execution.status
+            )));
         }
 
         let step_id = transcript.step_id.ok_or_else(|| {
@@ -459,5 +466,29 @@ impl WorkflowOrchestrator {
         WorkflowTranscript::update_meta_json(pool, transcript_id, &meta.to_string())
             .await
             .map_err(OrchestratorError::Database)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interactive_transcripts_can_be_resolved_while_execution_is_waiting_or_running() {
+        assert!(can_resolve_interactive_transcript(
+            &WorkflowExecutionStatus::Waiting
+        ));
+        assert!(can_resolve_interactive_transcript(
+            &WorkflowExecutionStatus::Running
+        ));
+        assert!(!can_resolve_interactive_transcript(
+            &WorkflowExecutionStatus::Paused
+        ));
+        assert!(!can_resolve_interactive_transcript(
+            &WorkflowExecutionStatus::Completed
+        ));
+        assert!(!can_resolve_interactive_transcript(
+            &WorkflowExecutionStatus::Failed
+        ));
     }
 }

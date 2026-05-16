@@ -67,6 +67,8 @@ const WORKFLOW_DRAIN_TIMEOUT: Duration = Duration::from_millis(35);
 const WORKFLOW_SESSION_ID_DRAIN_TIMEOUT: Duration = Duration::from_millis(350);
 const WORKFLOW_REAP_TIMEOUT: Duration = Duration::from_secs(3);
 const WORKFLOW_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const WORKFLOW_EXECUTOR_ERROR_MAX_CHARS: usize = 1600;
+const WORKFLOW_EXECUTOR_ERROR_MAX_LINES: usize = 16;
 const EXECUTOR_PROFILE_VARIANT_KEY: &str = "executor_profile_variant";
 pub const WORKFLOW_PROTOCOL_PARSE_MAX_RETRIES: u32 = 1;
 
@@ -461,6 +463,11 @@ fn workflow_runtime_line_for_entry(entry: &NormalizedEntry) -> Option<WorkflowRu
         // AssistantMessage remains reserved for the final workflow protocol
         // payload, so streaming it into transcript would duplicate or expose
         // the final_result JSON before the orchestrator handles it.
+        NormalizedEntryType::ErrorMessage { .. } => Some(WorkflowRuntimeEntryLine {
+            stream_type: ChatStreamDeltaType::Error,
+            content: entry.content.clone(),
+            immediate: true,
+        }),
         _ => None,
     }
 }
@@ -1590,6 +1597,7 @@ pub fn build_step_revision_prompt(
     feedback_source: WorkflowRevisionFeedbackSource,
     feedback_content: &str,
     previous_summary: &str,
+    previous_content: Option<&str>,
     retry_count: i32,
 ) -> String {
     let mut prompt = String::with_capacity(4096);
@@ -1643,6 +1651,15 @@ pub fn build_step_revision_prompt(
         }
     }
 
+    if let Some(previous_content) = previous_content
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != previous_summary.trim())
+    {
+        prompt.push_str("\n### Your Previous Full Result\n");
+        prompt.push_str(previous_content);
+        prompt.push('\n');
+    }
+
     // Original task context
     prompt.push_str("\n### Original Task Instructions\n");
     prompt.push_str("- Title: ");
@@ -1659,6 +1676,7 @@ pub fn build_step_revision_prompt_with_schema(
     feedback_source: WorkflowRevisionFeedbackSource,
     feedback_content: &str,
     previous_summary: &str,
+    previous_content: Option<&str>,
     retry_count: i32,
     agent_skill_names: &[String],
 ) -> String {
@@ -1667,6 +1685,7 @@ pub fn build_step_revision_prompt_with_schema(
         feedback_source,
         feedback_content,
         previous_summary,
+        previous_content,
         retry_count,
     );
     if let Some(section) =
@@ -1960,6 +1979,7 @@ pub fn build_workflow_card_projection_lightweight(
     execution: &WorkflowExecution,
     plan: &WorkflowPlan,
     revision: &WorkflowPlanRevision,
+    revisions: &[WorkflowPlanRevision],
     steps: &[WorkflowStep],
     _edges: &[WorkflowStepEdge],
     rounds: &[WorkflowRound],
@@ -2024,32 +2044,13 @@ pub fn build_workflow_card_projection_lightweight(
     let pending_review = build_pending_review(steps, loops, transcripts);
     let pending_input = build_pending_input(steps, transcripts);
 
-    let step_views = steps
-        .iter()
-        .map(|step| WorkflowCardStep {
-            id: step.id.to_string(),
-            step_key: step.step_key.clone(),
-            title: step.title.clone(),
-            step_type: to_workflow_wire_value(&step.step_type),
-            status: to_workflow_wire_value(&step.status),
-            review_phase: derive_step_review_phase(step, transcripts),
-            lead_review_required: step.lead_review_required,
-            user_review_required: step.user_review_required,
-            retry_count: step.retry_count,
-            max_retry: step.max_retry,
-            loop_key: loop_key_by_step_key.get(&step.step_key).cloned(),
-            latest_review: latest_review_by_step_id.get(&step.id).cloned(),
-            agent_name: step
-                .assigned_workflow_agent_session_id
-                .and_then(|id| workflow_agent_name_by_id.get(&id))
-                .cloned(),
-            summary_text: step
-                .summary_text
-                .clone()
-                .and_then(parse_summary_text_preview),
-            content: None,
-        })
-        .collect();
+    let step_views = build_workflow_step_summary_views(
+        steps,
+        &loop_key_by_step_key,
+        &latest_review_by_step_id,
+        &workflow_agent_name_by_id,
+        transcripts,
+    );
 
     let agent_views = session_agents
         .iter()
@@ -2071,6 +2072,16 @@ pub fn build_workflow_card_projection_lightweight(
 
     let loop_views = build_workflow_loop_views(loops);
     let iteration_history = build_iteration_history(rounds, steps, iteration_feedbacks);
+    let round_graphs = build_round_graphs_summary(
+        rounds,
+        revision,
+        revisions,
+        steps,
+        loops,
+        &latest_review_by_step_id,
+        &workflow_agent_name_by_id,
+        transcripts,
+    )?;
 
     let result_step = steps
         .iter()
@@ -2121,7 +2132,7 @@ pub fn build_workflow_card_projection_lightweight(
         pending_review,
         pending_input,
         iteration_history,
-        round_graphs: Vec::new(),
+        round_graphs,
         plan: plan_json,
         started_at: execution.started_at.map(|value| value.to_rfc3339()),
         completed_at: execution.completed_at.map(|value| value.to_rfc3339()),
@@ -2256,6 +2267,41 @@ fn build_workflow_step_views(
         .collect()
 }
 
+fn build_workflow_step_summary_views(
+    steps: &[WorkflowStep],
+    loop_key_by_step_key: &HashMap<String, String>,
+    latest_review_by_step_id: &HashMap<Uuid, WorkflowCardReview>,
+    workflow_agent_name_by_id: &HashMap<Uuid, String>,
+    transcripts: &[WorkflowTranscript],
+) -> Vec<WorkflowCardStep> {
+    steps
+        .iter()
+        .map(|step| WorkflowCardStep {
+            id: step.id.to_string(),
+            step_key: step.step_key.clone(),
+            title: step.title.clone(),
+            step_type: to_workflow_wire_value(&step.step_type),
+            status: to_workflow_wire_value(&step.status),
+            review_phase: derive_step_review_phase(step, transcripts),
+            lead_review_required: step.lead_review_required,
+            user_review_required: step.user_review_required,
+            retry_count: step.retry_count,
+            max_retry: step.max_retry,
+            loop_key: loop_key_by_step_key.get(&step.step_key).cloned(),
+            latest_review: latest_review_by_step_id.get(&step.id).cloned(),
+            agent_name: step
+                .assigned_workflow_agent_session_id
+                .and_then(|id| workflow_agent_name_by_id.get(&id))
+                .cloned(),
+            summary_text: step
+                .summary_text
+                .clone()
+                .and_then(parse_summary_text_preview),
+            content: None,
+        })
+        .collect()
+}
+
 fn build_workflow_loop_views(loops: &[WorkflowLoop]) -> Vec<WorkflowCardLoop> {
     loops
         .iter()
@@ -2292,6 +2338,18 @@ fn build_round_graphs(
         .map(|revision| (revision.id, revision))
         .collect::<HashMap<_, _>>();
     revision_by_id.insert(active_revision.id, active_revision);
+
+    if rounds.is_empty() {
+        return build_round_graphs_summary_from_steps(
+            active_revision,
+            &revision_by_id,
+            steps,
+            loops,
+            latest_review_by_step_id,
+            workflow_agent_name_by_id,
+            transcripts,
+        );
+    }
 
     rounds
         .iter()
@@ -2333,6 +2391,168 @@ fn build_round_graphs(
             })
         })
         .collect()
+}
+
+fn build_round_graphs_summary(
+    rounds: &[WorkflowRound],
+    active_revision: &WorkflowPlanRevision,
+    revisions: &[WorkflowPlanRevision],
+    steps: &[WorkflowStep],
+    loops: &[WorkflowLoop],
+    latest_review_by_step_id: &HashMap<Uuid, WorkflowCardReview>,
+    workflow_agent_name_by_id: &HashMap<Uuid, String>,
+    transcripts: &[WorkflowTranscript],
+) -> Result<Vec<WorkflowRoundGraph>, WorkflowRuntimeError> {
+    let mut revision_by_id = revisions
+        .iter()
+        .map(|revision| (revision.id, revision))
+        .collect::<HashMap<_, _>>();
+    revision_by_id.insert(active_revision.id, active_revision);
+
+    if rounds.is_empty() {
+        return build_round_graphs_summary_from_steps(
+            active_revision,
+            &revision_by_id,
+            steps,
+            loops,
+            latest_review_by_step_id,
+            workflow_agent_name_by_id,
+            transcripts,
+        );
+    }
+
+    rounds
+        .iter()
+        .map(|round| {
+            let revision = round
+                .source_revision_id
+                .and_then(|revision_id| revision_by_id.get(&revision_id).copied())
+                .unwrap_or(active_revision);
+            let round_steps = steps
+                .iter()
+                .filter(|step| step.round_id == round.id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let round_loops = loops
+                .iter()
+                .filter(|workflow_loop| workflow_loop.round_id == round.id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut round_plan: WorkflowPlanJson = serde_json::from_str(&revision.plan_json)?;
+            round_plan.nodes = overlay_step_statuses(&round_plan, &round_steps);
+            let loop_key_by_step_key =
+                build_loop_key_by_step_key(&round_plan, &round_steps, &round_loops);
+            apply_runtime_loop_keys(&mut round_plan, &loop_key_by_step_key);
+
+            Ok(WorkflowRoundGraph {
+                round_id: round.id.to_string(),
+                round_index: round.round_index,
+                revision_id: revision.id.to_string(),
+                status: to_workflow_wire_value(&round.status),
+                steps: build_workflow_step_summary_views(
+                    &round_steps,
+                    &loop_key_by_step_key,
+                    latest_review_by_step_id,
+                    workflow_agent_name_by_id,
+                    transcripts,
+                ),
+                loops: build_workflow_loop_views(&round_loops),
+                plan: round_plan,
+            })
+        })
+        .collect()
+}
+
+fn build_round_graphs_summary_from_steps(
+    active_revision: &WorkflowPlanRevision,
+    revision_by_id: &HashMap<Uuid, &WorkflowPlanRevision>,
+    steps: &[WorkflowStep],
+    loops: &[WorkflowLoop],
+    latest_review_by_step_id: &HashMap<Uuid, WorkflowCardReview>,
+    workflow_agent_name_by_id: &HashMap<Uuid, String>,
+    transcripts: &[WorkflowTranscript],
+) -> Result<Vec<WorkflowRoundGraph>, WorkflowRuntimeError> {
+    let mut round_keys = Vec::<(Uuid, i32, Option<Uuid>)>::new();
+    for step in steps {
+        if round_keys
+            .iter()
+            .any(|(round_id, _, _)| *round_id == step.round_id)
+        {
+            continue;
+        }
+        round_keys.push((step.round_id, step.round_index, step.compiled_revision_id));
+    }
+    round_keys.sort_by_key(|(_, round_index, _)| *round_index);
+
+    round_keys
+        .into_iter()
+        .map(|(round_id, round_index, revision_id)| {
+            let revision = revision_id
+                .and_then(|id| revision_by_id.get(&id).copied())
+                .unwrap_or(active_revision);
+            let round_steps = steps
+                .iter()
+                .filter(|step| step.round_id == round_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let round_loops = loops
+                .iter()
+                .filter(|workflow_loop| workflow_loop.round_id == round_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut round_plan: WorkflowPlanJson = serde_json::from_str(&revision.plan_json)?;
+            round_plan.nodes = overlay_step_statuses(&round_plan, &round_steps);
+            let loop_key_by_step_key =
+                build_loop_key_by_step_key(&round_plan, &round_steps, &round_loops);
+            apply_runtime_loop_keys(&mut round_plan, &loop_key_by_step_key);
+
+            Ok(WorkflowRoundGraph {
+                round_id: round_id.to_string(),
+                round_index,
+                revision_id: revision.id.to_string(),
+                status: derive_round_graph_status(&round_steps),
+                steps: build_workflow_step_summary_views(
+                    &round_steps,
+                    &loop_key_by_step_key,
+                    latest_review_by_step_id,
+                    workflow_agent_name_by_id,
+                    transcripts,
+                ),
+                loops: build_workflow_loop_views(&round_loops),
+                plan: round_plan,
+            })
+        })
+        .collect()
+}
+
+fn derive_round_graph_status(steps: &[WorkflowStep]) -> String {
+    if steps
+        .iter()
+        .any(|step| step.status == WorkflowStepStatus::Failed)
+    {
+        return "failed".to_string();
+    }
+    if steps.iter().any(|step| {
+        matches!(
+            step.status,
+            WorkflowStepStatus::Running | WorkflowStepStatus::Ready
+        )
+    }) {
+        return "running".to_string();
+    }
+    if !steps.is_empty()
+        && steps.iter().all(|step| {
+            matches!(
+                step.status,
+                WorkflowStepStatus::Completed
+                    | WorkflowStepStatus::Skipped
+                    | WorkflowStepStatus::Cancelled
+            )
+        })
+    {
+        return "completed".to_string();
+    }
+    "pending".to_string()
 }
 
 fn extract_iteration_feedback_summary(user_feedback_json: &str) -> Option<String> {
@@ -2727,6 +2947,18 @@ async fn run_workflow_agent_prompt_inner(
 ) -> Result<String, WorkflowRuntimeError> {
     let workspace_path = resolve_workspace_path(session, agent, session_agent);
     fs::create_dir_all(&workspace_path).await?;
+    save_debug_workflow_prompt(
+        &workspace_path,
+        session,
+        agent,
+        session_agent,
+        workflow_session,
+        prompt,
+        step_id,
+        resume_session_id.is_some(),
+        stream_context.as_ref(),
+    )
+    .await?;
 
     let executor_profile_id = parse_executor_profile_id(agent)?;
     let mut executor =
@@ -2817,10 +3049,10 @@ async fn run_workflow_agent_prompt_inner(
                 RUNNING_STEPS.remove(&step_id);
                 finish_workflow_runtime_stream(&msg_store, &mut workflow_stream_task).await;
                 finish_workflow_runtime_session_id_persistor(&mut session_id_task).await;
-                return Err(WorkflowRuntimeError::Validation(format!(
-                    "workflow 执行超时：{}",
-                    agent.name
-                )));
+                let history = msg_store.get_history();
+                return Err(WorkflowRuntimeError::Validation(
+                    workflow_executor_failure_message(&agent.name, "workflow 执行超时", &history),
+                ));
             }
         }
 
@@ -2855,10 +3087,10 @@ async fn run_workflow_agent_prompt_inner(
     }
 
     if failed_by_signal {
-        return Err(WorkflowRuntimeError::Validation(format!(
-            "workflow 执行失败：{}",
-            agent.name
-        )));
+        let history = msg_store.get_history();
+        return Err(WorkflowRuntimeError::Validation(
+            workflow_executor_failure_message(&agent.name, "workflow 执行失败", &history),
+        ));
     }
 
     if let Some(exit_status) = status
@@ -2871,10 +3103,10 @@ async fn run_workflow_agent_prompt_inner(
                 agent.name
             )));
         }
-        return Err(WorkflowRuntimeError::Validation(format!(
-            "workflow 执行失败：{}",
-            agent.name
-        )));
+        let history = msg_store.get_history();
+        return Err(WorkflowRuntimeError::Validation(
+            workflow_executor_failure_message(&agent.name, "workflow 执行失败", &history),
+        ));
     }
 
     let history = msg_store.get_history();
@@ -2892,10 +3124,418 @@ async fn run_workflow_agent_prompt_inner(
     }
     extract_latest_assistant_from_history(&history).ok_or_else(|| {
         WorkflowRuntimeError::Validation(format!(
-            "workflow agent '{}' 没有返回 assistant 输出",
-            agent.name
+            "{}",
+            workflow_executor_failure_message(
+                &agent.name,
+                "workflow agent 没有返回 assistant 输出",
+                &history,
+            )
         ))
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn save_debug_workflow_prompt(
+    workspace_path: &std::path::Path,
+    session: &ChatSession,
+    agent: &ChatAgent,
+    session_agent: &ChatSessionAgent,
+    workflow_session: Option<&WorkflowAgentSession>,
+    prompt: &str,
+    step_id: Uuid,
+    is_follow_up: bool,
+    stream_context: Option<&WorkflowRuntimeStreamContext>,
+) -> Result<(), WorkflowRuntimeError> {
+    if !std::env::var("DEBUG_WORKFLOW_PROMPT")
+        .map(|value| value.eq_ignore_ascii_case("TRUE"))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let prompt_dir = workspace_path
+        .join(".openteams")
+        .join("debug")
+        .join("workflow_prompts")
+        .join(session.id.to_string());
+    fs::create_dir_all(&prompt_dir).await?;
+
+    let run_kind = if is_follow_up { "follow_up" } else { "initial" };
+    let prompt_kind = infer_workflow_prompt_debug_kind(prompt, is_follow_up);
+    let agent_name = sanitize_debug_prompt_filename_component(&agent.name);
+    let step_feature = stream_context
+        .map(|context| format!("step_{}", context.step_key.as_str()))
+        .or_else(|| extract_workflow_prompt_step_key(prompt).map(|key| format!("step_{key}")))
+        .unwrap_or_else(|| {
+            if step_id == Uuid::nil() {
+                "workflow".to_string()
+            } else {
+                format!("step_{step_id}")
+            }
+        });
+    let timestamp_ms = Utc::now().timestamp_millis();
+    let filename = format!(
+        "{}_{}_{}_{}_{}.md",
+        timestamp_ms,
+        sanitize_debug_prompt_filename_component(&prompt_kind),
+        sanitize_debug_prompt_filename_component(&step_feature),
+        agent_name,
+        Uuid::new_v4()
+    );
+    let path = prompt_dir.join(filename);
+    let workflow_session_id = workflow_session
+        .map(|item| item.id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let content = format!(
+        "---\nsession_id: {}\nagent_id: {}\nagent_name: {}\nsession_agent_id: {}\nworkflow_agent_session_id: {}\nstep_id: {}\nstep_key: {}\nkind: {}\nprompt_kind: {}\ncreated_at: {}\n---\n\n{}",
+        session.id,
+        agent.id,
+        agent.name,
+        session_agent.id,
+        workflow_session_id,
+        step_id,
+        stream_context
+            .map(|context| context.step_key.as_str())
+            .unwrap_or("none"),
+        run_kind,
+        prompt_kind,
+        Utc::now().to_rfc3339(),
+        prompt
+    );
+    fs::write(path, content).await?;
+    Ok(())
+}
+
+fn infer_workflow_prompt_debug_kind(prompt: &str, is_follow_up: bool) -> String {
+    let trimmed = prompt.trim_start();
+
+    if let Some(rest) = trimmed.strip_prefix("Your previous workflow ") {
+        if let Some((protocol_name, _)) = rest.split_once(" response") {
+            return format!("protocol_retry_{}", protocol_name.trim().replace(' ', "_"));
+        }
+        return "protocol_retry".to_string();
+    }
+
+    if trimmed.starts_with("# Workflow Plan Generation") {
+        if trimmed.contains("## Iteration Context")
+            || trimmed.contains("Iteration request: user rejected")
+        {
+            return "iteration_feedback_plan_generation".to_string();
+        }
+        if trimmed.contains("Previous generation failed.") {
+            return "plan_generation_retry".to_string();
+        }
+        if trimmed.contains("Existing workflow plan JSON:") {
+            return "plan_regeneration".to_string();
+        }
+        return "plan_generation".to_string();
+    }
+
+    if trimmed.starts_with("You are reviewing a worker's step task output.") {
+        return "lead_review".to_string();
+    }
+
+    if trimmed.contains("loop_review_result") {
+        return "loop_review".to_string();
+    }
+
+    if trimmed.starts_with("You are revising a step in an workflow") {
+        if trimmed.contains("## User Revision Required") {
+            return "step_revision_user_feedback".to_string();
+        }
+        return "step_revision_review_feedback".to_string();
+    }
+
+    if trimmed.starts_with("The user has replied while workflow step") {
+        return "step_follow_up_user_input".to_string();
+    }
+
+    if trimmed.starts_with("The previous attempt for workflow step") {
+        return "step_follow_up_failed_restart".to_string();
+    }
+
+    if trimmed.starts_with("You are implementing a task in an workflow step.") {
+        return "step_execution_task".to_string();
+    }
+
+    if trimmed.starts_with("You are reviewing the output of the workers' implementation.") {
+        return "step_execution_review".to_string();
+    }
+
+    if trimmed.starts_with("You are reviewing the results of the current workflow execution.") {
+        return "step_execution_result".to_string();
+    }
+
+    if is_follow_up {
+        "workflow_follow_up".to_string()
+    } else {
+        "workflow_prompt".to_string()
+    }
+}
+
+fn extract_workflow_prompt_step_key(prompt: &str) -> Option<String> {
+    for marker in [
+        "Fill `step_key` with `",
+        "- step_key: ",
+        "\"step_key\": \"",
+        "step_key must stay exactly \"",
+    ] {
+        if let Some(value) = extract_after_marker(prompt, marker) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn extract_after_marker(prompt: &str, marker: &str) -> Option<String> {
+    let remainder = prompt.split_once(marker)?.1;
+    let value = remainder
+        .split(|ch: char| ch == '`' || ch == '"' || ch == '\n' || ch == '\r')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(value.to_string())
+}
+
+fn sanitize_debug_prompt_filename_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "agent".to_string()
+    } else {
+        trimmed.chars().take(48).collect()
+    }
+}
+
+fn workflow_executor_failure_message(agent_name: &str, reason: &str, history: &[LogMsg]) -> String {
+    let base = format!("{reason}：{agent_name}");
+    let Some(excerpt) = workflow_executor_log_excerpt(history) else {
+        return base;
+    };
+
+    format!("{base}\n\nExecutor error:\n{excerpt}")
+}
+
+fn workflow_executor_log_excerpt(history: &[LogMsg]) -> Option<String> {
+    if let Some(error_excerpt) = workflow_executor_error_excerpt(history) {
+        return Some(error_excerpt);
+    }
+
+    let stderr = history
+        .iter()
+        .filter_map(|msg| match msg {
+            LogMsg::Stderr(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let stdout = history
+        .iter()
+        .filter_map(|msg| match msg {
+            LogMsg::Stdout(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let output = if !stderr.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    };
+    let output = output.trim();
+    if output.is_empty() {
+        return None;
+    }
+
+    Some(tail_chars(output, WORKFLOW_EXECUTOR_ERROR_MAX_CHARS))
+}
+
+fn workflow_executor_error_excerpt(history: &[LogMsg]) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut stream_state = WorkflowRuntimeStreamState::default();
+
+    for msg in history {
+        match msg {
+            LogMsg::JsonPatch(patch) => {
+                if let Some((_index, entry)) = extract_normalized_entry_from_patch(patch) {
+                    collect_workflow_error_lines_from_entry(&entry, &mut lines);
+                }
+                for (stream_type, line) in stream_state.drain_patch_lines(patch) {
+                    if matches!(stream_type, ChatStreamDeltaType::Error)
+                        || workflow_executor_line_has_error_signal(&line)
+                    {
+                        push_workflow_error_line(&mut lines, &line);
+                    }
+                }
+            }
+            LogMsg::Stderr(value) => collect_workflow_error_lines_from_text(value, &mut lines),
+            LogMsg::Stdout(value) => collect_workflow_error_lines_from_text(value, &mut lines),
+            _ => {}
+        }
+    }
+
+    for (stream_type, line) in stream_state.flush_pending_lines() {
+        if matches!(stream_type, ChatStreamDeltaType::Error)
+            || workflow_executor_line_has_error_signal(&line)
+        {
+            push_workflow_error_line(&mut lines, &line);
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let selected = lines
+        .into_iter()
+        .rev()
+        .take(WORKFLOW_EXECUTOR_ERROR_MAX_LINES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(tail_chars(&selected, WORKFLOW_EXECUTOR_ERROR_MAX_CHARS))
+}
+
+fn collect_workflow_error_lines_from_entry(entry: &NormalizedEntry, lines: &mut Vec<String>) {
+    match &entry.entry_type {
+        NormalizedEntryType::ErrorMessage { .. } => {
+            push_workflow_error_line(lines, &entry.content);
+        }
+        NormalizedEntryType::ToolUse {
+            tool_name,
+            action_type,
+            status,
+        } if matches!(
+            status,
+            ToolStatus::Failed | ToolStatus::TimedOut | ToolStatus::Denied { .. }
+        ) =>
+        {
+            if let Some(content) =
+                workflow_tool_activity_content(tool_name, action_type, status, &entry.content)
+            {
+                push_workflow_error_line(lines, &content);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_workflow_error_lines_from_text(text: &str, lines: &mut Vec<String>) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+        collect_workflow_error_lines_from_json(&value, lines);
+        return;
+    }
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            collect_workflow_error_lines_from_json(&value, lines);
+            continue;
+        }
+        if workflow_executor_line_has_error_signal(line) {
+            push_workflow_error_line(lines, line);
+        }
+    }
+}
+
+fn collect_workflow_error_lines_from_json(value: &serde_json::Value, lines: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                let key_lower = key.to_ascii_lowercase();
+                let is_error_key = key_lower.contains("error")
+                    || key_lower == "message"
+                    || key_lower == "detail"
+                    || key_lower == "details"
+                    || key_lower == "stderr";
+                match value {
+                    serde_json::Value::String(text) if is_error_key => {
+                        push_workflow_error_line(lines, text);
+                    }
+                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                        collect_workflow_error_lines_from_json(value, lines);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_workflow_error_lines_from_json(item, lines);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn workflow_executor_line_has_error_signal(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "error",
+        "failed",
+        "failure",
+        "exception",
+        "traceback",
+        "panic",
+        "fatal",
+        "denied",
+        "permission",
+        "timed out",
+        "timeout",
+        "rate limit",
+        "quota",
+        "unauthorized",
+        "forbidden",
+        "api key",
+        "context length",
+        "overloaded",
+        "unavailable",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn push_workflow_error_line(lines: &mut Vec<String>, line: &str) {
+    let normalized = line.trim();
+    if normalized.is_empty() {
+        return;
+    }
+    for line in normalized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let line = truncate_workflow_runtime_line(line);
+        if lines.last().is_some_and(|existing| existing == &line) {
+            continue;
+        }
+        lines.push(line);
+    }
+}
+
+fn tail_chars(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars().rev().take(max_chars).collect::<Vec<_>>();
+    chars.reverse();
+    let mut tail = chars.into_iter().collect::<String>();
+    if value.chars().count() > max_chars {
+        tail.insert_str(0, "...");
+    }
+    tail
 }
 
 fn latest_agent_runtime_ids(history: &[LogMsg]) -> (Option<String>, Option<String>) {
@@ -3557,6 +4197,52 @@ mod tests {
         .to_string()
     }
 
+    #[test]
+    fn workflow_prompt_debug_kind_covers_iteration_and_reviews() {
+        assert_eq!(
+            infer_workflow_prompt_debug_kind(
+                "# Workflow Plan Generation\n\n## Iteration Context\nfeedback",
+                false,
+            ),
+            "iteration_feedback_plan_generation"
+        );
+        assert_eq!(
+            infer_workflow_prompt_debug_kind(
+                "You are reviewing a worker's step task output.\n\n## Step Under Review",
+                false,
+            ),
+            "lead_review"
+        );
+        assert_eq!(
+            infer_workflow_prompt_debug_kind(
+                "You are revising a step in an workflow based on review feedback.\n\n## User Revision Required",
+                true,
+            ),
+            "step_revision_user_feedback"
+        );
+        assert_eq!(
+            infer_workflow_prompt_debug_kind(
+                "Your previous workflow loop review output response did not match the required JSON protocol.",
+                true,
+            ),
+            "protocol_retry_loop_review_output"
+        );
+    }
+
+    #[test]
+    fn workflow_prompt_debug_step_key_can_be_extracted_from_prompt() {
+        assert_eq!(
+            extract_workflow_prompt_step_key(
+                "Return one JSON object. Fill `step_key` with `build_ui`, `execution_id` with `abc`."
+            ),
+            Some("build_ui".to_string())
+        );
+        assert_eq!(
+            extract_workflow_prompt_step_key("Rules:\n- step_key: qa_review\n- execution_id: abc"),
+            Some("qa_review".to_string())
+        );
+    }
+
     fn sample_execution(status: WorkflowExecutionStatus) -> WorkflowExecution {
         let now = Utc::now();
         WorkflowExecution {
@@ -3937,6 +4623,7 @@ mod tests {
             WorkflowRevisionFeedbackSource::Lead,
             "补充错误处理和日志记录。",
             "已经完成主流程，但漏掉异常分支。",
+            Some("Full previous lead result"),
             2,
         );
 
@@ -3958,6 +4645,7 @@ mod tests {
             WorkflowRevisionFeedbackSource::User,
             "请把输出改成中文，并补一份测试说明。",
             "上次结果结构正确，但文案不符合预期。",
+            None,
             1,
         );
 
@@ -3977,6 +4665,7 @@ mod tests {
             WorkflowRevisionFeedbackSource::Lead,
             "Still missing error handling.",
             "Previous attempt incomplete.",
+            None,
             3,
         );
 
@@ -4179,6 +4868,41 @@ mod tests {
         };
 
         assert!(workflow_runtime_line_for_entry(&entry).is_none());
+    }
+
+    #[test]
+    fn workflow_executor_failure_prefers_error_lines_from_stderr() {
+        let history = vec![
+            LogMsg::Stdout("normal progress\nmore normal progress\n".to_string()),
+            LogMsg::Stderr(
+                "debug detail that should not be surfaced\nERROR: model overloaded\n".to_string(),
+            ),
+        ];
+
+        let message = workflow_executor_failure_message("codex", "workflow failed", &history);
+
+        assert!(message.contains("Executor error:"));
+        assert!(message.contains("ERROR: model overloaded"));
+        assert!(!message.contains("debug detail that should not be surfaced"));
+    }
+
+    #[test]
+    fn workflow_executor_failure_extracts_structured_json_error() {
+        let history = vec![LogMsg::Stdout(
+            serde_json::json!({
+                "type": "error",
+                "error": {
+                    "message": "Gemini API key is invalid",
+                    "debug": "large payload omitted"
+                }
+            })
+            .to_string(),
+        )];
+
+        let message = workflow_executor_failure_message("gemini", "workflow failed", &history);
+
+        assert!(message.contains("Gemini API key is invalid"));
+        assert!(!message.contains("large payload omitted"));
     }
 
     #[test]
@@ -4424,7 +5148,7 @@ mod tests {
     }
 
     #[test]
-    fn lightweight_projection_excludes_content_and_round_graphs() {
+    fn lightweight_projection_excludes_step_content() {
         let execution = sample_execution(WorkflowExecutionStatus::Completed);
         let plan_json = sample_plan_json();
         let plan = sample_plan(execution.plan_id);
@@ -4439,6 +5163,7 @@ mod tests {
             &execution,
             &plan,
             &revision,
+            std::slice::from_ref(&revision),
             &[step.clone()],
             &[],
             &[],
@@ -4454,7 +5179,8 @@ mod tests {
         )
         .expect("build lightweight projection");
         assert_eq!(projection.has_transcripts, Some(true));
-        assert!(projection.round_graphs.is_empty());
+        assert_eq!(projection.round_graphs.len(), 1);
+        assert!(projection.round_graphs[0].steps[0].content.is_none());
         assert!(projection.steps[0].content.is_none());
         assert_eq!(
             projection.steps[0].summary_text.as_deref(),
@@ -4481,6 +5207,7 @@ mod tests {
                 &execution,
                 &plan,
                 &revision,
+                std::slice::from_ref(&revision),
                 &[sample_step(WorkflowStepStatus::Completed)],
                 &[],
                 &[],

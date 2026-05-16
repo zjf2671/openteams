@@ -3,6 +3,11 @@ import { ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { WorkflowIterationSummaryData } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import {
+  workflowExecutionStatusDotClass,
+  workflowExecutionStatusLabel,
+  workflowExecutionStatusTextClass,
+} from './workflowStepPresentation';
 
 type WorkflowIterationFeedbackPayload = {
   action: 'accept' | 'reject';
@@ -18,6 +23,7 @@ type WorkflowIterationFeedbackCardProps = {
   currentRound: number;
   completedSteps: number;
   totalSteps: number;
+  executionStatus?: string | null;
   runningStepTitle?: string | null;
   isRegeneratingPlan?: boolean;
   iterationHistory: WorkflowIterationSummaryData[];
@@ -33,6 +39,7 @@ export function WorkflowIterationFeedbackCard({
   currentRound,
   completedSteps,
   totalSteps,
+  executionStatus,
   runningStepTitle,
   isRegeneratingPlan = false,
   roundOptions = [],
@@ -90,23 +97,18 @@ export function WorkflowIterationFeedbackCard({
 
   const progressPercent =
     totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
-  const statusLabel = isRegeneratingPlan
-    ? t('workflow.iterationFeedback.regeneratingPlan', {
-        defaultValue: 'Regenerating plan',
-      })
-    : runningStepTitle
-      ? t('workflow.iterationFeedback.running', { defaultValue: 'Running' })
-      : t('workflow.iterationFeedback.idle', { defaultValue: 'Idle' });
-  const statusDotClass = isRegeneratingPlan
-    ? 'bg-[#5094fb] animate-pulse shadow-[0_0_8px_rgba(80,148,251,0.5)]'
-    : runningStepTitle
-      ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]'
-      : 'bg-slate-300';
-  const statusTextClass = isRegeneratingPlan
-    ? 'text-[#5094fb]'
-    : runningStepTitle
-      ? 'text-emerald-600'
-      : 'text-slate-400';
+  const effectiveExecutionStatus =
+    executionStatus ?? (isRegeneratingPlan ? 'recompiling' : 'pending');
+  const statusLabel = workflowExecutionStatusLabel(
+    effectiveExecutionStatus,
+    t
+  );
+  const statusDotClass = workflowExecutionStatusDotClass(
+    effectiveExecutionStatus
+  );
+  const statusTextClass = workflowExecutionStatusTextClass(
+    effectiveExecutionStatus
+  );
   const visibleRoundOptions = roundOptions
     .filter(
       (round, index, source) =>

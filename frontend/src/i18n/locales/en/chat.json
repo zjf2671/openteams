@@ -1011,6 +1011,15 @@
       "fitView": "Fit to canvas",
       "leadFallback": "Lead"
     },
+    "executionStatus": {
+      "running": "Running",
+      "failed": "Failed",
+      "paused": "Paused",
+      "waiting": "Waiting Review",
+      "recompiling": "Regenerating plan",
+      "completed": "Completed",
+      "pending": "Preparing"
+    },
     "statusLabels": {
       "interrupted": "Interrupted",
       "stopRequested": "Stop Requested",

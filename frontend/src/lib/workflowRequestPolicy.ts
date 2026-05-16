@@ -1,6 +1,5 @@
 export const WORKFLOW_CARD_REFETCH_INTERVAL_MS = 5_000;
 export const WORKFLOW_TRANSCRIPT_REFETCH_INTERVAL_MS = 5_000;
-export const WORKFLOW_DETAIL_CACHE_STALE_MS = 30_000;
 
 const TERMINAL_WORKFLOW_STATES = new Set([
   'completed',
@@ -26,7 +25,7 @@ type WorkflowProjectionLike = Pick<
   'state' | 'execution_status' | 'is_terminal'
 >;
 
-export type WorkflowCardDetailLevel = 'summary' | 'full';
+export type WorkflowCardDetailLevel = 'summary';
 
 export function buildWorkflowCardUrl(
   messageId: string,
@@ -48,16 +47,6 @@ export function isTerminalWorkflowProjection(
   );
 }
 
-export function selectWorkflowPollingProjection({
-  summaryProjection,
-  detailProjection,
-}: {
-  summaryProjection: WorkflowProjectionLike | null | undefined;
-  detailProjection: WorkflowProjectionLike | null | undefined;
-}): WorkflowProjectionLike | null | undefined {
-  return summaryProjection ?? detailProjection;
-}
-
 export function shouldPollWorkflowProjection(
   projection: WorkflowProjectionLike | null | undefined
 ): boolean {
@@ -76,7 +65,9 @@ export function shouldPollWorkflowProjection(
 export function getWorkflowCardRefetchInterval(
   projections: Array<WorkflowProjectionLike | null | undefined>
 ): number | false {
-  return projections.some(shouldPollWorkflowProjection)
+  return projections.some(
+    (projection) => !projection || shouldPollWorkflowProjection(projection)
+  )
     ? WORKFLOW_CARD_REFETCH_INTERVAL_MS
     : false;
 }

@@ -27,12 +27,10 @@ import {
 } from 'shared/types';
 import { ApiError, chatApi, configApi } from '@/lib/api';
 import {
+  WORKFLOW_CARD_REFETCH_INTERVAL_MS,
   getWorkflowCardMessageIdsNeedingRefresh,
   getWorkflowCardRefetchInterval,
   getWorkflowTranscriptRefetchInterval,
-  isTerminalWorkflowProjection,
-  selectWorkflowPollingProjection,
-  WORKFLOW_DETAIL_CACHE_STALE_MS,
 } from '@/lib/workflowRequestPolicy';
 import { resolveAppLanguageCode } from '@/i18n/languages';
 import { cn } from '@/lib/utils';
@@ -132,6 +130,7 @@ import {
 } from './chat/components/WorkflowReviewSettingsDialog';
 import { toWorkflowFinalReviewAction } from './chat/components/WorkflowFinalReviewCard';
 import { ChatSystemMessage } from '@/components/ui-new/primitives/conversation/ChatSystemMessage';
+import { useToast } from '@/components/ui-new/containers/ToastContainer';
 import {
   recordWorkflowEvent as baseRecordWorkflowEvent,
   messageLengthBucket,
@@ -145,42 +144,22 @@ import {
 import type { ChatProtocolNotice } from './chat/hooks/useChatWebSocket';
 
 type ChatInputMode = 'free' | 'workflow';
-type WorkflowCardDetailCacheEntry = {
-  projection: WorkflowCardProjection;
-  fetchedAtMs: number;
-};
 
-const mergeWorkflowCardProjectionForDisplay = (
-  detailProjection: WorkflowCardProjection | null | undefined,
-  summaryProjection: WorkflowCardProjection | null | undefined
-): WorkflowCardProjection | null => {
-  if (!detailProjection) return summaryProjection ?? null;
-  if (!summaryProjection) return detailProjection;
+const WORKFLOW_CARD_ACTION_REFRESH_WINDOW_MS = 30_000;
 
-  const detailStepById = new Map(
-    detailProjection.steps.map((step) => [step.id, step])
-  );
-  const mergedSteps = summaryProjection.steps.map((summaryStep) => {
-    const detailStep = detailStepById.get(summaryStep.id);
-    if (!detailStep) return summaryStep;
-    return {
-      ...detailStep,
-      ...summaryStep,
-      content: detailStep.content ?? summaryStep.content ?? null,
-    };
-  });
-
-  return {
-    ...detailProjection,
-    ...summaryProjection,
-    steps: mergedSteps,
-    plan: detailProjection.plan,
-    round_graphs:
-      detailProjection.round_graphs && detailProjection.round_graphs.length > 0
-        ? detailProjection.round_graphs
-        : summaryProjection.round_graphs,
-  };
-};
+function getRequestErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const message = error.message || 'Request failed';
+    return error.status ? `${message} (${error.status})` : message;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === 'string' && error.trim()) {
+    return error.trim();
+  }
+  return 'Unknown error';
+}
 
 const mentionStatusPriority: Record<MentionStatus, number> = {
   received: 0,
@@ -286,6 +265,12 @@ type CSSHighlightRegistry = {
   delete: (name: string) => void;
 };
 
+const FINAL_REVIEW_READY_STEP_STATUSES = new Set([
+  'completed',
+  'skipped',
+  'cancelled',
+]);
+
 const escapeSearchRegExp = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -343,6 +328,25 @@ const normalizeSessionTitle = (value: string | null | undefined) => {
   if (!trimmed) return '';
   const normalized = trimmed.toLocaleLowerCase();
   return UNTITLED_SESSION_TITLES.has(normalized) ? '' : trimmed;
+};
+
+const shouldFetchWorkflowExecutionTranscripts = (
+  projection: WorkflowCardProjection | null | undefined
+) => {
+  if (!projection?.execution_id || projection.steps.length === 0) {
+    return false;
+  }
+
+  const allStepsReadyForFinalReview = projection.steps.every((step) =>
+    FINAL_REVIEW_READY_STEP_STATUSES.has(step.status)
+  );
+  if (!allStepsReadyForFinalReview) {
+    return false;
+  }
+
+  return (
+    projection.state === 'waiting' || projection.execution_status === 'waiting'
+  );
 };
 
 const summarizeDiffState = (
@@ -713,6 +717,7 @@ export function ChatSessions() {
   const { sessionId } = useParams<{ sessionId?: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const promptFileInputRef = useRef<HTMLInputElement | null>(null);
   const { config, profiles, analyticsUserId, loginStatus, homeDirectory } =
@@ -739,6 +744,12 @@ export function ChatSessions() {
         baseRecordWorkflowEvent
       ),
     []
+  );
+  const showRequestError = useCallback(
+    (error: unknown, actionLabel: string) => {
+      toast(`${actionLabel}: ${getRequestErrorMessage(error)}`, 'error');
+    },
+    [toast]
   );
 
   // Data queries
@@ -961,6 +972,14 @@ export function ChatSessions() {
     },
     [upsertWorkItem]
   );
+  const handleWorkflowProjectionRefresh = useCallback(
+    (sessionId: string) => {
+      if (sessionId === activeSessionId) {
+        setWorkflowCardRefreshNonce((prev) => prev + 1);
+      }
+    },
+    [activeSessionId]
+  );
 
   // WebSocket connection
   const {
@@ -984,7 +1003,8 @@ export function ChatSessions() {
   } = useChatWebSocket(
     activeSessionId,
     handleIncomingMessage,
-    handleIncomingWorkItem
+    handleIncomingWorkItem,
+    handleWorkflowProjectionRefresh
   );
 
   // Mutations
@@ -1032,6 +1052,7 @@ export function ChatSessions() {
         stepReviewOverrides: overrides,
       });
     },
+    onError: (error) => showRequestError(error, 'Execute plan failed'),
   });
   const {
     error: executePlanError,
@@ -1070,6 +1091,8 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) =>
+      showRequestError(error, 'Update review settings failed'),
   });
 
   const pauseAllMutation = useMutation({
@@ -1096,6 +1119,7 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) => showRequestError(error, 'Pause workflow failed'),
   });
 
   const handleExecutePlan = useCallback(
@@ -1177,6 +1201,7 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) => showRequestError(error, 'Interrupt step failed'),
   });
 
   const handleInterruptStep = useCallback(
@@ -1208,6 +1233,7 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) => showRequestError(error, 'Stop step failed'),
   });
 
   const resumeWorkflowMutation = useMutation({
@@ -1234,6 +1260,7 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) => showRequestError(error, 'Resume workflow failed'),
   });
 
   const handleResumeWorkflowExecution = useCallback(
@@ -1292,6 +1319,8 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) =>
+      showRequestError(error, 'Retry plan generation failed'),
   });
 
   const retryWorkflowStepMutation = useMutation({
@@ -1311,6 +1340,13 @@ export function ChatSessions() {
       });
       return chatApi.retryWorkflowStep(activeSessionId, stepId, retryTarget);
     },
+    onMutate: () => {
+      workflowCardForceRefreshUntilMsRef.current = Math.max(
+        workflowCardForceRefreshUntilMsRef.current,
+        Date.now() + WORKFLOW_CARD_ACTION_REFRESH_WINDOW_MS
+      );
+      setWorkflowCardRefreshNonce((prev) => prev + 1);
+    },
     onSuccess: () => {
       if (!activeSessionId) return;
       queryClient.invalidateQueries({
@@ -1322,8 +1358,13 @@ export function ChatSessions() {
       queryClient.invalidateQueries({
         queryKey: ['workflowStepTranscripts', activeSessionId],
       });
+      workflowCardForceRefreshUntilMsRef.current = Math.max(
+        workflowCardForceRefreshUntilMsRef.current,
+        Date.now() + WORKFLOW_CARD_ACTION_REFRESH_WINDOW_MS
+      );
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) => showRequestError(error, 'Retry step failed'),
   });
 
   const submitWorkflowStepInputMutation = useMutation({
@@ -1354,6 +1395,7 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) => showRequestError(error, 'Submit step input failed'),
   });
 
   // Workflow window state
@@ -1369,24 +1411,17 @@ export function ChatSessions() {
     workflowCardProjectionByMessageId,
     setWorkflowCardProjectionByMessageId,
   ] = useState<Record<string, WorkflowCardProjection>>({});
-  const [
-    workflowCardDetailProjectionByMessageId,
-    setWorkflowCardDetailProjectionByMessageId,
-  ] = useState<Record<string, WorkflowCardDetailCacheEntry>>({});
   const workflowCardRefreshNonceRef = useRef(workflowCardRefreshNonce);
+  const workflowCardForceRefreshUntilMsRef = useRef(0);
 
   useEffect(() => {
     setWorkflowCardProjectionByMessageId({});
-    setWorkflowCardDetailProjectionByMessageId({});
     setWorkflowWindowFallbackProjection(null);
     setExecutePlanConfirmationProjection(null);
     resetExecutePlanMutation();
     workflowCardRefreshNonceRef.current = 0;
+    workflowCardForceRefreshUntilMsRef.current = 0;
   }, [activeSessionId, resetExecutePlanMutation]);
-
-  useEffect(() => {
-    setWorkflowCardDetailProjectionByMessageId({});
-  }, [workflowCardRefreshNonce]);
 
   const workflowCardMessageIds = useMemo(
     () =>
@@ -1396,24 +1431,8 @@ export function ChatSessions() {
     [messages]
   );
 
-  const workflowCardMessageById = useMemo(
-    () => new Map(messages.map((message) => [message.id, message])),
-    [messages]
-  );
-
-  const workflowCardProjectionForRefreshByMessageId = useMemo(() => {
-    const next: Record<string, WorkflowCardProjection> = {};
-    for (const message of messages) {
-      const projection = extractWorkflowCardProjection(message.meta);
-      if (projection) {
-        next[message.id] = projection;
-      }
-    }
-    return {
-      ...next,
-      ...workflowCardProjectionByMessageId,
-    };
-  }, [messages, workflowCardProjectionByMessageId]);
+  const workflowCardProjectionForRefreshByMessageId =
+    workflowCardProjectionByMessageId;
 
   useEffect(() => {
     if (workflowCardMessageIds.length === 0) {
@@ -1464,7 +1483,8 @@ export function ChatSessions() {
     };
 
     const shouldForceRefresh =
-      workflowCardRefreshNonceRef.current !== workflowCardRefreshNonce;
+      workflowCardRefreshNonceRef.current !== workflowCardRefreshNonce ||
+      Date.now() < workflowCardForceRefreshUntilMsRef.current;
     workflowCardRefreshNonceRef.current = workflowCardRefreshNonce;
     const initialMessageIds = shouldForceRefresh
       ? workflowCardMessageIds
@@ -1473,20 +1493,32 @@ export function ChatSessions() {
         );
     void refreshWorkflowCards(initialMessageIds);
 
-    const refetchInterval = getWorkflowCardRefetchInterval(
-      workflowCardMessageIds.map(
-        (messageId) => workflowCardProjectionForRefreshByMessageId[messageId]
-      )
-    );
+    const refetchInterval = shouldForceRefresh
+      ? WORKFLOW_CARD_REFETCH_INTERVAL_MS
+      : getWorkflowCardRefetchInterval(
+          workflowCardMessageIds.map(
+            (messageId) =>
+              workflowCardProjectionForRefreshByMessageId[messageId]
+          )
+        );
     const timer =
       refetchInterval === false
         ? null
         : window.setInterval(() => {
+            const force =
+              Date.now() < workflowCardForceRefreshUntilMsRef.current;
             const messageIds = getWorkflowCardMessageIdsNeedingRefresh({
               messageIds: workflowCardMessageIds,
               cachedProjectionByMessageId:
                 workflowCardProjectionForRefreshByMessageId,
+              force,
             });
+            if (!force && messageIds.length === 0) {
+              if (timer !== null) {
+                window.clearInterval(timer);
+              }
+              return;
+            }
             void refreshWorkflowCards(messageIds);
           }, refetchInterval);
 
@@ -1509,41 +1541,20 @@ export function ChatSessions() {
         return workflowWindowFallbackProjection;
       }
 
-      const detailCacheEntry =
-        workflowCardDetailProjectionByMessageId[workflowWindowCardMessageId];
-      const detailProjection = detailCacheEntry?.projection;
-      const summaryProjection =
-        workflowCardProjectionByMessageId[workflowWindowCardMessageId] ??
-        extractWorkflowCardProjection(
-          workflowCardMessageById.get(workflowWindowCardMessageId)?.meta
-        );
-      const projectionFromCache = mergeWorkflowCardProjectionForDisplay(
-        detailProjection,
-        summaryProjection
-      );
-      if (projectionFromCache) {
-        return projectionFromCache;
-      }
-
-      const message = workflowCardMessageById.get(workflowWindowCardMessageId);
-      if (!message) {
-        return workflowWindowFallbackProjection;
-      }
-
       return (
-        extractWorkflowCardProjection(message.meta) ??
+        workflowCardProjectionByMessageId[workflowWindowCardMessageId] ??
         workflowWindowFallbackProjection
       );
     }, [
       workflowWindowOpen,
       workflowWindowCardMessageId,
-      workflowCardDetailProjectionByMessageId,
       workflowCardProjectionByMessageId,
-      workflowCardMessageById,
       workflowWindowFallbackProjection,
     ]);
 
   const workflowExecutionId = workflowWindowProjection?.execution_id ?? null;
+  const shouldLoadWorkflowExecutionTranscripts =
+    shouldFetchWorkflowExecutionTranscripts(workflowWindowProjection);
 
   const { data: workflowTranscriptData } = useQuery({
     queryKey: ['workflowTranscripts', activeSessionId, workflowExecutionId],
@@ -1558,11 +1569,18 @@ export function ChatSessions() {
         workflowExecutionId
       );
     },
-    enabled: !!activeSessionId && !!workflowExecutionId && workflowWindowOpen,
+    enabled:
+      !!activeSessionId &&
+      !!workflowExecutionId &&
+      workflowWindowOpen &&
+      shouldLoadWorkflowExecutionTranscripts,
     staleTime: 30_000,
     gcTime: 5 * 60 * 1000,
     refetchInterval: getWorkflowTranscriptRefetchInterval({
-      isOpen: workflowWindowOpen && !!workflowExecutionId,
+      isOpen:
+        workflowWindowOpen &&
+        !!workflowExecutionId &&
+        shouldLoadWorkflowExecutionTranscripts,
       projection: workflowWindowProjection,
     }),
   });
@@ -1635,6 +1653,7 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) => showRequestError(error, 'Workflow action failed'),
   });
 
   const respondWorkflowReviewMutation = useMutation({
@@ -1661,6 +1680,8 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) =>
+      showRequestError(error, 'Submit workflow review failed'),
   });
 
   const submitWorkflowIterationFeedbackMutation = useMutation({
@@ -1699,6 +1720,8 @@ export function ChatSessions() {
       });
       setWorkflowCardRefreshNonce((prev) => prev + 1);
     },
+    onError: (error) =>
+      showRequestError(error, 'Submit iteration feedback failed'),
   });
 
   const handleOpenWorkflowWindow = useCallback(
@@ -1737,60 +1760,6 @@ export function ChatSessions() {
     },
     [activeSessionId, messages, recordWorkflowEvent, workflowCardProjectionByMessageId]
   );
-
-  useEffect(() => {
-    const detailCacheEntry = workflowWindowCardMessageId
-      ? workflowCardDetailProjectionByMessageId[workflowWindowCardMessageId]
-      : undefined;
-    const summaryProjection = workflowWindowCardMessageId
-      ? workflowCardProjectionForRefreshByMessageId[workflowWindowCardMessageId]
-      : undefined;
-    const pollingProjection = selectWorkflowPollingProjection({
-      summaryProjection,
-      detailProjection: detailCacheEntry?.projection,
-    });
-    const hasFreshDetailCache =
-      !!detailCacheEntry &&
-      Date.now() - detailCacheEntry.fetchedAtMs <
-        WORKFLOW_DETAIL_CACHE_STALE_MS;
-
-    if (
-      !workflowWindowOpen ||
-      !workflowWindowCardMessageId ||
-      hasFreshDetailCache ||
-      (!!detailCacheEntry && isTerminalWorkflowProjection(pollingProjection))
-    ) {
-      return undefined;
-    }
-
-    let cancelled = false;
-    void chatApi
-      .getWorkflowCard(workflowWindowCardMessageId, { detail: 'full' })
-      .then((detailProjection) => {
-        if (cancelled) return;
-        setWorkflowCardDetailProjectionByMessageId((prev) => ({
-          ...prev,
-          [workflowWindowCardMessageId]: {
-            projection: detailProjection,
-            fetchedAtMs: Date.now(),
-          },
-        }));
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          console.warn('Failed to load workflow card details', error);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    workflowCardDetailProjectionByMessageId,
-    workflowCardProjectionForRefreshByMessageId,
-    workflowWindowCardMessageId,
-    workflowWindowOpen,
-  ]);
 
   const handleResolveWorkflowAction = useCallback(
     (
@@ -2470,7 +2439,7 @@ export function ChatSessions() {
           return true;
         }
 
-        const workflowCard = extractWorkflowCardProjection(message.meta);
+        const workflowCard = workflowCardProjectionByMessageId[message.id];
         if (!workflowCard) {
           return true;
         }
@@ -2483,7 +2452,11 @@ export function ChatSessions() {
           )
         );
       }),
-    [completedWorkflowExecutionIdsWithWorkItems, messageList]
+    [
+      completedWorkflowExecutionIdsWithWorkItems,
+      messageList,
+      workflowCardProjectionByMessageId,
+    ]
   );
   const messageById = useMemo(
     () => new Map(messageList.map((message) => [message.id, message])),
@@ -5432,8 +5405,7 @@ export function ChatSessions() {
                         entry.key
                       );
                       const workflowCardProjection =
-                        workflowCardProjectionByMessageId[message.id] ??
-                        extractWorkflowCardProjection(message.meta);
+                        workflowCardProjectionByMessageId[message.id] ?? null;
                       const workflowFinalReviewAction =
                         workflowCardProjection?.execution_id ===
                         workflowExecutionId

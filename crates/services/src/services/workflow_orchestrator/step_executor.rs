@@ -59,6 +59,7 @@ pub(super) struct PendingRevisionFeedback {
     pub(super) source: WorkflowRevisionFeedbackSource,
     pub(super) feedback: String,
     pub(super) previous_summary: String,
+    pub(super) previous_content: Option<String>,
     pub(super) previous_outputs: Vec<String>,
     pub(super) review_round: i32,
 }
@@ -286,6 +287,7 @@ impl WorkflowOrchestrator {
         feedback_source: WorkflowRevisionFeedbackSource,
         feedback_content: &str,
         previous_summary: &str,
+        previous_content: Option<&str>,
         previous_outputs: &[String],
         review_round: i32,
     ) -> String {
@@ -325,6 +327,10 @@ impl WorkflowOrchestrator {
             serde_json::json!(previous_summary.trim()),
         );
         context_obj.insert(
+            "previous_content".to_string(),
+            serde_json::json!(previous_content.unwrap_or_default().trim()),
+        );
+        context_obj.insert(
             "previous_outputs".to_string(),
             serde_json::json!(previous_outputs),
         );
@@ -334,6 +340,7 @@ impl WorkflowOrchestrator {
                 "source": source,
                 "feedback": feedback_content.trim(),
                 "previous_summary": previous_summary.trim(),
+                "previous_content": previous_content.unwrap_or_default().trim(),
                 "previous_outputs": previous_outputs,
                 "review_round": review_round,
             }),
@@ -363,6 +370,12 @@ impl WorkflowOrchestrator {
                 .unwrap_or_default()
                 .trim()
                 .to_string(),
+            previous_content: pending
+                .get("previous_content")
+                .and_then(|item| item.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
             previous_outputs: pending
                 .get("previous_outputs")
                 .and_then(|item| item.as_array())
@@ -845,6 +858,7 @@ impl WorkflowOrchestrator {
                                     WorkflowRevisionFeedbackSource::User,
                                     &feedback,
                                     &persisted.result.summary,
+                                    Some(&persisted.result.content),
                                     &persisted.result.outputs,
                                     revising_step.retry_count + 1,
                                 );
@@ -883,6 +897,7 @@ impl WorkflowOrchestrator {
                                     WorkflowRevisionFeedbackSource::User,
                                     &feedback,
                                     &persisted.result.summary,
+                                    Some(&persisted.result.content),
                                     running_revision_step.retry_count,
                                     &agent_skill_names,
                                 );
@@ -1002,6 +1017,7 @@ impl WorkflowOrchestrator {
                         WorkflowRevisionFeedbackSource::Lead,
                         &feedback,
                         &persisted.result.summary,
+                        Some(&persisted.result.content),
                         &persisted.result.outputs,
                         revising_step.retry_count + 1,
                     );
@@ -1039,6 +1055,7 @@ impl WorkflowOrchestrator {
                         WorkflowRevisionFeedbackSource::Lead,
                         &feedback,
                         &persisted.result.summary,
+                        Some(&persisted.result.content),
                         running_revision_step.retry_count,
                         &agent_skill_names,
                     );
@@ -1375,22 +1392,6 @@ impl WorkflowOrchestrator {
             }
         };
 
-        let _ = Self::write_transcript(
-            pool,
-            execution.id,
-            running_step.round_id.into(),
-            Some(workflow_session.id),
-            Some(running_step.id),
-            "system",
-            "message",
-            &format!(
-                "Step \"{}\" started (assigned to {})",
-                running_step.title, session_agent.agent_id
-            ),
-            None,
-        )
-        .await;
-
         let dependency_summaries =
             predecessor_summaries(&running_step, current_steps, edges, Some(plan));
         let step_transcript_context = WorkflowTranscript::find_by_step(pool, running_step.id)
@@ -1430,6 +1431,7 @@ impl WorkflowOrchestrator {
                 pending_feedback.source,
                 &pending_feedback.feedback,
                 &pending_feedback.previous_summary,
+                pending_feedback.previous_content.as_deref(),
                 running_step.retry_count,
                 &agent_skill_names,
             )

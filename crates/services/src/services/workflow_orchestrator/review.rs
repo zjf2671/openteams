@@ -12,11 +12,13 @@ use db::{
     },
 };
 use sqlx::SqlitePool;
+use utils::assets::config_path;
 use uuid::Uuid;
 
 use super::{
     super::{
         chat_runner::ChatRunner,
+        config::{self, UiLanguage},
         workflow_iteration::IterationManager,
         workflow_loop_executor::LoopExecutor,
         workflow_runtime::{SummaryPayload, WorkflowRevisionFeedbackSource, parse_summary_payload},
@@ -451,11 +453,16 @@ impl WorkflowOrchestrator {
                         content: None,
                         outputs: Vec::new(),
                     });
+                let previous_content = previous_payload
+                    .content
+                    .as_deref()
+                    .or(revising_step.content.as_deref());
                 let merged_context = Self::merge_revision_context(
                     revising_step.revision_context.as_deref(),
                     WorkflowRevisionFeedbackSource::User,
                     &rejected_feedback,
                     &previous_payload.summary,
+                    previous_content,
                     &previous_payload.outputs,
                     revising_step.retry_count + 1,
                 );
@@ -567,8 +574,9 @@ impl WorkflowOrchestrator {
 
         match resolved_action {
             "approved" | "approve" => {
-                let approved_feedback =
-                    feedback.unwrap_or_else(|| "User approved the loop result.".to_string());
+                let default_approved_feedback =
+                    Self::localized_user_approved_loop_result_message().await;
+                let approved_feedback = feedback.unwrap_or(default_approved_feedback);
                 Self::save_step_review(
                     pool,
                     step,
@@ -697,5 +705,107 @@ impl WorkflowOrchestrator {
                 action
             ))),
         }
+    }
+
+    async fn localized_user_approved_loop_result_message() -> String {
+        let ui_config = config::load_config_from_file(&config_path()).await;
+        Self::localized_user_approved_loop_result_message_for_language(&ui_config.language)
+            .to_string()
+    }
+
+    fn localized_user_approved_loop_result_message_for_language(
+        language: &UiLanguage,
+    ) -> &'static str {
+        match language {
+            UiLanguage::Browser => sys_locale::get_locale()
+                .as_deref()
+                .and_then(Self::localized_user_approved_loop_result_message_for_locale)
+                .unwrap_or("User approved the loop result."),
+            UiLanguage::En => "User approved the loop result.",
+            UiLanguage::Fr => "L'utilisateur a approuvé le résultat de la boucle.",
+            UiLanguage::Ja => "ユーザーがループ結果を承認しました。",
+            UiLanguage::Es => "El usuario aprobó el resultado del bucle.",
+            UiLanguage::Ko => "사용자가 루프 결과를 승인했습니다.",
+            UiLanguage::ZhHans => "用户已批准循环结果。",
+            UiLanguage::ZhHant => "用戶已批准循環結果。",
+        }
+    }
+
+    fn localized_user_approved_loop_result_message_for_locale(
+        locale: &str,
+    ) -> Option<&'static str> {
+        let normalized = locale.trim().to_ascii_lowercase().replace('_', "-");
+        if normalized.is_empty() {
+            return None;
+        }
+        if normalized.starts_with("zh-hant")
+            || normalized.starts_with("zh-tw")
+            || normalized.starts_with("zh-hk")
+            || normalized.starts_with("zh-mo")
+        {
+            return Some("用戶已批准循環結果。");
+        }
+        if normalized.starts_with("zh") {
+            return Some("用户已批准循环结果。");
+        }
+        if normalized.starts_with("ja") {
+            return Some("ユーザーがループ結果を承認しました。");
+        }
+        if normalized.starts_with("ko") {
+            return Some("사용자가 루프 결과를 승인했습니다.");
+        }
+        if normalized.starts_with("fr") {
+            return Some("L'utilisateur a approuvé le résultat de la boucle.");
+        }
+        if normalized.starts_with("es") {
+            return Some("El usuario aprobó el resultado del bucle.");
+        }
+        if normalized.starts_with("en") {
+            return Some("User approved the loop result.");
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_approved_loop_result_message_is_localized_by_language() {
+        assert_eq!(
+            WorkflowOrchestrator::localized_user_approved_loop_result_message_for_language(
+                &UiLanguage::En
+            ),
+            "User approved the loop result."
+        );
+        assert_eq!(
+            WorkflowOrchestrator::localized_user_approved_loop_result_message_for_language(
+                &UiLanguage::ZhHans
+            ),
+            "用户已批准循环结果。"
+        );
+        assert_eq!(
+            WorkflowOrchestrator::localized_user_approved_loop_result_message_for_language(
+                &UiLanguage::Ja
+            ),
+            "ユーザーがループ結果を承認しました。"
+        );
+    }
+
+    #[test]
+    fn browser_locale_maps_loop_approval_message() {
+        assert_eq!(
+            WorkflowOrchestrator::localized_user_approved_loop_result_message_for_locale("zh-TW"),
+            Some("用戶已批准循環結果。")
+        );
+        assert_eq!(
+            WorkflowOrchestrator::localized_user_approved_loop_result_message_for_locale("fr-FR"),
+            Some("L'utilisateur a approuvé le résultat de la boucle.")
+        );
+        assert_eq!(
+            WorkflowOrchestrator::localized_user_approved_loop_result_message_for_locale("de-DE"),
+            None
+        );
     }
 }

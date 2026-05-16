@@ -597,6 +597,33 @@ export function WorkflowGraphBoard({
     }
   };
 
+  const getStatusTextClassName = (status?: string | null) => {
+    switch (status) {
+      case 'completed':
+        return 'text-emerald-600';
+      case 'pre_completed':
+      case 'ready':
+        return 'text-amber-600';
+      case 'running':
+      case 'revising':
+        return 'text-indigo-600';
+      case 'waiting_review':
+        return 'text-violet-600';
+      case 'waiting_input':
+        return 'text-indigo-600';
+      case 'failed':
+      case 'interrupted':
+        return 'text-rose-600';
+      case 'skipped':
+      case 'cancelled':
+        return 'text-slate-500';
+      case 'blocked':
+        return 'text-slate-600';
+      default:
+        return 'text-slate-400';
+    }
+  };
+
   const renderLayoutNodes = (
     layoutNode: ElkLayoutNode,
     mode: 'background' | 'nodes',
@@ -733,17 +760,7 @@ export function WorkflowGraphBoard({
               <span className="flex items-center gap-1.5 text-slate-600 truncate max-w-[120px]">
                 {agentName}
               </span>
-              <span
-                className={cn(
-                  status === 'running' && 'text-indigo-500',
-                  status === 'completed' && 'text-emerald-500',
-                  (status === 'waiting_review' || status === 'waiting_input') &&
-                    'text-violet-500',
-                  (status === 'failed' || status === 'interrupted') &&
-                    'text-rose-500',
-                  status === 'pending' && 'text-slate-400'
-                )}
-              >
+              <span className={getStatusTextClassName(status)}>
                 {workflowStatusLabel(status, t)}
               </span>
             </div>

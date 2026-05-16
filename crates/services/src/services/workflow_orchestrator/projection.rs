@@ -64,6 +64,7 @@ impl WorkflowOrchestrator {
             .await?
             .ok_or_else(|| OrchestratorError::NotFound(format!("message {} 未找到", message_id)))?;
         let workflow_sessions = WorkflowAgentSession::find_by_execution(pool, execution.id).await?;
+        let revisions = WorkflowPlanRevision::find_by_plan(pool, plan.id).await?;
         let steps = WorkflowStep::find_summary_by_execution(pool, execution.id).await?;
         let rounds = WorkflowRound::find_by_execution(pool, execution.id).await?;
         let loops = WorkflowLoop::find_by_execution(pool, execution.id).await?;
@@ -80,6 +81,7 @@ impl WorkflowOrchestrator {
             execution,
             plan,
             revision,
+            &revisions,
             &steps,
             &[],
             &rounds,

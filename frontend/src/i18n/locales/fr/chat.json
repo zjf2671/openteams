@@ -1011,6 +1011,15 @@
       "fitView": "Ajuster au canevas",
       "leadFallback": "Lead"
     },
+    "executionStatus": {
+      "running": "En cours",
+      "failed": "Échec",
+      "paused": "En pause",
+      "waiting": "En attente de révision",
+      "recompiling": "Régénération du plan",
+      "completed": "Terminé",
+      "pending": "Préparation"
+    },
     "statusLabels": {
       "interrupted": "Interrompu",
       "stopRequested": "Arrêt demandé",

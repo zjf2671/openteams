@@ -78,6 +78,7 @@ import {
   buildWorkflowCardUrl,
   type WorkflowCardDetailLevel,
 } from '@/lib/workflowRequestPolicy';
+import type { WorkflowAnalyticsEventPayload } from '@/lib/workflowEventCore';
 
 export interface AgentInfo {
   id: string;
@@ -840,8 +841,32 @@ export const versionApi = {
   },
 };
 
+const workflowAnalyticsCategory = (
+  eventName: WorkflowAnalyticsEventPayload['event_name']
+): 'user_action' | 'system' | 'conversion' => {
+  if (eventName.startsWith('risk.')) return 'system';
+  if (eventName.startsWith('quality.workflow_completed')) return 'conversion';
+  return 'user_action';
+};
+
 // Chat APIs
 export const chatApi = {
+  trackWorkflowEvent: async (
+    payload: WorkflowAnalyticsEventPayload
+  ): Promise<string> => {
+    const response = await makeRequest('/api/analytics/events', {
+      method: 'POST',
+      body: JSON.stringify({
+        event_type: payload.event_name,
+        event_category: workflowAnalyticsCategory(payload.event_name),
+        user_id: payload.user_id_hash,
+        session_id: payload.session_id,
+        properties: payload,
+      }),
+    });
+    return handleApiResponse<string>(response);
+  },
+
   listSessions: async (status?: ChatSessionStatus): Promise<ChatSession[]> => {
     const queryParam = status ? `?status=${encodeURIComponent(status)}` : '';
     const response = await makeRequest(`/api/chat/sessions${queryParam}`);

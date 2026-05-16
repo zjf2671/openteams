@@ -218,6 +218,7 @@ fn revision_context_round_trips_pending_user_feedback() {
         WorkflowRevisionFeedbackSource::User,
         "请把输出改成中文。",
         "Current summary",
+        Some("Current full result"),
         &["src/main.rs".to_string()],
         2,
     );
@@ -231,6 +232,10 @@ fn revision_context_round_trips_pending_user_feedback() {
     ));
     assert_eq!(pending.feedback, "请把输出改成中文。");
     assert_eq!(pending.previous_summary, "Current summary");
+    assert_eq!(
+        pending.previous_content.as_deref(),
+        Some("Current full result")
+    );
     assert_eq!(pending.previous_outputs, vec!["src/main.rs".to_string()]);
     assert_eq!(pending.review_round, 2);
 }
@@ -242,6 +247,7 @@ fn clear_pending_revision_feedback_removes_resume_payload() {
         WorkflowRevisionFeedbackSource::Lead,
         "补充测试。",
         "Summary",
+        None,
         &[],
         1,
     );

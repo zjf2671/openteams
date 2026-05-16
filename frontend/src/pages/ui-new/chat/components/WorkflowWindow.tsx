@@ -32,6 +32,8 @@ import { WorkflowGraphBoard } from './WorkflowGraphBoard';
 import { WorkflowPendingInputCard } from './WorkflowPendingInputCard';
 import { WorkflowPendingReviewCard } from './WorkflowPendingReviewCard';
 import {
+  workflowExecutionStatusLabel,
+  workflowStatusBadgeClass,
   workflowLatestReviewFeedback,
   workflowLatestReviewLabel,
   workflowReviewPhaseMeta,
@@ -91,14 +93,6 @@ type WorkflowTranscriptSummaryPayload = {
   outputs?: string[];
 };
 
-const WORKFLOW_TERMINAL_STEP_STATUSES = new Set([
-  'completed',
-  'failed',
-  'interrupted',
-  'skipped',
-  'cancelled',
-]);
-
 const WORKFLOW_FAILURE_STEP_STATUSES = new Set([
   'failed',
   'interrupted',
@@ -116,6 +110,8 @@ const WORKFLOW_REVIEW_ENTRY_TYPES = new Set([
 ]);
 const REVIEW_SETTINGS_EXECUTION_FINISHED_ERROR =
   'Review settings cannot be changed after execution has finished.';
+const REVIEW_SETTINGS_ACTIVE_EXECUTION_ERROR =
+  'Review settings can only be changed while execution is not running or waiting for review.';
 const workflowDetailMarkdownTextClassName = [
   'text-[13px] text-slate-700 leading-relaxed',
   '[&_:not(pre)>code]:bg-slate-100',
@@ -124,6 +120,13 @@ const workflowDetailMarkdownTextClassName = [
   '[&_:not(pre)>code]:py-0.5',
   '[&_:not(pre)>code]:rounded-md',
 ].join(' ');
+
+function getStepProgress(steps: WorkflowCardStep[]) {
+  return {
+    completedSteps: steps.filter((step) => step.status === 'completed').length,
+    totalSteps: steps.length,
+  };
+}
 
 function canWorkflowStepAcceptChatInput(
   step?: WorkflowCardStep | null
@@ -141,7 +144,8 @@ function getReviewSettingsErrorMessage(
       : t('workflow.reviewSettings.updateError', {
           defaultValue: 'Unable to update review settings.',
         });
-  return message.includes(REVIEW_SETTINGS_EXECUTION_FINISHED_ERROR)
+  return message.includes(REVIEW_SETTINGS_EXECUTION_FINISHED_ERROR) ||
+    message.includes(REVIEW_SETTINGS_ACTIVE_EXECUTION_ERROR)
     ? t('workflow.reviewSettings.finishedMessage', {
         defaultValue:
           'Review settings cannot be modified in the current workflow state.',
@@ -172,24 +176,26 @@ function formatWorkflowLogTimestamp(createdAt: string): string {
 }
 
 function mergeAndSortTranscriptEntries(
-  primary: WorkflowTranscriptEntry[],
-  secondary: WorkflowTranscriptEntry[]
+  ...entryGroups: WorkflowTranscriptEntry[][]
 ): WorkflowTranscriptEntry[] {
   const mergedMap = new Map<string, WorkflowTranscriptEntry>();
 
-  for (const entry of primary) {
-    mergedMap.set(entry.id, entry);
-  }
-  for (const entry of secondary) {
-    mergedMap.set(entry.id, entry);
+  for (const entries of entryGroups) {
+    for (const entry of entries) {
+      mergedMap.set(entry.id, entry);
+    }
   }
 
   return [...mergedMap.values()].sort((left, right) => {
     const leftAt = parseWorkflowTranscriptTime(left.created_at).getTime();
     const rightAt = parseWorkflowTranscriptTime(right.created_at).getTime();
-    return (
+    const timeOrder =
       (Number.isNaN(leftAt) ? 0 : leftAt) -
-      (Number.isNaN(rightAt) ? 0 : rightAt)
+      (Number.isNaN(rightAt) ? 0 : rightAt);
+    if (timeOrder !== 0) return timeOrder;
+    return (
+      getWorkflowTranscriptDisplayRank(left) -
+      getWorkflowTranscriptDisplayRank(right)
     );
   });
 }
@@ -231,10 +237,20 @@ function getTranscriptMarkdown(entry: WorkflowTranscriptEntry): string | null {
     return content.length > 0 ? content : null;
   }
 
+  if (WORKFLOW_REVIEW_ENTRY_TYPES.has(entry.entry_type)) {
+    const content = entry.content.trim();
+    const verdict = getTranscriptReviewVerdict(entry);
+    if (verdict) {
+      return content.length > 0
+        ? `Verdict: ${verdict}\n\n${content}`
+        : `Verdict: ${verdict}`;
+    }
+    return content.length > 0 ? content : null;
+  }
+
   if (
     (entry.entry_type === 'message' && entry.message_type === 'agent') ||
-    entry.entry_type === 'error' ||
-    WORKFLOW_REVIEW_ENTRY_TYPES.has(entry.entry_type)
+    entry.entry_type === 'error'
   ) {
     const content = entry.content.trim();
     return content.length > 0 ? content : null;
@@ -262,10 +278,19 @@ function getTranscriptMetaSource(
   }
 }
 
-function isWorkflowCardStepContentEntry(
+function getTranscriptMetaString(
+  entry: WorkflowTranscriptEntry,
+  key: string
+): string | null {
+  const meta = parseWorkflowTranscriptMeta(entry.meta_json);
+  const value = meta?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function getTranscriptReviewVerdict(
   entry: WorkflowTranscriptEntry
-): boolean {
-  return getTranscriptMetaSource(entry) === 'workflow_card_step_content';
+): string | null {
+  return getTranscriptMetaString(entry, 'verdict');
 }
 
 function isWorkflowRuntimeThinkingEntry(
@@ -277,8 +302,27 @@ function isWorkflowRuntimeThinkingEntry(
   );
 }
 
+function isWorkflowStepLifecycleStartEntry(
+  entry: WorkflowTranscriptEntry
+): boolean {
+  return (
+    entry.message_type === 'system' &&
+    entry.entry_type === 'message' &&
+    /^Step ".+" started \(assigned to .+\)$/.test(entry.content.trim())
+  );
+}
+
 function isWorkflowReviewEntry(entry: WorkflowTranscriptEntry): boolean {
   return WORKFLOW_REVIEW_ENTRY_TYPES.has(entry.entry_type);
+}
+
+function getWorkflowTranscriptDisplayRank(
+  entry: WorkflowTranscriptEntry
+): number {
+  if (isWorkflowReviewEntry(entry)) return 30;
+  if (entry.entry_type === 'output' || entry.entry_type === 'message')
+    return 20;
+  return 10;
 }
 
 function isWorkflowChatPanelEntry(entry: WorkflowTranscriptEntry): boolean {
@@ -296,18 +340,12 @@ function getWorkflowReviewAgentName(
 }
 
 function getWorkflowOutputEntryLabel(entry: WorkflowTranscriptEntry): string {
-  if (isWorkflowCardStepContentEntry(entry)) {
-    return 'final output';
-  }
   return entry.entry_type;
 }
 
 function getWorkflowOutputEntryIcon(
   entry: WorkflowTranscriptEntry
 ): LucideIcon {
-  if (isWorkflowCardStepContentEntry(entry) || entry.entry_type === 'output') {
-    return FileText;
-  }
   if (entry.entry_type === 'error') {
     return AlertCircle;
   }
@@ -316,6 +354,9 @@ function getWorkflowOutputEntryIcon(
   }
   if (entry.message_type === 'user') {
     return Send;
+  }
+  if (entry.entry_type === 'output') {
+    return FileText;
   }
   if (entry.message_type === 'system' || entry.message_type === 'control') {
     return ScrollText;
@@ -326,9 +367,6 @@ function getWorkflowOutputEntryIcon(
 function getWorkflowOutputEntryIconClass(
   entry: WorkflowTranscriptEntry
 ): string {
-  if (isWorkflowCardStepContentEntry(entry) || entry.entry_type === 'output') {
-    return 'bg-blue-50 text-blue-600 border-blue-100';
-  }
   if (entry.entry_type === 'error') {
     return 'bg-red-50 text-red-600 border-red-100';
   }
@@ -338,82 +376,74 @@ function getWorkflowOutputEntryIconClass(
   if (entry.message_type === 'user') {
     return 'bg-emerald-50 text-emerald-600 border-emerald-100';
   }
+  if (entry.entry_type === 'output') {
+    return 'bg-blue-50 text-blue-600 border-blue-100';
+  }
   if (entry.message_type === 'system' || entry.message_type === 'control') {
     return 'bg-amber-50 text-amber-600 border-amber-100';
   }
   return 'bg-slate-50 text-slate-500 border-slate-200';
 }
 
-function hasAgentTranscriptMessageForStep(
-  entries: WorkflowTranscriptEntry[],
-  stepId?: string | null,
-  stepKey?: string | null
+function isWorkflowCardStepReviewEntry(
+  entry: WorkflowTranscriptEntry
 ): boolean {
-  return entries.some(
-    (entry) =>
-      entry.message_type === 'agent' &&
-      entry.entry_type === 'message' &&
-      ((stepId && entry.step_id === stepId) ||
-        (stepKey && entry.step_key === stepKey))
-  );
+  return getTranscriptMetaSource(entry) === 'workflow_card_step_review';
 }
 
-function buildStepContentTranscriptEntries(
-  steps: WorkflowCardStep[],
-  existingEntries: WorkflowTranscriptEntry[],
-  resolveStepAgentSessionId: (step?: WorkflowCardStep | null) => string | null,
-  selectedWorkflowAgentSessionId?: string | null
+function hasReviewResultTranscriptForStep(
+  entries: WorkflowTranscriptEntry[],
+  step: WorkflowCardStep
+): boolean {
+  return entries.some((entry) => {
+    const belongsToStep =
+      entry.step_id === step.id || entry.step_key === step.step_key;
+    if (!belongsToStep) return false;
+    if (isWorkflowCardStepReviewEntry(entry)) return true;
+    return isWorkflowReviewEntry(entry) && !!getTranscriptReviewVerdict(entry);
+  });
+}
+
+function buildStepReviewTranscriptEntries(
+  step: WorkflowCardStep,
+  existingEntries: WorkflowTranscriptEntry[]
 ): WorkflowTranscriptEntry[] {
-  let offset = 1;
+  const review = step.latest_review;
+  if (!review || hasReviewResultTranscriptForStep(existingEntries, step)) {
+    return [];
+  }
 
-  return steps
-    .filter((step) => step.content?.trim())
-    .filter((step) => {
-      const workflowAgentSessionId = resolveStepAgentSessionId(step);
-      if (!selectedWorkflowAgentSessionId) {
-        return true;
-      }
-      return workflowAgentSessionId === selectedWorkflowAgentSessionId;
-    })
-    .filter(
-      (step) =>
-        !hasAgentTranscriptMessageForStep(
-          existingEntries,
-          step.id,
-          step.step_key
-        )
-    )
-    .map((step) => {
-      const relatedEntries = existingEntries.filter(
-        (entry) => entry.step_id === step.id || entry.step_key === step.step_key
-      );
-      const latestRelatedTimestamp = Math.max(
-        ...relatedEntries.map((entry) => Date.parse(entry.created_at)),
-        ...existingEntries.map((entry) => Date.parse(entry.created_at)),
-        Date.now()
-      );
-      const createdAt = new Date(
-        (Number.isFinite(latestRelatedTimestamp)
-          ? latestRelatedTimestamp
-          : Date.now()) + offset
-      ).toISOString();
-      offset += 1;
+  const reviewerType = review.reviewer_type.trim().toLowerCase();
+  const verdict = review.verdict.trim() || 'reviewed';
+  const feedback = review.feedback.trim();
+  const entryType = reviewerType === 'lead' ? 'lead_review' : 'step_review';
+  const messageType = reviewerType === 'user' ? 'user' : 'agent';
+  const agentName =
+    reviewerType === 'lead'
+      ? 'Lead'
+      : reviewerType === 'user'
+        ? 'User'
+        : 'Reviewer';
 
-      return {
-        id: `step-content-${step.id}`,
-        step_id: step.id,
-        step_key: step.step_key,
-        workflow_agent_session_id: resolveStepAgentSessionId(step),
-        agent_name: step.agent_name,
-        message_type: 'agent' as const,
-        entry_type: 'output',
-        content: step.content!.trim(),
-        meta_json: JSON.stringify({
-          source: 'workflow_card_step_content',
-        }),
-        created_at: createdAt,
-      };
-    });
+  return [
+    {
+      id: `step-review-${step.id}-${reviewerType}-${review.review_round}`,
+      step_id: step.id,
+      step_key: step.step_key,
+      workflow_agent_session_id: null,
+      agent_name: agentName,
+      message_type: messageType,
+      entry_type: entryType,
+      content: feedback,
+      meta_json: JSON.stringify({
+        source: 'workflow_card_step_review',
+        reviewer_type: reviewerType,
+        verdict,
+        review_round: review.review_round,
+      }),
+      created_at: review.created_at,
+    },
+  ];
 }
 
 // -----------------------------------------------------------------------
@@ -661,18 +691,6 @@ function InspectorCard({
     () => new Set()
   );
 
-  const statusColors: Record<string, string> = {
-    failed: 'bg-rose-50 text-rose-600 border-rose-200',
-    completed: 'bg-emerald-50 text-emerald-600 border-emerald-200',
-    waiting_review: 'bg-violet-50 text-violet-600 border-violet-200',
-    pre_completed: 'bg-amber-50 text-amber-600 border-amber-200',
-    running: 'bg-blue-50 text-blue-600 border-blue-200',
-    revising: 'bg-blue-50 text-blue-600 border-blue-200',
-    waiting_input: 'bg-indigo-50 text-indigo-600 border-indigo-200',
-    ready: 'bg-slate-50 text-slate-600 border-slate-200',
-    pending: 'bg-slate-50 text-slate-600 border-slate-200',
-  };
-
   const instruction =
     planNode?.data.instructions?.trim() ||
     t('workflow.inspector.noInstructions', {
@@ -684,10 +702,9 @@ function InspectorCard({
       defaultValue: 'No summary has been generated for this step yet.',
     });
   const loopName = loop?.loop_key?.trim() ?? '';
-  const loopRejectionReason = loop?.rejection_reason?.trim() ?? '';
   const isFailed = WORKFLOW_FAILURE_STEP_STATUSES.has(step.status);
   const isCompleted = step.status === 'completed';
-  const hasError = isFailed || loopRejectionReason.length > 0;
+  const hasError = isFailed;
   const leadReviewRequired = step.lead_review_required;
   const canRetryReviewStep =
     leadReviewRequired &&
@@ -748,7 +765,9 @@ function InspectorCard({
   const outputEntries = useMemo(
     () =>
       transcriptEntries.filter(
-        (entry) => !isWorkflowRuntimeThinkingEntry(entry)
+        (entry) =>
+          !isWorkflowRuntimeThinkingEntry(entry) &&
+          !isWorkflowStepLifecycleStartEntry(entry)
       ),
     [transcriptEntries]
   );
@@ -824,12 +843,8 @@ function InspectorCard({
         <div className="flex-grow flex justify-end pb-1 h-full py-2 pr-6">
           <span
             className={cn(
-              'inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold uppercase tracking-wider',
-              hasError
-                ? 'bg-rose-50 text-rose-600'
-                : statusColors[step.status]
-                    ?.replace(/border-[a-z]+-\d+/g, '')
-                    .trim() || 'bg-slate-50 text-slate-500'
+              'inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold uppercase tracking-wider border',
+              workflowStatusBadgeClass(step.status)
             )}
           >
             {workflowStatusLabel(step.status, t)}
@@ -947,12 +962,11 @@ function InspectorCard({
                       const OutputIcon = getWorkflowOutputEntryIcon(entry);
                       const outputAgentName =
                         entry.entry_type === 'message' ||
-                        entry.entry_type === 'lead_review'
-                          ? entry.agent_name?.trim() ||
-                            (entry.entry_type === 'lead_review'
-                              ? 'Lead'
-                              : undefined)
-                          : null;
+                        entry.entry_type === 'output'
+                          ? entry.agent_name?.trim() || undefined
+                          : isWorkflowReviewEntry(entry)
+                            ? getWorkflowReviewAgentName(entry, 'Reviewer')
+                            : null;
                       const outputLabel =
                         outputAgentName || getWorkflowOutputEntryLabel(entry);
                       return (
@@ -1001,7 +1015,7 @@ function InspectorCard({
                 </h3>
                 <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-4 max-h-40 overflow-y-auto">
                   <ChatMarkdown
-                    content={loopRejectionReason || summaryText}
+                    content={summaryText}
                     maxWidth="100%"
                     textClassName={workflowDetailMarkdownTextClassName}
                     className="w-full select-text"
@@ -1616,11 +1630,17 @@ export function WorkflowWindow({
   );
   const graphPlan = selectedRoundGraph?.plan ?? projection.plan;
   const graphSteps = selectedRoundGraph?.steps ?? projection.steps;
-  const graphLoops = selectedRoundGraph?.loops ?? projection.loops ?? [];
+  const graphLoops = useMemo(
+    () => selectedRoundGraph?.loops ?? projection.loops ?? [],
+    [projection.loops, selectedRoundGraph?.loops]
+  );
+  const visibleRoundIndex =
+    selectedRoundGraph?.round_index ?? projection.current_round;
   const isViewingCurrentRound =
     !selectedRoundGraph ||
     selectedRoundGraph.round_index === projection.current_round;
   const currentRoundSteps = currentRoundGraph?.steps ?? projection.steps;
+  const selectedRoundStepProgress = getStepProgress(graphSteps);
 
   useEffect(() => {
     if (isViewingCurrentRound) return;
@@ -1634,27 +1654,29 @@ export function WorkflowWindow({
   const canPauseExecution = canPauseWorkflowExecution(projection);
   const canResumeExecution = canResumeWorkflowExecution(projection);
   const isExecutionRecompiling = isWorkflowExecutionRecompiling(projection);
+  const executionStatusLabel = workflowExecutionStatusLabel(
+    projection.execution_status,
+    t
+  );
   const normalizedResultSummary = projection.result_summary?.trim() ?? '';
   const normalizedErrorMessage = projection.error_message?.trim() ?? '';
-  const hasFailedWorkflowStep = projection.steps.some((step) =>
-    WORKFLOW_FAILURE_STEP_STATUSES.has(step.status)
-  );
-  const hasTerminalWorkflowSteps =
-    projection.steps.length > 0 &&
-    projection.steps.every((step) =>
-      WORKFLOW_TERMINAL_STEP_STATUSES.has(step.status)
-    );
   const hasWorkflowCompleted =
     projection.state === 'completed' ||
-    projection.execution_status === 'completed' ||
-    (normalizedResultSummary.length > 0 &&
-      hasTerminalWorkflowSteps &&
-      !hasFailedWorkflowStep);
+    projection.execution_status === 'completed';
   const hasWorkflowFailed =
-    projection.state === 'failed' ||
-    projection.execution_status === 'failed' ||
-    (normalizedErrorMessage.length > 0 && hasFailedWorkflowStep);
-  const isReviewSettingsLocked = hasWorkflowCompleted || hasWorkflowFailed;
+    projection.state === 'failed' || projection.execution_status === 'failed';
+  const hasPendingReview =
+    Boolean(projection.pending_review) ||
+    projection.steps.some((step) => step.status === 'waiting_review');
+  const isReviewSettingsLocked =
+    hasWorkflowCompleted ||
+    hasWorkflowFailed ||
+    isExecutionRecompiling ||
+    projection.state === 'running' ||
+    projection.execution_status === 'running' ||
+    projection.state === 'waiting' ||
+    projection.execution_status === 'waiting' ||
+    hasPendingReview;
   const reviewSettingsDisabled =
     isReviewSettingsLocked || isSavingReviewSettings || !onUpdateReviewSettings;
   const reviewSettingsDisplayError =
@@ -1706,21 +1728,18 @@ export function WorkflowWindow({
     return lookup;
   }, [agents]);
   const stepByKey = useMemo(
-    () => new Map(projection.steps.map((step) => [step.step_key, step])),
-    [projection.steps]
+    () => new Map(graphSteps.map((step) => [step.step_key, step])),
+    [graphSteps]
   );
   const stepById = useMemo(
-    () => new Map(projection.steps.map((step) => [step.id, step])),
-    [projection.steps]
+    () => new Map(currentRoundSteps.map((step) => [step.id, step])),
+    [currentRoundSteps]
   );
   const planNodeById = useMemo(
-    () => new Map(projection.plan.nodes.map((node) => [node.id, node])),
-    [projection.plan.nodes]
+    () => new Map(graphPlan.nodes.map((node) => [node.id, node])),
+    [graphPlan.nodes]
   );
-  const workflowLoops = useMemo(
-    () => projection.loops ?? [],
-    [projection.loops]
-  );
+  const workflowLoops = useMemo(() => graphLoops, [graphLoops]);
   const loopByKey = useMemo(
     () => new Map(workflowLoops.map((loop) => [loop.loop_key, loop])),
     [workflowLoops]
@@ -1736,35 +1755,31 @@ export function WorkflowWindow({
     }
   }, [isReviewSettingsOpen, projection.execution_id]);
 
-  const handleSaveReviewSettings = useCallback(async (
-    overrides: WorkflowReviewSettingOverride[]
-  ) => {
-    if (!projection.execution_id || !onUpdateReviewSettings) return;
-    if (isReviewSettingsLocked) {
-      setReviewSettingsError(
-        t('workflow.reviewSettings.finishedMessage', {
-          defaultValue:
-            'Review settings cannot be modified in the current workflow state.',
-        })
-      );
-      return;
-    }
-    setReviewSettingsError(null);
-    setIsSavingReviewSettings(true);
-    try {
-      await onUpdateReviewSettings(projection.execution_id, overrides);
-      setIsReviewSettingsOpen(false);
-    } catch (error) {
-      setReviewSettingsError(getReviewSettingsErrorMessage(error, t));
-    } finally {
-      setIsSavingReviewSettings(false);
-    }
-  }, [
-    isReviewSettingsLocked,
-    onUpdateReviewSettings,
-    projection.execution_id,
-    t,
-  ]);
+  const handleSaveReviewSettings = useCallback(
+    async (overrides: WorkflowReviewSettingOverride[]) => {
+      if (!projection.execution_id || !onUpdateReviewSettings) return;
+      if (isReviewSettingsLocked) {
+        setReviewSettingsError(
+          t('workflow.reviewSettings.finishedMessage', {
+            defaultValue:
+              'Review settings cannot be modified in the current workflow state.',
+          })
+        );
+        return;
+      }
+      setReviewSettingsError(null);
+      setIsSavingReviewSettings(true);
+      try {
+        await onUpdateReviewSettings(projection.execution_id, overrides);
+        setIsReviewSettingsOpen(false);
+      } catch (error) {
+        setReviewSettingsError(getReviewSettingsErrorMessage(error, t));
+      } finally {
+        setIsSavingReviewSettings(false);
+      }
+    },
+    [isReviewSettingsLocked, onUpdateReviewSettings, projection.execution_id, t]
+  );
   const resolveStepAgentName = useCallback(
     (step?: WorkflowCardStep | null) => {
       const rawAgent = step?.agent_name?.trim();
@@ -1792,6 +1807,11 @@ export function WorkflowWindow({
 
   const isRunning =
     projection.execution_status === 'running' || canPauseExecution;
+  const runningStatusSummary = [
+    executionStatusLabel,
+    `${progressPercent}%`,
+    `${projection.completed_step_count}/${projection.total_step_count} steps`,
+  ].join(' - ');
 
   // Reset state on workflow instance change
   useEffect(() => {
@@ -1849,11 +1869,8 @@ export function WorkflowWindow({
 
   // Derived data for active step
   const activeStep = useMemo(
-    () =>
-      activeNodeId
-        ? (projection.steps.find((s) => s.step_key === activeNodeId) ?? null)
-        : null,
-    [activeNodeId, projection.steps]
+    () => (activeNodeId ? (stepByKey.get(activeNodeId) ?? null) : null),
+    [activeNodeId, stepByKey]
   );
   const activePlanNode = activeNodeId
     ? (planNodeById.get(activeNodeId) ?? null)
@@ -1873,10 +1890,6 @@ export function WorkflowWindow({
   const activeStepLatestReviewFeedback = workflowLatestReviewFeedback(
     activeStepLatestReview
   );
-  const activeAgentSessionId = activeStep?.agent_name
-    ? (agentSessionIdByLookup.get(activeStep.agent_name.trim()) ?? leadAgentId)
-    : leadAgentId;
-
   const transcriptWithLocalInputs = useMemo(
     () => mergeAndSortTranscriptEntries(transcript, runtimeInputTranscripts),
     [runtimeInputTranscripts, transcript]
@@ -1887,17 +1900,11 @@ export function WorkflowWindow({
     data: activeStepTranscriptData,
     isLoading: isLoadingActiveStepTranscript,
   } = useQuery({
-    queryKey: [
-      'workflowStepTranscripts',
-      sessionId,
-      activeStep?.id,
-      activeAgentSessionId,
-    ],
+    queryKey: ['workflowStepTranscripts', sessionId, activeStep?.id],
     queryFn: () => {
       if (!sessionId || !activeStep?.id) return [];
       return chatApi.getWorkflowStepTranscripts(sessionId, activeStep.id, {
         stepKey: activeStep.step_key,
-        workflowAgentSessionId: activeAgentSessionId,
       });
     },
     enabled: !!sessionId && !!activeStep?.id && !isPreview && isOpen,
@@ -1911,18 +1918,12 @@ export function WorkflowWindow({
 
   const activeStepFallbackTranscript = useMemo(() => {
     if (!activeStep) return [];
-    let entries = transcriptWithLocalInputs.filter(
+    return transcriptWithLocalInputs.filter(
       (entry) =>
         entry.step_id === activeStep.id ||
         entry.step_key === activeStep.step_key
     );
-    if (activeAgentSessionId) {
-      entries = entries.filter(
-        (entry) => entry.workflow_agent_session_id === activeAgentSessionId
-      );
-    }
-    return entries;
-  }, [activeAgentSessionId, activeStep, transcriptWithLocalInputs]);
+  }, [activeStep, transcriptWithLocalInputs]);
 
   const activeStepScopedTranscript = useMemo(() => {
     const entries = activeStepTranscriptData ?? [];
@@ -1952,33 +1953,19 @@ export function WorkflowWindow({
       remoteEntries,
       localEntries
     );
-    const stepContentEntries = activeStep
-      ? buildStepContentTranscriptEntries(
-          [activeStep],
-          mergedEntries,
-          resolveStepAgentId,
-          activeAgentSessionId
-        )
+    const stepReviewEntries = activeStep
+      ? buildStepReviewTranscriptEntries(activeStep, mergedEntries)
       : [];
-    return mergeAndSortTranscriptEntries(mergedEntries, stepContentEntries);
-  }, [
-    activeAgentSessionId,
-    activeStep,
-    activeStepTranscriptData,
-    resolveStepAgentId,
-    transcriptWithLocalInputs,
-  ]);
+    return mergeAndSortTranscriptEntries(mergedEntries, stepReviewEntries);
+  }, [activeStep, activeStepTranscriptData, transcriptWithLocalInputs]);
 
   const activeRuntimeTranscript = useMemo(() => {
     if (!activeStep || runtimeMessages.length === 0) return [];
     return runtimeMessages
       .filter(
         (message) =>
-          (message.stepId === activeStep.id ||
-            message.stepKey === activeStep.step_key) &&
-          (!activeAgentSessionId ||
-            !message.workflowAgentSessionId ||
-            message.workflowAgentSessionId === activeAgentSessionId)
+          message.stepId === activeStep.id ||
+          message.stepKey === activeStep.step_key
       )
       .map(
         (message): WorkflowTranscriptEntry => ({
@@ -1997,7 +1984,7 @@ export function WorkflowWindow({
           created_at: message.createdAt,
         })
       );
-  }, [activeAgentSessionId, activeStep, runtimeMessages]);
+  }, [activeStep, runtimeMessages]);
 
   const visibleActiveTranscript =
     activeStepScopedTranscript.length > 0 || activeRuntimeTranscript.length > 0
@@ -2161,7 +2148,7 @@ export function WorkflowWindow({
   const handleSendStepInput = useCallback(
     (stepId: string, inputText: string) => {
       if (!onSubmitStepInput) return;
-      const step = projection.steps.find((s) => s.id === stepId);
+      const step = stepById.get(stepId);
       if (!step) return;
       if (!canWorkflowStepAcceptChatInput(step)) return;
       onSubmitStepInput(stepId, inputText);
@@ -2181,7 +2168,7 @@ export function WorkflowWindow({
         },
       ]);
     },
-    [onSubmitStepInput, projection.steps, resolveStepAgentId]
+    [onSubmitStepInput, resolveStepAgentId, stepById]
   );
 
   if (!isOpen) return null;
@@ -2206,34 +2193,42 @@ export function WorkflowWindow({
               {isRunning && (
                 <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
               )}
-              {isExecutionRecompiling
-                ? t('workflow.status.recompiling', {
-                    defaultValue: 'Recompiling plan...',
+              {hasWorkflowCompleted
+                ? t('workflow.status.completed', {
+                    summary:
+                      normalizedResultSummary ||
+                      t('workflow.status.completedDefault', {
+                        defaultValue: 'All steps finished',
+                      }),
+                    defaultValue: `Completed - ${normalizedResultSummary || 'All steps finished'}`,
                   })
-                : hasWorkflowCompleted
-                  ? t('workflow.status.completed', {
-                      summary:
-                        normalizedResultSummary ||
-                        t('workflow.status.completedDefault', {
-                          defaultValue: 'All steps finished',
+                : hasWorkflowFailed
+                  ? t('workflow.status.failed', {
+                      error:
+                        normalizedErrorMessage ||
+                        t('workflow.status.failedDefault', {
+                          defaultValue: 'Execution error',
                         }),
-                      defaultValue: `Completed - ${normalizedResultSummary || 'All steps finished'}`,
+                      defaultValue: `Failed - ${normalizedErrorMessage || 'Execution error'}`,
                     })
-                  : hasWorkflowFailed
-                    ? t('workflow.status.failed', {
-                        error:
-                          normalizedErrorMessage ||
-                          t('workflow.status.failedDefault', {
-                            defaultValue: 'Execution error',
-                          }),
-                        defaultValue: `Failed - ${normalizedErrorMessage || 'Execution error'}`,
+                  : projection.execution_status === 'running'
+                    ? t('workflow.status.running', {
+                        summary: runningStatusSummary,
+                        defaultValue: runningStatusSummary,
                       })
-                    : t('workflow.status.progress', {
-                        percent: progressPercent,
-                        completed: projection.completed_step_count,
-                        total: projection.total_step_count,
-                        defaultValue: `Progress ${progressPercent}% · ${projection.completed_step_count}/${projection.total_step_count} steps`,
-                      })}
+                    : isExecutionRecompiling
+                      ? t('workflow.status.recompiling', {
+                          defaultValue: 'Regenerating plan',
+                        })
+                      : projection.execution_status === 'paused' ||
+                          projection.execution_status === 'waiting'
+                        ? executionStatusLabel
+                        : t('workflow.status.progress', {
+                            percent: progressPercent,
+                            completed: projection.completed_step_count,
+                            total: projection.total_step_count,
+                            defaultValue: `Progress ${progressPercent}% - ${projection.completed_step_count}/${projection.total_step_count} steps`,
+                          })}
             </p>
           </div>
         </div>
@@ -2484,12 +2479,13 @@ export function WorkflowWindow({
             canReviewCurrentRound) && (
             <div className="absolute bottom-6 left-6 z-40 w-80">
               <WorkflowIterationFeedbackCard
-                currentRound={projection.current_round}
-                completedSteps={projection.completed_step_count}
-                totalSteps={projection.total_step_count}
+                currentRound={visibleRoundIndex}
+                completedSteps={selectedRoundStepProgress.completedSteps}
+                totalSteps={selectedRoundStepProgress.totalSteps}
+                executionStatus={projection.execution_status}
                 isRegeneratingPlan={isExecutionRecompiling}
                 runningStepTitle={
-                  currentRoundSteps.find(
+                  graphSteps.find(
                     (s) => s.status === 'running' || s.status === 'failed'
                   )?.title ?? null
                 }
@@ -2500,7 +2496,9 @@ export function WorkflowWindow({
                 }))}
                 selectedRoundIndex={selectedRoundIndex ?? defaultRoundIndex}
                 onSelectRound={setSelectedRoundIndex}
-                canReviewCurrentRound={canReviewCurrentRound}
+                canReviewCurrentRound={
+                  canReviewCurrentRound && isViewingCurrentRound
+                }
                 pendingActionId={pendingActionId}
                 onSubmit={(payload) => {
                   if (!projection.execution_id || !onSubmitIterationFeedback)

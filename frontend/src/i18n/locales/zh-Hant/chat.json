@@ -1011,6 +1011,15 @@
       "fitView": "適應畫布",
       "leadFallback": "主 Agent"
     },
+    "executionStatus": {
+      "running": "執行中",
+      "failed": "失敗",
+      "paused": "已暫停",
+      "waiting": "等待審核",
+      "recompiling": "正在重新產生計畫",
+      "completed": "已完成",
+      "pending": "準備中"
+    },
     "statusLabels": {
       "interrupted": "已中斷",
       "stopRequested": "停止請求中",

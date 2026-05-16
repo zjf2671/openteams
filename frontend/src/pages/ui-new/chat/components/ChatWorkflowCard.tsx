@@ -22,8 +22,10 @@ import {
   canResumeWorkflowExecution,
   isWorkflowExecutionRecompiling,
 } from './workflowControlContract';
+import { workflowExecutionStatusLabel } from './workflowStepPresentation';
 
 export type WorkflowCardProjection = WorkflowCardData;
+type WorkflowCardStep = WorkflowCardData['steps'][number];
 type WorkflowCardType =
   | 'workflow_execution'
   | 'workflow_plan'
@@ -42,6 +44,13 @@ const REVIEW_READY_STEP_STATUSES = new Set([
   'skipped',
   'cancelled',
 ]);
+
+function getStepProgress(steps: WorkflowCardStep[]) {
+  return {
+    completedSteps: steps.filter((step) => step.status === 'completed').length,
+    totalSteps: steps.length,
+  };
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
@@ -365,15 +374,6 @@ export function ChatWorkflowCard({
       null
     );
   }, [defaultRoundIndex, projection, roundGraphs, selectedRoundIndex]);
-  const currentRoundGraph = useMemo(() => {
-    if (!projection) return null;
-    return (
-      roundGraphs.find(
-        (graph) => graph.round_index === projection.current_round
-      ) ?? null
-    );
-  }, [projection, roundGraphs]);
-
   if (!projection) {
     return null;
   }
@@ -381,10 +381,12 @@ export function ChatWorkflowCard({
   const graphPlan = selectedRoundGraph?.plan ?? projection.plan;
   const graphSteps = selectedRoundGraph?.steps ?? projection.steps;
   const graphLoops = selectedRoundGraph?.loops ?? projection.loops ?? [];
+  const visibleRoundIndex =
+    selectedRoundGraph?.round_index ?? projection.current_round;
   const isViewingCurrentRound =
     !selectedRoundGraph ||
     selectedRoundGraph.round_index === projection.current_round;
-  const currentRoundSteps = currentRoundGraph?.steps ?? projection.steps;
+  const selectedRoundStepProgress = getStepProgress(graphSteps);
 
   const cardType = extractWorkflowCardType(message.meta);
   const isPlanGenerationCard = cardType === 'workflow_plan_generation';
@@ -419,6 +421,8 @@ export function ChatWorkflowCard({
   const isExecutionRecompiling = isWorkflowExecutionRecompiling(projection);
   const canPauseExecution = canPauseWorkflowExecution(projection);
   const canResumeExecution = canResumeWorkflowExecution(projection);
+  const executionStatus = projection.execution_status;
+  const executionStatusLabel = workflowExecutionStatusLabel(executionStatus, t);
   const allStepViewsCompleted =
     projection.steps.length > 0 &&
     projection.steps.every((step) =>
@@ -440,15 +444,15 @@ export function ChatWorkflowCard({
     <ClockIcon className="size-icon-sm text-[#2563EB]" weight="fill" />
   ) : isExecutionRecompiling ? (
     <ClockIcon className="size-icon-sm text-[#5094fb]" weight="fill" />
-  ) : projection.state === 'completed' ? (
+  ) : !isPreview && executionStatus === 'completed' ? (
     <CheckCircleIcon className="size-icon-sm text-[#15803D]" weight="fill" />
-  ) : projection.state === 'failed' || isInvalid ? (
+  ) : (!isPreview && executionStatus === 'failed') || isInvalid ? (
     <WarningCircleIcon className="size-icon-sm text-[#DC2626]" weight="fill" />
   ) : projection.state === 'preview_ready' ? (
     <PlayIcon className="size-icon-sm text-[#D97706]" weight="fill" />
-  ) : projection.state === 'paused' ? (
+  ) : !isPreview && executionStatus === 'paused' ? (
     <PauseIcon className="size-icon-sm text-[#D97706]" weight="fill" />
-  ) : projection.state === 'waiting' ? (
+  ) : !isPreview && executionStatus === 'waiting' ? (
     <WarningCircleIcon className="size-icon-sm text-[#7C3AED]" weight="fill" />
   ) : (
     <ClockIcon className="size-icon-sm text-[#2563EB]" weight="fill" />
@@ -466,37 +470,15 @@ export function ChatWorkflowCard({
         ? t('workflow.iterationFeedback.regeneratingPlan', {
             defaultValue: 'Regenerating plan',
           })
-        : projection.state === 'completed'
-          ? t('workflow.card.stateLabels.workItem', {
-              defaultValue: 'Work Item',
+        : projection.state === 'preview_ready'
+          ? t('workflow.card.stateLabels.planReady', {
+              defaultValue: 'Plan Ready',
             })
-          : projection.state === 'failed'
-            ? t('workflow.card.stateLabels.executionFailed', {
-                defaultValue: 'Execution Failed',
+          : projection.state === 'preview_invalid'
+            ? t('workflow.card.stateLabels.planInvalid', {
+                defaultValue: 'Plan Invalid',
               })
-            : projection.state === 'preview_ready'
-              ? t('workflow.card.stateLabels.planReady', {
-                  defaultValue: 'Plan Ready',
-                })
-              : projection.state === 'preview_invalid'
-                ? t('workflow.card.stateLabels.planInvalid', {
-                    defaultValue: 'Plan Invalid',
-                  })
-                : projection.state === 'waiting'
-                  ? t('workflow.card.stateLabels.actionRequired', {
-                      defaultValue: 'Action Required',
-                    })
-                  : projection.state === 'paused'
-                    ? t('workflow.card.stateLabels.paused', {
-                        defaultValue: 'Paused',
-                      })
-                    : projection.state === 'pending'
-                      ? t('workflow.card.stateLabels.preparing', {
-                          defaultValue: 'Preparing',
-                        })
-                      : t('workflow.card.stateLabels.workflowRunning', {
-                          defaultValue: 'Workflow Running',
-                        });
+            : executionStatusLabel;
 
   return (
     <div className="w-full max-w-[640px] rounded-[24px] border border-[#D8E2F0] bg-white p-4 shadow-sm flex flex-col">
@@ -621,12 +603,13 @@ export function ChatWorkflowCard({
         (projection.iteration_history.length > 0 || canReviewCurrentRound) && (
           <div className="mt-4">
             <WorkflowIterationFeedbackCard
-              currentRound={projection.current_round}
-              completedSteps={projection.completed_step_count}
-              totalSteps={projection.total_step_count}
+              currentRound={visibleRoundIndex}
+              completedSteps={selectedRoundStepProgress.completedSteps}
+              totalSteps={selectedRoundStepProgress.totalSteps}
+              executionStatus={projection.execution_status}
               isRegeneratingPlan={isExecutionRecompiling}
               runningStepTitle={
-                currentRoundSteps.find(
+                graphSteps.find(
                   (s) => s.status === 'running' || s.status === 'failed'
                 )?.title ?? null
               }
@@ -637,7 +620,9 @@ export function ChatWorkflowCard({
               }))}
               selectedRoundIndex={selectedRoundIndex ?? defaultRoundIndex}
               onSelectRound={setSelectedRoundIndex}
-              canReviewCurrentRound={canReviewCurrentRound}
+              canReviewCurrentRound={
+                canReviewCurrentRound && isViewingCurrentRound
+              }
               pendingActionId={pendingActionId}
               onSubmit={(payload) => {
                 if (!onSubmitIterationFeedback || !projection.execution_id) {
@@ -787,7 +772,8 @@ export function ChatWorkflowCard({
         </div>
       )}
 
-      {projection.state === 'completed' && (
+      {(projection.state === 'completed' ||
+        projection.execution_status === 'completed') && (
         <div className="mt-4 rounded-[16px] border border-[#D1FAE5] bg-[#ECFDF5] p-4">
           <div className="text-xs font-bold uppercase tracking-[0.16em] text-[#15803D]">
             {t('workflow.card.finalDelivery', {
@@ -803,7 +789,8 @@ export function ChatWorkflowCard({
       )}
 
       {!isPlanGenerationCard &&
-        projection.state === 'failed' &&
+        (projection.state === 'failed' ||
+          projection.execution_status === 'failed') &&
         projection.error_message && (
           <div className="mt-4 rounded-[16px] border border-[#FECACA] bg-[#FEF2F2] p-4 text-sm leading-6 text-[#991B1B]">
             {projection.error_message}

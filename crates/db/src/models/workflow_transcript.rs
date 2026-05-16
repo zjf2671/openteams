@@ -262,12 +262,16 @@ impl WorkflowTranscript {
         }
         sql.push_str(" ORDER BY t.created_at ASC");
 
-        let limit_val = limit.unwrap_or(200);
         let offset_val = offset.unwrap_or(0);
-        param_idx += 1;
-        sql.push_str(&format!(" LIMIT ?{param_idx}"));
-        param_idx += 1;
-        sql.push_str(&format!(" OFFSET ?{param_idx}"));
+        if limit.is_some() {
+            param_idx += 1;
+            sql.push_str(&format!(" LIMIT ?{param_idx}"));
+            param_idx += 1;
+            sql.push_str(&format!(" OFFSET ?{param_idx}"));
+        } else if offset_val > 0 {
+            param_idx += 1;
+            sql.push_str(&format!(" LIMIT -1 OFFSET ?{param_idx}"));
+        }
 
         let mut query = sqlx::query_as::<_, Self>(&sql).bind(execution_id);
         if let Some(sid) = step_id {
@@ -279,7 +283,11 @@ impl WorkflowTranscript {
         if let Some(was) = workflow_agent_session_id {
             query = query.bind(was);
         }
-        query = query.bind(limit_val).bind(offset_val);
+        if let Some(limit_val) = limit {
+            query = query.bind(limit_val).bind(offset_val);
+        } else if offset_val > 0 {
+            query = query.bind(offset_val);
+        }
         query.fetch_all(pool).await
     }
 
@@ -783,5 +791,57 @@ mod tests {
         .await
         .expect("filter by step_id with pagination");
         assert_eq!(paginated.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn step_filter_without_limit_returns_all_entries() {
+        let pool = transcript_pool().await;
+        let execution_id = Uuid::new_v4();
+        let step_id = Uuid::new_v4();
+
+        for i in 0..250 {
+            WorkflowTranscript::create(
+                &pool,
+                &CreateWorkflowTranscript {
+                    execution_id,
+                    round_id: None,
+                    workflow_agent_session_id: None,
+                    step_id: Some(step_id),
+                    sender_type: "agent".to_string(),
+                    entry_type: "thinking".to_string(),
+                    content: format!("entry {i}"),
+                    meta_json: None,
+                },
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("create transcript");
+        }
+
+        let all_entries = WorkflowTranscript::find_by_execution_with_step_filter(
+            &pool,
+            execution_id,
+            Some(step_id),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("filter by step_id without pagination");
+        assert_eq!(all_entries.len(), 250);
+
+        let limited_entries = WorkflowTranscript::find_by_execution_with_step_filter(
+            &pool,
+            execution_id,
+            Some(step_id),
+            None,
+            None,
+            Some(200),
+            Some(0),
+        )
+        .await
+        .expect("filter by step_id with explicit pagination");
+        assert_eq!(limited_entries.len(), 200);
     }
 }

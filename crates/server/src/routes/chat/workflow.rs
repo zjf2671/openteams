@@ -18,10 +18,11 @@ use db::models::{
     workflow_plan::{CreateWorkflowPlan, WorkflowPlan},
     workflow_plan_revision::{CreateWorkflowPlanRevision, WorkflowPlanRevision},
     workflow_step::WorkflowStep,
+    workflow_step_review::WorkflowStepReview,
     workflow_transcript::WorkflowTranscript,
     workflow_types::{
-        WorkflowExecutionStatus, WorkflowPlanJson, WorkflowPlanStatus, WorkflowRevisionEditor,
-        WorkflowValidationStatus,
+        ReviewVerdict, ReviewerType, WorkflowExecutionStatus, WorkflowPlanJson, WorkflowPlanStatus,
+        WorkflowRevisionEditor, WorkflowValidationStatus,
     },
 };
 use deployment::Deployment;
@@ -494,13 +495,21 @@ pub async fn update_review_settings(
             "Workflow execution not found in this session.".to_string(),
         ));
     }
-    if matches!(
-        execution.status,
-        WorkflowExecutionStatus::Completed | WorkflowExecutionStatus::Failed
-    ) {
-        return Err(ApiError::BadRequest(
-            "Review settings cannot be changed after execution has finished.".to_string(),
-        ));
+    match execution.status {
+        WorkflowExecutionStatus::Completed | WorkflowExecutionStatus::Failed => {
+            return Err(ApiError::BadRequest(
+                "Review settings cannot be changed after execution has finished.".to_string(),
+            ));
+        }
+        WorkflowExecutionStatus::Running
+        | WorkflowExecutionStatus::Waiting
+        | WorkflowExecutionStatus::Recompiling => {
+            return Err(ApiError::BadRequest(
+                "Review settings can only be changed while execution is not running or waiting for review."
+                    .to_string(),
+            ));
+        }
+        WorkflowExecutionStatus::Pending | WorkflowExecutionStatus::Paused => {}
     }
 
     apply_review_overrides_to_execution(pool, execution.id, &overrides).await?;
@@ -1129,6 +1138,50 @@ fn normalize_workflow_transcript_created_at(created_at: &str) -> String {
     created_at.to_string()
 }
 
+fn workflow_review_verdict_label(verdict: &ReviewVerdict) -> &'static str {
+    match verdict {
+        ReviewVerdict::Approved => "approved",
+        ReviewVerdict::Rejected => "rejected",
+    }
+}
+
+fn workflow_reviewer_type_label(reviewer_type: &ReviewerType) -> &'static str {
+    match reviewer_type {
+        ReviewerType::Lead => "lead",
+        ReviewerType::User => "user",
+    }
+}
+
+fn workflow_transcript_review_key(entry: &WorkflowTranscriptEntry) -> Option<(Uuid, String, i32)> {
+    if !matches!(
+        entry.entry_type.as_str(),
+        "lead_review" | "step_review" | "loop_review"
+    ) {
+        return None;
+    }
+    let step_id = entry.step_id?;
+    let meta = entry
+        .meta_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())?;
+    let reviewer_type = meta
+        .get("reviewer_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or_else(|| {
+            if entry.entry_type == "lead_review" {
+                "lead"
+            } else {
+                "user"
+            }
+        })
+        .to_string();
+    let review_round = meta
+        .get("review_round")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok())?;
+    Some((step_id, reviewer_type, review_round))
+}
+
 async fn list_transcript_response(
     pool: &sqlx::SqlitePool,
     session: &ChatSession,
@@ -1144,9 +1197,6 @@ async fn list_transcript_response(
         ));
     }
 
-    let limit = query.limit.unwrap_or(200);
-    let offset = query.offset.unwrap_or(0);
-
     let has_filter = query.step_id.is_some()
         || query.step_key.is_some()
         || query.workflow_agent_session_id.is_some();
@@ -1158,11 +1208,13 @@ async fn list_transcript_response(
             query.step_id,
             query.step_key.as_deref(),
             query.workflow_agent_session_id,
-            Some(limit),
-            Some(offset),
+            query.limit,
+            query.offset,
         )
         .await?
     } else {
+        let limit = query.limit.unwrap_or(200);
+        let offset = query.offset.unwrap_or(0);
         WorkflowTranscript::find_by_execution_paginated(pool, execution_id, limit, offset).await?
     };
     let steps = WorkflowStep::find_by_execution(pool, execution_id).await?;
@@ -1178,8 +1230,10 @@ async fn list_transcript_response(
         .iter()
         .map(|step| (step.id, step.step_key.clone()))
         .collect();
+    let step_by_id: HashMap<Uuid, &WorkflowStep> =
+        steps.iter().map(|step| (step.id, step)).collect();
 
-    let entries: Vec<WorkflowTranscriptEntry> = transcripts
+    let mut entries: Vec<WorkflowTranscriptEntry> = transcripts
         .into_iter()
         .map(|t| {
             let agent_name = t
@@ -1210,6 +1264,85 @@ async fn list_transcript_response(
             }
         })
         .collect();
+
+    let existing_review_keys: std::collections::HashSet<(Uuid, String, i32)> = entries
+        .iter()
+        .filter_map(workflow_transcript_review_key)
+        .collect();
+    let step_reviews = WorkflowStepReview::find_by_execution(pool, execution_id).await?;
+    for review in step_reviews {
+        let Some(step) = step_by_id.get(&review.step_id) else {
+            continue;
+        };
+        if query
+            .step_id
+            .is_some_and(|step_id| step_id != review.step_id)
+        {
+            continue;
+        }
+        if query
+            .step_key
+            .as_deref()
+            .is_some_and(|step_key| step_key != step.step_key)
+        {
+            continue;
+        }
+        if query.workflow_agent_session_id.is_some() {
+            continue;
+        }
+
+        let reviewer_type = workflow_reviewer_type_label(&review.reviewer_type);
+        let review_key = (
+            review.step_id,
+            reviewer_type.to_string(),
+            review.review_round,
+        );
+        if existing_review_keys.contains(&review_key) {
+            continue;
+        }
+
+        let entry_type = match &review.reviewer_type {
+            ReviewerType::Lead => "lead_review",
+            ReviewerType::User => "step_review",
+        };
+        let sender_type = match &review.reviewer_type {
+            ReviewerType::Lead => "agent",
+            ReviewerType::User => "user",
+        };
+        let agent_name = match &review.reviewer_type {
+            ReviewerType::Lead => Some("Lead".to_string()),
+            ReviewerType::User => Some("User".to_string()),
+        };
+        entries.push(WorkflowTranscriptEntry {
+            id: review.id,
+            execution_id: review.execution_id,
+            round_id: Some(step.round_id),
+            workflow_agent_session_id: None,
+            step_id: Some(review.step_id),
+            step_key: Some(step.step_key.clone()),
+            sender_type: sender_type.to_string(),
+            entry_type: entry_type.to_string(),
+            content: review.feedback,
+            meta_json: Some(
+                serde_json::json!({
+                    "source": "workflow_step_review",
+                    "reviewer_type": reviewer_type,
+                    "verdict": workflow_review_verdict_label(&review.verdict),
+                    "review_round": review.review_round,
+                    "review_id": review.id,
+                })
+                .to_string(),
+            ),
+            created_at: review.created_at.to_rfc3339(),
+            agent_name,
+        });
+    }
+
+    entries.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
 
     Ok((
         StatusCode::OK,

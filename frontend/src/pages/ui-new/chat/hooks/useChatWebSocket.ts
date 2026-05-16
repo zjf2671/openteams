@@ -327,7 +327,8 @@ export interface UseChatWebSocketResult {
 export function useChatWebSocket(
   activeSessionId: string | null,
   onMessageReceived: (message: ChatMessage) => void,
-  onWorkItemReceived: (workItem: ChatWorkItem) => void
+  onWorkItemReceived: (workItem: ChatWorkItem) => void,
+  onWorkflowProjectionRefresh?: (sessionId: string) => void
 ): UseChatWebSocketResult {
   const [streamingRunsBySession, setStreamingRunsBySession] =
     useState<StreamingRunsBySession>(() => readStreamingRunsCache());
@@ -707,8 +708,9 @@ export function useChatWebSocket(
       queryClient.invalidateQueries({
         queryKey: ['workflowStepTranscripts', sessionId],
       });
+      onWorkflowProjectionRefresh?.(sessionId);
     },
-    [queryClient]
+    [onWorkflowProjectionRefresh, queryClient]
   );
 
   useEffect(() => {

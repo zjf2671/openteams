@@ -1011,6 +1011,15 @@
       "fitView": "Ajustar al lienzo",
       "leadFallback": "Lead"
     },
+    "executionStatus": {
+      "running": "En ejecución",
+      "failed": "Fallido",
+      "paused": "En pausa",
+      "waiting": "Esperando revisión",
+      "recompiling": "Regenerando plan",
+      "completed": "Completado",
+      "pending": "Preparando"
+    },
     "statusLabels": {
       "interrupted": "Interrumpido",
       "stopRequested": "Detención solicitada",
