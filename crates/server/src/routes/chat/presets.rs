@@ -513,6 +513,7 @@ mod tests {
             team_protocol: Some("Follow the team protocol.".to_string()),
             team_protocol_enabled,
             default_workspace_path: Some("/workspace/default".to_string()),
+            chat_input_mode: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,

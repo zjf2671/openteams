@@ -1825,6 +1825,7 @@ mod tests {
             team_protocol: None,
             team_protocol_enabled: false,
             default_workspace_path: default_workspace_path.map(str::to_string),
+            chat_input_mode: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,
