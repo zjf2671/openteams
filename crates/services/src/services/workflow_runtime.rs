@@ -1268,18 +1268,18 @@ The `summary`, `content`, and `message` fields in your JSON output must use the 
 
 "#;
 
-static STEP_EXECUTION_TDD_WORKFLOW_FOR_TASK_TYPE: &str = r#"
+// static STEP_EXECUTION_TDD_WORKFLOW_FOR_TASK_TYPE: &str = r#"
 
-### TDD Workflow
+// ### TDD Workflow
 
-If it is a coding task, follow Test-Driven Development for every implementation step:
-1. **Red** — Write failing tests first that define the expected behavior. Run them to confirm they fail.
-2. **Green** — Write the minimum implementation to make all tests pass. No extra features.
-3. **Refactor** — Clean up code while keeping tests green. Improve naming, remove duplication, simplify logic.
-4. If no test framework exists in the project, create minimal verification scripts that assert expected behavior before implementing.
+// If it is a coding task, follow Test-Driven Development for every implementation step:
+// 1. **Red** — Write failing tests first that define the expected behavior. Run them to confirm they fail.
+// 2. **Green** — Write the minimum implementation to make all tests pass. No extra features.
+// 3. **Refactor** — Clean up code while keeping tests green. Improve naming, remove duplication, simplify logic.
+// 4. If no test framework exists in the project, create minimal verification scripts that assert expected behavior before implementing.
 
-For non-coding tasks, it's not necessary to strictly follow the TDD pattern.
-"#;
+// For non-coding tasks, it's not necessary to strictly follow the TDD pattern.
+// "#;
 
 static STEP_EXECUTION_TDD_WORKFLOW_FOR_REVIEW_TYPE: &str = r#"
 
@@ -1290,7 +1290,6 @@ Verify the worker's output independently; do not rely on their report.
 Check:
 - Read changed files from `outputs` and compare them with instructions and acceptance criteria.
 - Reject missing requirements, unrequested scope, obvious bugs, edge-case gaps, or broken shared contracts.
-- Run or inspect tests; confirm they prove real behavior and TDD was followed when required.
 - Ensure the result fits the workflow goal and predecessor outputs.
 
 If rejecting, cite specific issues with file/line evidence when available.
@@ -1351,9 +1350,10 @@ pub fn build_step_execution_prompt(
         prompt.push_str("You are reviewing the results of the current workflow execution.\n\n");
     }
 
-    if step.step_type == WorkflowStepType::Task {
-        prompt.push_str(STEP_EXECUTION_TDD_WORKFLOW_FOR_TASK_TYPE);
-    } else if step.step_type == WorkflowStepType::Review {
+    // if step.step_type == WorkflowStepType::Task {
+    //     prompt.push_str(STEP_EXECUTION_TDD_WORKFLOW_FOR_TASK_TYPE);
+    // } else
+    if step.step_type == WorkflowStepType::Review {
         prompt.push_str(STEP_EXECUTION_TDD_WORKFLOW_FOR_REVIEW_TYPE);
     } else if step.step_type == WorkflowStepType::Result {
         prompt.push_str(STEP_EXECUTION_RESULT_REVIEW_WORKFLOW);
@@ -1466,7 +1466,6 @@ everything independently by reading the actual code and output.
 **Test quality:**
 - Do tests verify real behavior (not just mock behavior)?
 - Are test cases comprehensive for the scope of changes?
-- If TDD was required, was it followed?
 
 **Consistency:**
 - Is the result consistent with the overall workflow goal?
