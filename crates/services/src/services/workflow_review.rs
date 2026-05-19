@@ -43,6 +43,7 @@ pub fn build_loop_review_prompt(
     execution_id: Uuid,
     loop_retry_count: i32,
     review_steps: &[LoopReviewPromptStepInput],
+    response_language_instruction: &str,
 ) -> String {
     let review_scope_step_titles = review_steps
         .iter()
@@ -118,7 +119,8 @@ Evaluate the loop's execution quality from an overall perspective:
 3. Whether outputs from one step correctly connect to the next step.
 4. Whether there are systemic issues that require broader rework.
 
-Write all human-readable JSON string values in English.
+### Response Language Requirement
+{response_language_instruction}
 
 ### Return Format
 When approved, return:
@@ -150,6 +152,7 @@ If the entire loop needs rework, omit step_feedbacks or return an empty array.
         review_scope_step_titles = review_scope_step_titles,
         step_sections = step_sections,
         rejected_feedback_template = rejected_feedback_template,
+        response_language_instruction = response_language_instruction.trim(),
     );
     prompt.push_str("\n\nRequired JSON Schema:\n```json\n");
     prompt.push_str(&json_schema);
@@ -208,6 +211,7 @@ pub fn build_loop_rejection_prompt(
     your_previous_summary: &str,
     step: &WorkflowStep,
     external_dependency_text: &[String],
+    response_language_instruction: &str,
 ) -> String {
     let other_steps_feedback_summary = if other_steps_feedback_summary.is_empty() {
         "无".to_string()
@@ -221,33 +225,36 @@ pub fn build_loop_rejection_prompt(
     };
 
     format!(
-        r#"## 回路返工要求 (第 {loop_retry_count} 次回路重试)
+        r#"## Loop Rework Request (loop retry {loop_retry_count})
 
-本回路的整体审核未通过，你需要根据以下反馈重新执行你的任务。
+The overall loop review did not pass. Re-run your task according to the feedback below.
 
-### 回路审核结论
+### Loop Review Decision
 {loop_rejection_reason}
 
-### 针对你的节点的修改意见
+### Revision Feedback for Your Step
 {step_specific_feedback}
 
-### 其他节点的修改方向 (供参考)
+### Other Steps' Revision Direction (for reference)
 {other_steps_feedback_summary}
 
-### 你上次的执行结果
-摘要：{your_previous_summary}
+### Your Previous Execution Result
+Summary: {your_previous_summary}
 
-### 要求
-1. 重点关注「针对你的节点的修改意见」进行修改
-2. 注意与其他节点修改方向保持一致
-3. 保留上次正确的工作成果，针对性修改
-4. 修改完成后按照标准格式返回结果
+### Requirements
+1. Focus on the "Revision Feedback for Your Step" section.
+2. Keep your changes consistent with the revision direction for other steps.
+3. Preserve any correct work from your previous result and revise only what needs changes.
+4. After completing the revision, return the result in the standard format.
 
-### 原始任务指令
-step 标题：{step_title}
-step 指令：{step_instructions}
+### Response Language Requirement
+{response_language_instruction}
 
-### 已完成前置步骤摘要（回路外）
+### Original Task Instructions
+Step title: {step_title}
+Step instructions: {step_instructions}
+
+### Completed Upstream Step Summaries (outside the loop)
 {external_dependency_text}"#,
         loop_retry_count = loop_retry_count,
         loop_rejection_reason = loop_rejection_reason,
@@ -257,6 +264,7 @@ step 指令：{step_instructions}
         step_title = step.title,
         step_instructions = step.instructions,
         external_dependency_text = external_dependency_text,
+        response_language_instruction = response_language_instruction.trim(),
     )
 }
 
@@ -266,6 +274,7 @@ pub fn build_loop_user_rejection_prompt(
     loop_current_state_summary: &str,
     your_previous_summary: &str,
     step: &WorkflowStep,
+    response_language_instruction: &str,
 ) -> String {
     format!(
         r#"## User Loop Rework Request (loop retry {loop_retry_count})
@@ -284,7 +293,7 @@ Summary: {your_previous_summary}
 ### Requirements
 1. Treat the user feedback as the highest priority.
 2. Understand how the user feedback affects the overall loop and adjust your work accordingly.
-3. Write all newly produced human-readable output in English.
+3. {response_language_instruction}
 4. After completing the revision, return the result in the standard format.
 
 ### Original Task Instructions
@@ -296,6 +305,7 @@ Step instructions: {step_instructions}"#,
         your_previous_summary = your_previous_summary,
         step_title = step.title,
         step_instructions = step.instructions,
+        response_language_instruction = response_language_instruction.trim(),
     )
 }
 
@@ -424,10 +434,16 @@ mod tests {
                     outputs: vec![],
                 },
             ],
+            "You MUST write human-readable JSON string values in Simplified Chinese.",
         );
 
         assert!(prompt.contains("## Loop Review Task"));
-        assert!(prompt.contains("Write all human-readable JSON string values in English."));
+        assert!(prompt.contains("Response Language Requirement"));
+        assert!(
+            prompt.contains(
+                "You MUST write human-readable JSON string values in Simplified Chinese."
+            )
+        );
         assert!(prompt.contains("Deliver a coherent feature"));
         assert!(prompt.contains("loop-a"));
         assert!(prompt.contains("Draft"));
@@ -447,13 +463,20 @@ mod tests {
             "Old summary",
             &step,
             &["外部依赖 A 已完成".to_string()],
+            "You MUST write human-readable JSON string values in Simplified Chinese.",
         );
 
-        assert!(prompt.contains("第 2 次回路重试"));
+        assert!(prompt.contains("loop retry 2"));
         assert!(prompt.contains("整体结构不一致"));
         assert!(prompt.contains("请统一术语"));
         assert!(prompt.contains("其他节点需要同步命名"));
         assert!(prompt.contains("外部依赖 A 已完成"));
+        assert!(prompt.contains("Response Language Requirement"));
+        assert!(
+            prompt.contains(
+                "You MUST write human-readable JSON string values in Simplified Chinese."
+            )
+        );
     }
 
     #[test]
@@ -465,10 +488,15 @@ mod tests {
             "当前回路已生成英文文档",
             "Old summary",
             &step,
+            "You MUST write human-readable JSON string values in Simplified Chinese.",
         );
 
         assert!(prompt.contains("User Loop Rework Request"));
-        assert!(prompt.contains("Write all newly produced human-readable output in English."));
+        assert!(
+            prompt.contains(
+                "You MUST write human-readable JSON string values in Simplified Chinese."
+            )
+        );
         assert!(prompt.contains("用户要求改为中文输出"));
         assert!(prompt.contains("当前回路已生成英文文档"));
     }

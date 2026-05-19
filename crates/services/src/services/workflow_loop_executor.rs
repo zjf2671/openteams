@@ -19,11 +19,12 @@ use db::{
     },
 };
 use sqlx::SqlitePool;
+use utils::assets::config_path;
 use uuid::Uuid;
 
 use super::{
     chat_runner::ChatRunner,
-    workflow_analytics,
+    config, workflow_analytics,
     workflow_orchestrator::{
         OrchestratorError, WorkflowOrchestrator, resolve_step_workflow_session,
     },
@@ -34,8 +35,8 @@ use super::{
     workflow_runtime::{
         SummaryPayload, WORKFLOW_PROTOCOL_PARSE_MAX_RETRIES, WorkflowRevisionFeedbackSource,
         build_workflow_protocol_retry_prompt, parse_summary_payload,
-        run_workflow_step_agent_follow_up, run_workflow_step_agent_prompt,
-        should_retry_workflow_protocol_parse_failure,
+        resolve_workflow_response_language_instruction, run_workflow_step_agent_follow_up,
+        run_workflow_step_agent_prompt, should_retry_workflow_protocol_parse_failure,
     },
 };
 
@@ -392,12 +393,16 @@ impl<'a> LoopExecutor<'a> {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| self.plan.title.clone());
         let review_inputs = self.review_prompt_inputs(loop_def).await?;
+        let ui_config = config::load_config_from_file(&config_path()).await;
+        let response_language_instruction =
+            resolve_workflow_response_language_instruction(&ui_config.language);
         let prompt = build_loop_review_prompt(
             &workflow_goal,
             loop_def,
             self.execution.id,
             workflow_loop.retry_count + 1,
             &review_inputs,
+            response_language_instruction,
         );
         let allowed_step_keys = review_inputs
             .iter()
