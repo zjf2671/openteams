@@ -241,7 +241,7 @@ impl<'a> LoopExecutor<'a> {
                     workflow_loop.review_step_id
                 ))
             })?;
-        if has_pending_loop_feedback && review_step.status != WorkflowStepStatus::Ready {
+        if has_pending_loop_feedback && review_step.status != WorkflowStepStatus::Pending {
             let mut review_step = if matches!(
                 review_step.status,
                 WorkflowStepStatus::Completed
@@ -255,7 +255,7 @@ impl<'a> LoopExecutor<'a> {
                 review_step
             };
             review_step =
-                WorkflowStep::update_status(self.pool, review_step.id, WorkflowStepStatus::Ready)
+                WorkflowStep::update_status(self.pool, review_step.id, WorkflowStepStatus::Pending)
                     .await?;
             reset_steps.push(review_step);
         }

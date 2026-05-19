@@ -48,23 +48,23 @@ pub fn build_loop_review_prompt(
         .iter()
         .map(|step| step.title.clone())
         .collect::<Vec<_>>()
-        .join("、");
+        .join(", ");
     let step_sections = review_steps
         .iter()
         .enumerate()
         .map(|(index, step)| {
             let acceptance = if step.acceptance.is_empty() {
-                "无".to_string()
+                "None".to_string()
             } else {
-                step.acceptance.join("；")
+                step.acceptance.join("; ")
             };
             let outputs = if step.outputs.is_empty() {
-                "无".to_string()
+                "None".to_string()
             } else {
-                step.outputs.join("、")
+                step.outputs.join(", ")
             };
             format!(
-                "#### [{}] {}\n- 指令：{}\n- 验收标准：{}\n- 执行摘要：{}\n- 详细内容：{}\n- 产出：{}",
+                "#### [{}] {}\n- Instructions: {}\n- Acceptance criteria: {}\n- Execution summary: {}\n- Detailed content: {}\n- Outputs: {}",
                 index + 1,
                 step.title,
                 step.instructions,
@@ -81,7 +81,7 @@ pub fn build_loop_review_prompt(
         .iter()
         .map(|step| {
             format!(
-                r#"    {{ "step_key": "{}", "feedback": "针对该节点的具体修改意见" }}"#,
+                r#"    {{ "step_key": "{}", "feedback": "Specific revision feedback for this step" }}"#,
                 step.step_key
             )
         })
@@ -95,48 +95,50 @@ pub fn build_loop_review_prompt(
         loop_review_protocol_json_schema(execution_id, &loop_def.loop_key, &allowed_step_keys);
 
     let mut prompt = format!(
-        r#"## 回路审核任务
+        r#"## Loop Review Task
 
-你是本次 workflow 的 Lead Agent，请对以下回路（阶段）的所有执行结果进行综合审核。
+You are the Lead Agent for this workflow. Review all execution results in the following loop or stage as one coherent unit.
 
-### workflow 目标
+### Workflow Goal
 {workflow_goal}
 
-### 回路信息
-- 回路标识：{loop_key}
-- 当前返工次数：{loop_retry_count}
-- 审核范围：{review_scope_step_titles}
+### Loop Information
+- Loop key: {loop_key}
+- Current retry count: {loop_retry_count}
+- Review scope: {review_scope_step_titles}
 
-### 各执行节点结果
+### Execution Results by Step
 
 {step_sections}
 
-### 审核要求
-请从整体角度评估本回路的执行质量：
-1. 各节点的结果是否相互一致、逻辑连贯
-2. 整体是否达成了本阶段的目标
-3. 各节点之间的产出是否正确衔接
-4. 是否存在需要整体返工的系统性问题
+### Review Requirements
+Evaluate the loop's execution quality from an overall perspective:
+1. Whether the step results are mutually consistent and logically connected.
+2. Whether the loop achieved this stage's goal overall.
+3. Whether outputs from one step correctly connect to the next step.
+4. Whether there are systemic issues that require broader rework.
 
-### 返回格式
-通过时返回：
+Write all human-readable JSON string values in English.
+
+### Return Format
+When approved, return:
 {{
   "type": "loop_review_result",
   "loop_key": "{loop_key}",
   "execution_id": "{execution_id}",
   "verdict": "approved",
-  "feedback": "回路审核通过的综合评价"
+  "feedback": "Overall evaluation explaining why the loop review passed"
 }}
 
-不通过时返回：
-如果只有部分节点需要返工，只在 step_feedbacks 中列出这些节点；未列出的节点会保持当前完成状态。
-如果整个回路都需要返工，可以省略 step_feedbacks 或返回空数组。
+When rejected, return:
+If only some steps need rework, list only those steps in step_feedbacks; steps not listed will keep their current completed state.
+If the entire loop needs rework, omit step_feedbacks or return an empty array.
 {{
   "type": "loop_review_result",
   "loop_key": "{loop_key}",
   "execution_id": "{execution_id}",
   "verdict": "rejected",
-  "feedback": "详细说明整体问题，以及对每个需要修改的节点的具体修改建议",
+  "feedback": "Detailed explanation of the overall issues and the concrete revision guidance for each step that needs changes",
   "step_feedbacks": [
 {rejected_feedback_template}
   ]
@@ -266,27 +268,28 @@ pub fn build_loop_user_rejection_prompt(
     step: &WorkflowStep,
 ) -> String {
     format!(
-        r#"## 用户回路返工要求 (第 {loop_retry_count} 次回路重试)
+        r#"## User Loop Rework Request (loop retry {loop_retry_count})
 
-本回路的整体结果未通过用户审核，请根据用户反馈重新执行。
+The overall loop result did not pass user review. Re-run your task according to the user feedback.
 
-### 用户反馈
+### User Feedback
 {user_feedback}
 
-### 回路执行现状摘要
+### Current Loop State Summary
 {loop_current_state_summary}
 
-### 你上次的执行结果
-摘要：{your_previous_summary}
+### Your Previous Execution Result
+Summary: {your_previous_summary}
 
-### 要求
-1. 用户反馈具有最高优先级
-2. 理解用户反馈对整体回路的影响，调整你的工作
-3. 修改完成后按照标准格式返回结果
+### Requirements
+1. Treat the user feedback as the highest priority.
+2. Understand how the user feedback affects the overall loop and adjust your work accordingly.
+3. Write all newly produced human-readable output in English.
+4. After completing the revision, return the result in the standard format.
 
-### 原始任务指令
-step 标题：{step_title}
-step 指令：{step_instructions}"#,
+### Original Task Instructions
+Step title: {step_title}
+Step instructions: {step_instructions}"#,
         loop_retry_count = loop_retry_count,
         user_feedback = user_feedback,
         loop_current_state_summary = loop_current_state_summary,
@@ -423,7 +426,8 @@ mod tests {
             ],
         );
 
-        assert!(prompt.contains("## 回路审核任务"));
+        assert!(prompt.contains("## Loop Review Task"));
+        assert!(prompt.contains("Write all human-readable JSON string values in English."));
         assert!(prompt.contains("Deliver a coherent feature"));
         assert!(prompt.contains("loop-a"));
         assert!(prompt.contains("Draft"));
@@ -463,7 +467,8 @@ mod tests {
             &step,
         );
 
-        assert!(prompt.contains("用户回路返工要求"));
+        assert!(prompt.contains("User Loop Rework Request"));
+        assert!(prompt.contains("Write all newly produced human-readable output in English."));
         assert!(prompt.contains("用户要求改为中文输出"));
         assert!(prompt.contains("当前回路已生成英文文档"));
     }
