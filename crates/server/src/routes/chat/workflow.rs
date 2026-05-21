@@ -28,8 +28,7 @@ use db::models::{
 use deployment::Deployment;
 use serde::{Deserialize, Serialize};
 use services::services::{
-    config,
-    workflow_analytics::{self, hash_user_id},
+    config, workflow_analytics,
     workflow_compiler::WorkflowCompiler,
     workflow_orchestrator::WorkflowOrchestrator,
     workflow_runtime::{
@@ -776,18 +775,7 @@ pub async fn get_step_transcripts(
     let (_step, execution) = load_step_for_session(pool, &session, step_id).await?;
     let mut scoped_query = query;
     scoped_query.step_id = Some(step_id);
-    list_transcript_response(
-        pool,
-        workflow_analytics::analytics_if_enabled(
-            deployment.analytics().as_ref(),
-            deployment.analytics_enabled(),
-        ),
-        deployment.user_id(),
-        &session,
-        execution.id,
-        scoped_query,
-    )
-    .await
+    list_transcript_response(pool, &session, execution.id, scoped_query).await
 }
 
 pub async fn submit_step_input(
@@ -1227,8 +1215,6 @@ fn workflow_transcript_review_key(entry: &WorkflowTranscriptEntry) -> Option<(Uu
 
 async fn list_transcript_response(
     pool: &sqlx::SqlitePool,
-    analytics: Option<&services::services::analytics::AnalyticsService>,
-    user_id: &str,
     session: &ChatSession,
     execution_id: Uuid,
     query: WorkflowTranscriptQuery,
@@ -1389,22 +1375,6 @@ async fn list_transcript_response(
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    let transcript_scope = if query.step_id.is_some() || query.step_key.is_some() {
-        "step"
-    } else {
-        "execution"
-    };
-    let user_id_hash = hash_user_id(user_id);
-    workflow_analytics::track_transcript_opened(
-        analytics,
-        session.id,
-        execution_id,
-        Some(&user_id_hash),
-        query.step_id,
-        entries.len(),
-        transcript_scope,
-    );
-
     Ok((
         StatusCode::OK,
         ResponseJson(ApiResponse::<Vec<WorkflowTranscriptEntry>>::success(
@@ -1421,18 +1391,7 @@ pub async fn get_transcripts(
     Query(query): Query<WorkflowTranscriptQuery>,
 ) -> Result<Response, ApiError> {
     let pool = &deployment.db().pool;
-    list_transcript_response(
-        pool,
-        workflow_analytics::analytics_if_enabled(
-            deployment.analytics().as_ref(),
-            deployment.analytics_enabled(),
-        ),
-        deployment.user_id(),
-        &session,
-        execution_id,
-        query,
-    )
-    .await
+    list_transcript_response(pool, &session, execution_id, query).await
 }
 
 // -----------------------------------------------------------------------
