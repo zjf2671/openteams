@@ -1002,7 +1002,9 @@
     },
     "generatedText": {
       "reviewLoop": "루프 \"{{loopKey}}\"를 검토하세요.",
-      "userApprovedStepResult": "사용자가 단계 결과를 승인했습니다."
+      "reviewStepResult": "\"{{stepTitle}}\" 단계의 실행 결과를 검토하세요.",
+      "userApprovedStepResult": "사용자가 단계 결과를 승인했습니다.",
+      "userApprovedLoopResult": "사용자가 루프 결과를 승인했습니다."
     },
     "finalReview": {
       "title": "최종 리뷰",

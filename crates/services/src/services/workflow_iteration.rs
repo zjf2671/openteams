@@ -762,6 +762,7 @@ Hard requirements:
 
 ## Recommended Skills
 - For tasks that include coding, please ensure you utilize the `writing-plans` skill.
+- For `task` nodes that include coding, add an explicit instruction to use the `code-guidelines` skill before editing code.
 - For general non-coding tasks, use the planning-mode skill.
 - In case of any discrepancy with the skill's format, the specified JSON schema shall prevail.
 - Store the generated plan details in the nodes[].data.instructions field of the workflow plan JSON, using Markdown format.

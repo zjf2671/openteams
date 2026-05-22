@@ -75,7 +75,7 @@ jobs:
       - name: Install sqlx-cli
         uses: taiki-e/cache-cargo-install-action@v3
         with:
-          tool: sqlx-cli
+          tool: sqlx-cli@0.8.6
           no-default-features: true
           features: sqlite,postgres
 

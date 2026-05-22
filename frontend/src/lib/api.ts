@@ -65,6 +65,8 @@ import {
 import type {
   CliConfig,
   CustomProviderEntry,
+  CustomProviderProbeRequest,
+  CustomProviderProbeResponse,
   CliModelInfo,
   CliProviderId,
   CliProviderInfo,
@@ -662,6 +664,32 @@ export const cliConfigApi = {
       }
     );
     await handleApiResponse<void>(response);
+  },
+
+  listCustomProviderModels: async (
+    data: CustomProviderProbeRequest
+  ): Promise<CustomProviderProbeResponse> => {
+    const response = await makeRequest(
+      '/api/config/cli/custom-providers/models',
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<CustomProviderProbeResponse>(response);
+  },
+
+  validateCustomProvider: async (
+    data: CustomProviderProbeRequest
+  ): Promise<CustomProviderProbeResponse> => {
+    const response = await makeRequest(
+      '/api/config/cli/custom-providers/validate',
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<CustomProviderProbeResponse>(response);
   },
 };
 

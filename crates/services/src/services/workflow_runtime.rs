@@ -1134,6 +1134,7 @@ Hard requirements:
 
 ## Recommended Skills
 - For tasks that include coding, please ensure you utilize the `writing-plans` skill.
+- For `task` nodes that include coding, add an explicit instruction to use the `code-guidelines` skill before editing code.
 - For general non-coding tasks, use the planning-mode skill.
 - In case of any discrepancy with the skill's format, the specified JSON schema shall prevail.
 - Store the generated plan details in the nodes[].data.instructions field of the workflow plan JSON, using Markdown format.
@@ -1271,6 +1272,12 @@ The `summary`, `content`, and `message` fields in your JSON output must use the 
 
 "#;
 
+static STEP_EXECUTION_CODE_GUIDELINES_PROMPT: &str = r#"## Coding Task Skill Requirement
+
+If this task involves writing, modifying, reviewing, or refactoring code, you MUST use the `code-guidelines` skill before editing code.
+
+"#;
+
 // static STEP_EXECUTION_TDD_WORKFLOW_FOR_TASK_TYPE: &str = r#"
 
 // ### TDD Workflow
@@ -1347,6 +1354,7 @@ pub fn build_step_execution_prompt(
     let mut prompt = String::with_capacity(4096);
     if step.step_type == WorkflowStepType::Task {
         prompt.push_str("You are implementing a task in an workflow step.\n\n");
+        prompt.push_str(STEP_EXECUTION_CODE_GUIDELINES_PROMPT);
     } else if step.step_type == WorkflowStepType::Review {
         prompt.push_str("You are reviewing the output of the workers' implementation.\n\n");
     } else if step.step_type == WorkflowStepType::Result {
@@ -4895,6 +4903,32 @@ mod tests {
         assert!(prompt.contains(&step.step_key));
         assert!(prompt.contains(&step.execution_id.to_string()));
         assert!(prompt.contains("Language Requirement"));
+    }
+
+    #[test]
+    fn build_step_execution_prompt_requires_code_guidelines_for_task_steps() {
+        let execution = sample_execution(WorkflowExecutionStatus::Running);
+        let step = sample_step(WorkflowStepStatus::Running);
+
+        let prompt =
+            build_step_execution_prompt(&execution, "Update API validation", &step, &[], None);
+
+        assert!(prompt.contains("Coding Task Skill Requirement"));
+        assert!(prompt.contains("`code-guidelines` skill"));
+        assert!(prompt.contains("before editing code"));
+    }
+
+    #[test]
+    fn build_step_execution_prompt_does_not_add_code_guidelines_to_review_steps() {
+        let execution = sample_execution(WorkflowExecutionStatus::Running);
+        let mut step = sample_step(WorkflowStepStatus::Running);
+        step.step_type = WorkflowStepType::Review;
+
+        let prompt =
+            build_step_execution_prompt(&execution, "Review implementation", &step, &[], None);
+
+        assert!(!prompt.contains("Coding Task Skill Requirement"));
+        assert!(!prompt.contains("`code-guidelines` skill"));
     }
 
     #[test]

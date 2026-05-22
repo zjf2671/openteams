@@ -1,7 +1,16 @@
 import { SquaresFourIcon } from '@phosphor-icons/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Eye, EyeOff, Loader2, Plus, Trash2, X } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  Loader2,
+  Play,
+  Plus,
+  RefreshCw,
+  Trash2,
+  X,
+} from 'lucide-react';
 
 import {
   Dialog,
@@ -25,19 +34,31 @@ import {
   MultiSelectDropdown,
   type MultiSelectDropdownOption,
 } from '@/components/ui-new/primitives/MultiSelectDropdown';
-import { useValidateCliProvider } from '@/hooks/useCliConfig';
+import {
+  useDiscoverCustomProviderModels,
+  useValidateCustomProvider,
+} from '@/hooks/useCliConfig';
 import { cn } from '@/lib/utils';
 import {
   createEmptyCustomProviderEntry,
   DEFAULT_CUSTOM_PROVIDER_NPM,
   normalizeCustomProviderEntry,
 } from '@/types/cliConfig';
-import type { CustomModelConfig, CustomProviderEntry } from '@/types/cliConfig';
+import type {
+  CliModelInfo,
+  CustomModelConfig,
+  CustomProviderEntry,
+  CustomProviderProbeRequest,
+  CustomProviderProbeResponse,
+} from '@/types/cliConfig';
 
 const CUSTOM_NPM_OPTION_VALUE = '__custom__';
 const MODALITY_VALUES = ['text', 'image'] as const;
 const DEFAULT_MODEL_CONTEXT_LIMIT = 262144;
 const DEFAULT_MODEL_OUTPUT_LIMIT = 32768;
+const customProviderInlineActionButtonClassName =
+  'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[8px] px-2 py-1.5 text-[12px] font-medium text-[#4B5563] transition-colors duration-200 hover:bg-[#EEF2F6] hover:text-[#111827] disabled:cursor-not-allowed disabled:opacity-50 dark:text-[#9AA8BD] dark:hover:bg-[#263244] dark:hover:text-[#F3F6FB]';
+const customProviderInlineActionIconClassName = 'h-3.5 w-3.5';
 
 type ModalityValue = (typeof MODALITY_VALUES)[number];
 
@@ -74,8 +95,13 @@ type CustomProviderFormProps = {
 
 type StatusState = {
   message: string;
-  tone: 'error' | 'success';
+  tone: 'error' | 'success' | 'warning';
   title?: string;
+} | null;
+
+type ModelTestState = {
+  message: string;
+  status: 'failed' | 'success' | 'unsupported';
 } | null;
 
 const AI_SDK_NPM_PACKAGES = [
@@ -288,7 +314,9 @@ function renderStatusMessage(status: StatusState) {
   const toneClassName =
     status.tone === 'success'
       ? 'border-[#d8ead8] bg-[#f7fcf7] text-[#2f7d32] dark:border-[rgba(74,222,128,0.2)] dark:bg-[rgba(34,197,94,0.12)] dark:text-[#86EFAC]'
-      : 'border-[#f3d7d7] bg-[#fff7f7] text-[#d14343] dark:border-[rgba(248,113,113,0.24)] dark:bg-[rgba(239,68,68,0.12)] dark:text-[#FCA5A5]';
+      : status.tone === 'warning'
+        ? 'border-[#f6dfb7] bg-[#fffaf0] text-[#9a5b00] dark:border-[rgba(251,191,36,0.26)] dark:bg-[rgba(245,158,11,0.12)] dark:text-[#FCD34D]'
+        : 'border-[#f3d7d7] bg-[#fff7f7] text-[#d14343] dark:border-[rgba(248,113,113,0.24)] dark:bg-[rgba(239,68,68,0.12)] dark:text-[#FCA5A5]';
 
   return (
     <div
@@ -303,6 +331,47 @@ function renderStatusMessage(status: StatusState) {
   );
 }
 
+function createDiscoveredModelDraft(model: CliModelInfo): CustomModelDraft {
+  const draft = createEmptyModelDraft();
+  return {
+    ...draft,
+    id: model.id,
+    name: model.name || model.id,
+  };
+}
+
+function mergeDiscoveredModels(
+  currentModels: CustomModelDraft[],
+  discoveredModels: CliModelInfo[]
+) {
+  const existingIds = new Set(
+    currentModels.map((model) => model.id.trim()).filter(Boolean)
+  );
+  const discoveredIds = new Set<string>();
+  const modelsToAdd: CustomModelDraft[] = [];
+
+  for (const discoveredModel of discoveredModels) {
+    const modelId = discoveredModel.id.trim();
+    if (!modelId || existingIds.has(modelId) || discoveredIds.has(modelId)) {
+      continue;
+    }
+
+    discoveredIds.add(modelId);
+    modelsToAdd.push(
+      createDiscoveredModelDraft({
+        ...discoveredModel,
+        id: modelId,
+        name: discoveredModel.name.trim() || modelId,
+      })
+    );
+  }
+
+  return {
+    addedCount: modelsToAdd.length,
+    models: [...currentModels, ...modelsToAdd],
+  };
+}
+
 export function CustomProviderForm({
   initialProvider,
   isSubmitting,
@@ -311,7 +380,9 @@ export function CustomProviderForm({
   open,
 }: CustomProviderFormProps) {
   const { t } = useTranslation(['settings', 'common']);
-  const validateProvider = useValidateCliProvider();
+  const discoverCustomProviderModels = useDiscoverCustomProviderModels();
+  const validateCustomProvider = useValidateCustomProvider();
+  const validateCustomProviderModel = useValidateCustomProvider();
   const [error, setError] = useState<string | null>(null);
   const [formState, setFormState] = useState<CustomProviderFormState>(() =>
     createFormState(initialProvider)
@@ -321,6 +392,12 @@ export function CustomProviderForm({
   );
   const [showApiKey, setShowApiKey] = useState(false);
   const [validationStatus, setValidationStatus] = useState<StatusState>(null);
+  const [modelTestStatuses, setModelTestStatuses] = useState<
+    Record<string, ModelTestState>
+  >({});
+  const [pendingModelTestKey, setPendingModelTestKey] = useState<string | null>(
+    null
+  );
   const pendingScrollModelKeyRef = useRef<string | null>(null);
   const modelCardRefs = useRef(new Map<string, HTMLDivElement>());
 
@@ -332,6 +409,8 @@ export function CustomProviderForm({
     setError(null);
     setShowApiKey(false);
     setValidationStatus(null);
+    setModelTestStatuses({});
+    setPendingModelTestKey(null);
     pendingScrollModelKeyRef.current = null;
     const nextFormState = createFormState(initialProvider);
     setFormState(nextFormState);
@@ -395,6 +474,7 @@ export function CustomProviderForm({
     setFormState((current) => updater(current));
     setError(null);
     setValidationStatus(null);
+    setModelTestStatuses({});
   };
 
   const updateModelDraft = (
@@ -409,7 +489,35 @@ export function CustomProviderForm({
     }));
   };
 
-  const handleValidateBaseUrl = async () => {
+  const formatProbeMessage = (
+    response: CustomProviderProbeResponse,
+    fallback: string
+  ) => {
+    if (response.status === 'unsupported') {
+      return t('settings.cli.customProviders.form.autoUnsupported');
+    }
+
+    const lowerMessage = response.message.toLowerCase();
+    if (
+      lowerMessage.includes('authentication') ||
+      lowerMessage.includes('unauthorized') ||
+      lowerMessage.includes('forbidden') ||
+      lowerMessage.includes('401') ||
+      lowerMessage.includes('403')
+    ) {
+      return t('settings.cli.customProviders.form.authFailed');
+    }
+
+    if (lowerMessage.includes('no models')) {
+      return t('settings.cli.customProviders.form.noDiscoveredModels');
+    }
+
+    return response.message || fallback;
+  };
+
+  const buildProbeRequest = (
+    modelId?: string
+  ): CustomProviderProbeRequest | null => {
     const baseURL = trimToNull(formState.baseURL);
     if (!baseURL) {
       setValidationStatus({
@@ -419,20 +527,145 @@ export function CustomProviderForm({
         tone: 'error',
         title: t('settings.cli.validation.failureTitle'),
       });
+      return null;
+    }
+
+    try {
+      return {
+        id: formState.id.trim(),
+        model_id: trimToNull(modelId),
+        npm: trimToNull(formState.npm),
+        options: {
+          api_key: apiKeyMasked ? null : trimToNull(formState.apiKey),
+          baseURL,
+          timeout: parseOptionalInteger(formState.timeout),
+        },
+      };
+    } catch (probeError) {
+      if (
+        probeError instanceof Error &&
+        probeError.message === 'invalid-integer'
+      ) {
+        setValidationStatus({
+          message: t(
+            'settings.cli.customProviders.form.validation.numericLimit'
+          ),
+          tone: 'error',
+          title: t('settings.cli.validation.failureTitle'),
+        });
+        return null;
+      }
+
+      throw probeError;
+    }
+  };
+
+  const handleDiscoverModels = async () => {
+    const request = buildProbeRequest();
+    if (!request) {
       return;
     }
 
     try {
-      const response = await validateProvider.mutateAsync({
-        provider: 'custom',
-        data: {
-          api_key: apiKeyMasked ? null : trimToNull(formState.apiKey),
-          endpoint: baseURL,
-        },
+      const response = await discoverCustomProviderModels.mutateAsync(request);
+
+      if (response.status === 'unsupported') {
+        setValidationStatus({
+          message: formatProbeMessage(
+            response,
+            t('settings.cli.customProviders.form.autoUnsupported')
+          ),
+          tone: 'warning',
+          title: t(
+            'settings.cli.customProviders.form.protocolUnsupportedTitle'
+          ),
+        });
+        return;
+      }
+
+      if (!response.valid || response.status === 'failed') {
+        setValidationStatus({
+          message: formatProbeMessage(
+            response,
+            t('settings.cli.customProviders.form.fetchFailed')
+          ),
+          tone: 'error',
+          title: t('settings.cli.customProviders.form.fetchFailedTitle'),
+        });
+        return;
+      }
+
+      if (response.models.length === 0) {
+        setValidationStatus({
+          message: t('settings.cli.customProviders.form.noDiscoveredModels'),
+          tone: 'warning',
+          title: t('settings.cli.customProviders.form.noDiscoveredModelsTitle'),
+        });
+        return;
+      }
+
+      const previewMerge = mergeDiscoveredModels(
+        formState.models,
+        response.models
+      );
+      setFormState((current) => {
+        const merged = mergeDiscoveredModels(current.models, response.models);
+        return {
+          ...current,
+          models: merged.models,
+        };
       });
+      setError(null);
+      setValidationStatus({
+        message: t('settings.cli.customProviders.form.fetchSuccess', {
+          added: previewMerge.addedCount,
+          count: response.models.length,
+        }),
+        tone: 'success',
+        title: t('settings.cli.customProviders.form.fetchSuccessTitle'),
+      });
+    } catch (discoveryError) {
+      setValidationStatus({
+        message:
+          discoveryError instanceof Error
+            ? discoveryError.message
+            : t('settings.cli.customProviders.form.fetchFailed'),
+        tone: 'error',
+        title: t('settings.cli.customProviders.form.fetchFailedTitle'),
+      });
+    }
+  };
+
+  const handleValidateBaseUrl = async () => {
+    const request = buildProbeRequest();
+    if (!request) {
+      return;
+    }
+
+    try {
+      const response = await validateCustomProvider.mutateAsync(request);
+
+      if (response.status === 'unsupported') {
+        setValidationStatus({
+          message: formatProbeMessage(
+            response,
+            t('settings.cli.customProviders.form.autoUnsupported')
+          ),
+          tone: 'warning',
+          title: t(
+            'settings.cli.customProviders.form.protocolUnsupportedTitle'
+          ),
+        });
+        return;
+      }
 
       setValidationStatus({
-        message: response.message,
+        message: formatProbeMessage(
+          response,
+          response.valid
+            ? t('settings.cli.validation.successTitle')
+            : t('settings.cli.validation.error')
+        ),
         tone: response.valid ? 'success' : 'error',
         title: response.valid
           ? t('settings.cli.validation.successTitle')
@@ -447,6 +680,72 @@ export function CustomProviderForm({
         tone: 'error',
         title: t('settings.cli.validation.failureTitle'),
       });
+    }
+  };
+
+  const handleValidateModel = async (model: CustomModelDraft) => {
+    const modelId = model.id.trim();
+    if (!modelId) {
+      setModelTestStatuses((current) => ({
+        ...current,
+        [model.key]: {
+          message: t(
+            'settings.cli.customProviders.form.validation.modelIdRequired'
+          ),
+          status: 'failed',
+        },
+      }));
+      return;
+    }
+
+    const request = buildProbeRequest(modelId);
+    if (!request) {
+      return;
+    }
+
+    setPendingModelTestKey(model.key);
+    setModelTestStatuses((current) => ({
+      ...current,
+      [model.key]: null,
+    }));
+
+    try {
+      const response = await validateCustomProviderModel.mutateAsync(request);
+      const status =
+        response.status === 'unsupported'
+          ? 'unsupported'
+          : response.valid
+            ? 'success'
+            : 'failed';
+
+      setModelTestStatuses((current) => ({
+        ...current,
+        [model.key]: {
+          message:
+            status === 'success'
+              ? t('settings.cli.customProviders.form.modelTestSuccess', {
+                  id: modelId,
+                })
+              : formatProbeMessage(
+                  response,
+                  t('settings.cli.customProviders.form.modelTestFailed')
+                ),
+          status,
+        },
+      }));
+    } catch (modelTestError) {
+      setModelTestStatuses((current) => ({
+        ...current,
+        [model.key]: {
+          message:
+            modelTestError instanceof Error
+              ? modelTestError.message
+              : t('settings.cli.customProviders.form.modelTestFailed'),
+          status: 'failed',
+        },
+      }));
+    } finally {
+      setPendingModelTestKey(null);
     }
   };
 
@@ -671,12 +970,12 @@ export function CustomProviderForm({
                         'shrink-0 whitespace-nowrap'
                       )}
                       onClick={handleValidateBaseUrl}
-                      disabled={validateProvider.isPending}
+                      disabled={validateCustomProvider.isPending}
                     >
-                      {validateProvider.isPending ? (
+                      {validateCustomProvider.isPending ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : null}
-                      {validateProvider.isPending
+                      {validateCustomProvider.isPending
                         ? t('settings.cli.validation.testing')
                         : t('settings.cli.validation.button')}
                     </button>
@@ -792,8 +1091,8 @@ export function CustomProviderForm({
               </div>
 
               <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
                     <h4 className="text-[14px] font-semibold text-[#333333] dark:text-[#F3F6FB]">
                       {t('settings.cli.customProviders.form.modelsTitle')}
                     </h4>
@@ -801,21 +1100,48 @@ export function CustomProviderForm({
                       {t('settings.cli.customProviders.form.modelsDescription')}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className={settingsSecondaryButtonClassName}
-                    onClick={() => {
-                      const nextModel = createEmptyModelDraft();
-                      pendingScrollModelKeyRef.current = nextModel.key;
-                      updateFormState((current) => ({
-                        ...current,
-                        models: [...current.models, nextModel],
-                      }));
-                    }}
-                  >
-                    <Plus className="h-4 w-4" />
-                    {t('settings.cli.customProviders.form.addModel')}
-                  </button>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      className={customProviderInlineActionButtonClassName}
+                      onClick={handleDiscoverModels}
+                      disabled={discoverCustomProviderModels.isPending}
+                    >
+                      {discoverCustomProviderModels.isPending ? (
+                        <Loader2
+                          className={cn(
+                            customProviderInlineActionIconClassName,
+                            'animate-spin'
+                          )}
+                        />
+                      ) : (
+                        <RefreshCw
+                          className={customProviderInlineActionIconClassName}
+                        />
+                      )}
+                      {discoverCustomProviderModels.isPending
+                        ? t('settings.cli.customProviders.form.fetchingModels')
+                        : t('settings.cli.customProviders.form.fetchModels')}
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        settingsSecondaryButtonClassName,
+                        'shrink-0 whitespace-nowrap'
+                      )}
+                      onClick={() => {
+                        const nextModel = createEmptyModelDraft();
+                        pendingScrollModelKeyRef.current = nextModel.key;
+                        updateFormState((current) => ({
+                          ...current,
+                          models: [...current.models, nextModel],
+                        }));
+                      }}
+                    >
+                      <Plus className="h-4 w-4" />
+                      {t('settings.cli.customProviders.form.addModel')}
+                    </button>
+                  </div>
                 </div>
 
                 {!hasModels ? (
@@ -842,30 +1168,78 @@ export function CustomProviderForm({
                       }}
                       className={cn(settingsMutedPanelClassName, 'p-4')}
                     >
-                      <div className="flex items-center justify-between gap-4">
-                        <p className="text-[14px] font-medium text-[#333333]">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <p className="min-w-0 flex-1 text-[14px] font-medium text-[#333333]">
                           {model.name ||
                             model.id ||
                             t('settings.cli.customProviders.form.newModel')}
                         </p>
-                        <button
-                          type="button"
-                          className="inline-flex items-center justify-center gap-2 rounded-[10px] border border-[#f3d7d7] bg-[#fff7f7] px-3 py-[9px] text-[13px] text-[#d14343] transition-colors duration-200 hover:bg-[#fdeeee] dark:border-[rgba(248,113,113,0.24)] dark:bg-[rgba(239,68,68,0.12)] dark:text-[#FCA5A5] dark:hover:bg-[rgba(239,68,68,0.18)]"
-                          onClick={() =>
-                            updateFormState((current) => ({
-                              ...current,
-                              models: current.models.filter(
-                                (entry) => entry.key !== model.key
-                              ),
-                            }))
-                          }
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          {t(
-                            'settings.cli.customProviders.actions.removeModel'
-                          )}
-                        </button>
+                        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            className={
+                              customProviderInlineActionButtonClassName
+                            }
+                            onClick={() => handleValidateModel(model)}
+                            disabled={pendingModelTestKey === model.key}
+                          >
+                            {pendingModelTestKey === model.key ? (
+                              <Loader2
+                                className={cn(
+                                  customProviderInlineActionIconClassName,
+                                  'animate-spin'
+                                )}
+                              />
+                            ) : (
+                              <Play
+                                className={
+                                  customProviderInlineActionIconClassName
+                                }
+                              />
+                            )}
+                            {pendingModelTestKey === model.key
+                              ? t(
+                                  'settings.cli.customProviders.form.testingModel'
+                                )
+                              : t(
+                                  'settings.cli.customProviders.form.testModel'
+                                )}
+                          </button>
+                          <button
+                            type="button"
+                            className="inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-[10px] border border-[#f3d7d7] bg-[#fff7f7] px-3 py-[9px] text-[13px] text-[#d14343] transition-colors duration-200 hover:bg-[#fdeeee] dark:border-[rgba(248,113,113,0.24)] dark:bg-[rgba(239,68,68,0.12)] dark:text-[#FCA5A5] dark:hover:bg-[rgba(239,68,68,0.18)]"
+                            onClick={() =>
+                              updateFormState((current) => ({
+                                ...current,
+                                models: current.models.filter(
+                                  (entry) => entry.key !== model.key
+                                ),
+                              }))
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            {t(
+                              'settings.cli.customProviders.actions.removeModel'
+                            )}
+                          </button>
+                        </div>
                       </div>
+
+                      {modelTestStatuses[model.key] ? (
+                        <div
+                          className={cn(
+                            'mt-3 rounded-[10px] border px-3 py-2 text-[12px] leading-5',
+                            modelTestStatuses[model.key]?.status === 'success'
+                              ? 'border-[#d8ead8] bg-[#f7fcf7] text-[#2f7d32] dark:border-[rgba(74,222,128,0.2)] dark:bg-[rgba(34,197,94,0.12)] dark:text-[#86EFAC]'
+                              : modelTestStatuses[model.key]?.status ===
+                                  'unsupported'
+                                ? 'border-[#f6dfb7] bg-[#fffaf0] text-[#9a5b00] dark:border-[rgba(251,191,36,0.26)] dark:bg-[rgba(245,158,11,0.12)] dark:text-[#FCD34D]'
+                                : 'border-[#f3d7d7] bg-[#fff7f7] text-[#d14343] dark:border-[rgba(248,113,113,0.24)] dark:bg-[rgba(239,68,68,0.12)] dark:text-[#FCA5A5]'
+                          )}
+                        >
+                          {modelTestStatuses[model.key]?.message}
+                        </div>
+                      ) : null}
 
                       <div className="mt-4 space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">

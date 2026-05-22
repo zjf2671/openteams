@@ -1002,7 +1002,9 @@
     },
     "generatedText": {
       "reviewLoop": "請審核迴圈「{{loopKey}}」。",
-      "userApprovedStepResult": "使用者已批准步驟結果。"
+      "reviewStepResult": "請審核步驟「{{stepTitle}}」的執行結果。",
+      "userApprovedStepResult": "使用者已批准步驟結果。",
+      "userApprovedLoopResult": "使用者已批准循環結果。"
     },
     "finalReview": {
       "title": "最終審核",

@@ -1002,7 +1002,9 @@
     },
     "generatedText": {
       "reviewLoop": "请审核循环“{{loopKey}}”。",
-      "userApprovedStepResult": "用户已批准步骤结果。"
+      "reviewStepResult": "请审核步骤“{{stepTitle}}”的执行结果。",
+      "userApprovedStepResult": "用户已批准步骤结果。",
+      "userApprovedLoopResult": "用户已批准循环结果。"
     },
     "finalReview": {
       "title": "最终审核",

@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use services::services::{
     cli_config::{
-        CliConfig, CustomProviderEntry, OllamaConfig, OpenTeamsCliConfig,
+        CliConfig, CustomProviderEntry, CustomProviderOptions, OllamaConfig, OpenTeamsCliConfig,
         OpenTeamsCliProviderConfig, OpenTeamsCliProviderOptions, ProviderCredentials,
     },
     config::{
@@ -73,6 +73,14 @@ pub fn router() -> Router<DeploymentImpl> {
         .route(
             "/config/cli/custom-providers",
             get(list_custom_providers).post(create_custom_provider),
+        )
+        .route(
+            "/config/cli/custom-providers/models",
+            post(list_custom_provider_draft_models),
+        )
+        .route(
+            "/config/cli/custom-providers/validate",
+            post(validate_custom_provider_draft),
         )
         .route(
             "/config/cli/custom-providers/{id}",
@@ -1163,124 +1171,10 @@ async fn list_cli_providers(
     ResponseJson(ApiResponse::success(providers))
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct ModelInfo {
     pub id: String,
     pub name: String,
-}
-
-fn fallback_provider_models(provider: &str) -> Vec<ModelInfo> {
-    match provider {
-        "anthropic" => vec![
-            ModelInfo {
-                id: "claude-opus-4-20250514".into(),
-                name: "Claude Opus 4".into(),
-            },
-            ModelInfo {
-                id: "claude-sonnet-4-20250514".into(),
-                name: "Claude Sonnet 4".into(),
-            },
-            ModelInfo {
-                id: "claude-haiku-4-20250506".into(),
-                name: "Claude Haiku 4".into(),
-            },
-            ModelInfo {
-                id: "claude-3-7-sonnet-20250219".into(),
-                name: "Claude 3.7 Sonnet".into(),
-            },
-        ],
-        "openai" => vec![
-            ModelInfo {
-                id: "gpt-5.4".into(),
-                name: "GPT-5.4".into(),
-            },
-            ModelInfo {
-                id: "gpt-5.4-mini".into(),
-                name: "GPT-5.4 Mini".into(),
-            },
-            ModelInfo {
-                id: "gpt-5".into(),
-                name: "GPT-5".into(),
-            },
-            ModelInfo {
-                id: "gpt-5-mini".into(),
-                name: "GPT-5 Mini".into(),
-            },
-            ModelInfo {
-                id: "o3".into(),
-                name: "o3".into(),
-            },
-            ModelInfo {
-                id: "o4-mini".into(),
-                name: "o4-mini".into(),
-            },
-        ],
-        "google" => vec![
-            ModelInfo {
-                id: "gemini-2.5-pro".into(),
-                name: "Gemini 2.5 Pro".into(),
-            },
-            ModelInfo {
-                id: "gemini-2.5-flash".into(),
-                name: "Gemini 2.5 Flash".into(),
-            },
-            ModelInfo {
-                id: "gemini-2.0-flash".into(),
-                name: "Gemini 2.0 Flash".into(),
-            },
-        ],
-        "openrouter" => vec![
-            ModelInfo {
-                id: "openai/gpt-5.4".into(),
-                name: "GPT-5.4 (via OpenRouter)".into(),
-            },
-            ModelInfo {
-                id: "anthropic/claude-sonnet-4-20250514".into(),
-                name: "Claude Sonnet 4 (via OpenRouter)".into(),
-            },
-            ModelInfo {
-                id: "google/gemini-2.5-pro".into(),
-                name: "Gemini 2.5 Pro (via OpenRouter)".into(),
-            },
-        ],
-        "minimax" => vec![
-            ModelInfo {
-                id: "MiniMax-M2.7".into(),
-                name: "MiniMax M2.7".into(),
-            },
-            ModelInfo {
-                id: "MiniMax-M2.5".into(),
-                name: "MiniMax M2.5".into(),
-            },
-            ModelInfo {
-                id: "MiniMax-M2-her".into(),
-                name: "MiniMax M2 Her".into(),
-            },
-            ModelInfo {
-                id: "MiniMax-M2.1".into(),
-                name: "MiniMax M2.1".into(),
-            },
-            ModelInfo {
-                id: "MiniMax-01".into(),
-                name: "MiniMax 01".into(),
-            },
-        ],
-        "ollama" => vec![
-            ModelInfo {
-                id: "llama3.3".into(),
-                name: "Llama 3.3".into(),
-            },
-            ModelInfo {
-                id: "qwen2.5-coder".into(),
-                name: "Qwen 2.5 Coder".into(),
-            },
-            ModelInfo {
-                id: "deepseek-coder-v2".into(),
-                name: "DeepSeek Coder V2".into(),
-            },
-        ],
-        _ => vec![],
-    }
 }
 
 fn dedupe_model_infos(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
@@ -1432,6 +1326,52 @@ fn parse_provider_models_response(provider: &str, value: Value) -> Vec<ModelInfo
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustomProviderProtocol {
+    OpenAiCompatible,
+    Anthropic,
+    Google,
+}
+
+impl CustomProviderProtocol {
+    fn parser_provider(self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Google => "google",
+        }
+    }
+}
+
+fn custom_provider_protocol_from_npm(npm: Option<&str>) -> Option<CustomProviderProtocol> {
+    let npm = npm?.trim().to_ascii_lowercase();
+    if npm.is_empty() {
+        return None;
+    }
+
+    match npm.as_str() {
+        "@ai-sdk/anthropic" => Some(CustomProviderProtocol::Anthropic),
+        "@ai-sdk/google" => Some(CustomProviderProtocol::Google),
+        "@ai-sdk/openai"
+        | "@ai-sdk/openai-compatible"
+        | "@ai-sdk/deepinfra"
+        | "@ai-sdk/groq"
+        | "@ai-sdk/perplexity"
+        | "@ai-sdk/togetherai"
+        | "@ai-sdk/xai"
+        | "@openrouter/ai-sdk-provider" => Some(CustomProviderProtocol::OpenAiCompatible),
+        _ if npm.contains("openrouter") => Some(CustomProviderProtocol::OpenAiCompatible),
+        _ => None,
+    }
+}
+
+fn parse_custom_provider_models_response(
+    protocol: CustomProviderProtocol,
+    value: Value,
+) -> Vec<ModelInfo> {
+    parse_provider_models_response(protocol.parser_provider(), value)
+}
+
 async fn fetch_models_dev_provider_models(provider: &str) -> Result<Vec<ModelInfo>, String> {
     let value = reqwest::Client::new()
         .get("https://models.dev/api.json")
@@ -1453,19 +1393,50 @@ async fn fetch_models_dev_provider_models(provider: &str) -> Result<Vec<ModelInf
     Ok(dedupe_model_infos(models))
 }
 
+fn provider_models_failure_message(
+    provider: &str,
+    live_error: &str,
+    catalog_error: &str,
+) -> String {
+    format!(
+        "Failed to list models for provider {provider}: live discovery failed ({live_error}); models.dev lookup failed ({catalog_error})"
+    )
+}
+
+fn resolve_provider_models_result(
+    provider: &str,
+    live_result: Result<Vec<ModelInfo>, String>,
+    catalog_result: Result<Vec<ModelInfo>, String>,
+) -> Result<Vec<ModelInfo>, String> {
+    match live_result {
+        Ok(models) => Ok(models),
+        Err(live_error) => match catalog_result {
+            Ok(models) => Ok(models),
+            Err(catalog_error) => Err(provider_models_failure_message(
+                provider,
+                &live_error,
+                &catalog_error,
+            )),
+        },
+    }
+}
+
 /// List models for a specific provider
 async fn list_provider_models(
     Path(provider): Path<String>,
 ) -> ResponseJson<ApiResponse<Vec<ModelInfo>>> {
     let config = read_cli_config_from_disk().await;
     let models = match fetch_live_provider_models(provider.as_str(), &config).await {
-        Ok(models) => models,
-        Err(_) => match fetch_models_dev_provider_models(provider.as_str()).await {
-            Ok(models) => models,
-            Err(_) => fallback_provider_models(provider.as_str()),
-        },
+        Ok(models) => Ok(models),
+        Err(live_error) => {
+            let catalog_result = fetch_models_dev_provider_models(provider.as_str()).await;
+            resolve_provider_models_result(provider.as_str(), Err(live_error), catalog_result)
+        }
     };
-    ResponseJson(ApiResponse::success(models))
+    match models {
+        Ok(models) => ResponseJson(ApiResponse::success(models)),
+        Err(message) => ResponseJson(ApiResponse::error(&message)),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -1480,6 +1451,30 @@ pub struct ValidateProviderResponse {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct CustomProviderProbeRequest {
+    pub id: String,
+    pub npm: Option<String>,
+    pub options: CustomProviderOptions,
+    pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomProviderProbeStatus {
+    Success,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct CustomProviderProbeResponse {
+    pub status: CustomProviderProbeStatus,
+    pub valid: bool,
+    pub message: String,
+    pub models: Vec<ModelInfo>,
+}
+
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const VALIDATION_CONNECTION_FAILED_MESSAGE: &str =
     "Connection test failed. Check the endpoint and credentials.";
@@ -1489,7 +1484,7 @@ const DEFAULT_GOOGLE_ENDPOINT: &str = "https://generativelanguage.googleapis.com
 const DEFAULT_OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/";
 const DEFAULT_MINIMAX_ENDPOINT: &str = "https://api.minimaxi.com/anthropic/v1/";
 const DEFAULT_OLLAMA_ENDPOINT: &str = "http://localhost:11434/";
-const DEFAULT_CUSTOM_PROVIDER_NPM: &str = "@ai-sdk/anthropic";
+const DEFAULT_CUSTOM_PROVIDER_NPM: &str = "@ai-sdk/openai-compatible";
 const LEGACY_CUSTOM_PROVIDER_NPM: &str = "@ai-sdk/anthropic";
 const AUTO_MODEL_VARIANT_PREFIX: &str = "AUTO_MODEL_";
 
@@ -1497,6 +1492,7 @@ struct ValidationRequestSpec {
     method: http::Method,
     url: Url,
     auth_header: Option<(&'static str, String)>,
+    extra_headers: Vec<(&'static str, String)>,
     dns_override: Option<(String, Vec<SocketAddr>)>,
     json_body: Option<Value>,
 }
@@ -1584,40 +1580,28 @@ async fn build_provider_models_request(
             if api_key.is_empty() {
                 return Err("Anthropic model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["api.anthropic.com"])?,
-                "v1/models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "v1/models")?;
             validation_request_spec(url, Some(("x-api-key", api_key))).await
         }
         "openai" => {
             if api_key.is_empty() {
                 return Err("OpenAI model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["api.openai.com"])?,
-                "models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "models")?;
             validation_request_spec(url, Some(("Authorization", format!("Bearer {api_key}")))).await
         }
         "google" => {
             if api_key.is_empty() {
                 return Err("Google model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["generativelanguage.googleapis.com"])?,
-                "v1beta/models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "v1beta/models")?;
             validation_request_spec(url, Some(("x-goog-api-key", api_key))).await
         }
         "openrouter" => {
             if api_key.is_empty() {
                 return Err("OpenRouter model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["openrouter.ai"])?,
-                "models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "models")?;
             validation_request_spec(url, Some(("Authorization", format!("Bearer {api_key}")))).await
         }
         "ollama" => {
@@ -1647,6 +1631,9 @@ async fn fetch_live_provider_models(
     if let Some((header_name, header_value)) = spec.auth_header {
         request = request.header(header_name, header_value);
     }
+    for (header_name, header_value) in spec.extra_headers {
+        request = request.header(header_name, header_value);
+    }
 
     let value = request
         .send()
@@ -1664,6 +1651,455 @@ async fn fetch_live_provider_models(
     }
 
     Ok(dedupe_model_infos(models))
+}
+
+#[derive(Debug)]
+enum CustomProviderProbeBuildError {
+    Unsupported(String),
+    Failed(String),
+}
+
+fn custom_provider_probe_response(
+    status: CustomProviderProbeStatus,
+    valid: bool,
+    message: impl Into<String>,
+    models: Vec<ModelInfo>,
+) -> ResponseJson<ApiResponse<CustomProviderProbeResponse>> {
+    ResponseJson(ApiResponse::success(CustomProviderProbeResponse {
+        status,
+        valid,
+        message: message.into(),
+        models,
+    }))
+}
+
+fn non_empty_trimmed(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn saved_custom_provider_entry<'a>(
+    config: &'a CliConfig,
+    id: &str,
+) -> Option<&'a CustomProviderEntry> {
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    config
+        .provider
+        .custom_providers
+        .as_ref()
+        .and_then(|providers| providers.get(id))
+}
+
+fn saved_custom_provider_api_key_for_endpoint(
+    config: &CliConfig,
+    endpoint: Option<&str>,
+) -> Option<String> {
+    let endpoint = endpoint?.trim();
+    if endpoint.is_empty() {
+        return None;
+    }
+    config
+        .provider
+        .custom_providers
+        .as_ref()?
+        .values()
+        .find(|entry| {
+            entry
+                .options
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|base_url| base_url == endpoint)
+        })
+        .and_then(|entry| normalize_validation_api_key(entry.options.api_key.as_deref()))
+}
+
+fn resolve_provider_validation_api_key(
+    provider: &str,
+    req: &ValidateProviderRequest,
+    request_api_key: Option<String>,
+    stored_config: Option<&CliConfig>,
+) -> String {
+    if provider == "custom" {
+        request_api_key
+            .or_else(|| {
+                stored_config.and_then(|config| {
+                    saved_custom_provider_api_key_for_endpoint(config, req.endpoint.as_deref())
+                })
+            })
+            .or_else(|| stored_config.and_then(|config| saved_provider_api_key(config, provider)))
+            .unwrap_or_default()
+    } else {
+        request_api_key
+            .or_else(|| stored_config.and_then(|config| saved_provider_api_key(config, provider)))
+            .unwrap_or_default()
+    }
+}
+
+fn resolve_custom_provider_npm(
+    req: &CustomProviderProbeRequest,
+    saved_entry: Option<&CustomProviderEntry>,
+) -> String {
+    non_empty_trimmed(req.npm.as_deref())
+        .or_else(|| saved_entry.and_then(|entry| non_empty_trimmed(entry.npm.as_deref())))
+        .unwrap_or_else(|| DEFAULT_CUSTOM_PROVIDER_NPM.to_string())
+}
+
+fn resolve_custom_provider_base_url(
+    req: &CustomProviderProbeRequest,
+    saved_entry: Option<&CustomProviderEntry>,
+) -> Option<String> {
+    non_empty_trimmed(req.options.base_url.as_deref()).or_else(|| {
+        saved_entry.and_then(|entry| non_empty_trimmed(entry.options.base_url.as_deref()))
+    })
+}
+
+fn resolve_custom_provider_api_key(
+    req: &CustomProviderProbeRequest,
+    saved_entry: Option<&CustomProviderEntry>,
+) -> Option<String> {
+    normalize_validation_api_key(req.options.api_key.as_deref()).or_else(|| {
+        saved_entry.and_then(|entry| normalize_validation_api_key(entry.options.api_key.as_deref()))
+    })
+}
+
+fn custom_provider_auth_header(
+    protocol: CustomProviderProtocol,
+    api_key: String,
+) -> (&'static str, String) {
+    match protocol {
+        CustomProviderProtocol::OpenAiCompatible => ("Authorization", format!("Bearer {api_key}")),
+        CustomProviderProtocol::Anthropic => ("x-api-key", api_key),
+        CustomProviderProtocol::Google => ("x-goog-api-key", api_key),
+    }
+}
+
+fn custom_provider_extra_headers(protocol: CustomProviderProtocol) -> Vec<(&'static str, String)> {
+    match protocol {
+        CustomProviderProtocol::Anthropic => {
+            vec![("anthropic-version", "2023-06-01".to_string())]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn custom_provider_http_error_message(status: http::StatusCode) -> String {
+    match status {
+        http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN => {
+            "Authentication failed. Check the API key and SDK authentication requirements."
+                .to_string()
+        }
+        http::StatusCode::NOT_FOUND => {
+            "Base URL may not match the selected SDK protocol.".to_string()
+        }
+        http::StatusCode::METHOD_NOT_ALLOWED => {
+            "Endpoint is reachable, but this URL does not support the selected SDK operation."
+                .to_string()
+        }
+        _ => format!("API returned status {status}"),
+    }
+}
+
+fn custom_provider_model_id(req: &CustomProviderProbeRequest) -> Option<String> {
+    non_empty_trimmed(req.model_id.as_deref())
+}
+
+fn custom_provider_google_model_path(model_id: &str) -> String {
+    model_id
+        .trim()
+        .strip_prefix("models/")
+        .unwrap_or_else(|| model_id.trim())
+        .replace('/', "%2F")
+}
+
+async fn build_custom_provider_models_request(
+    req: &CustomProviderProbeRequest,
+    config: &CliConfig,
+) -> Result<(CustomProviderProtocol, ValidationRequestSpec), CustomProviderProbeBuildError> {
+    let saved_entry = saved_custom_provider_entry(config, &req.id);
+    let npm = resolve_custom_provider_npm(req, saved_entry);
+    let Some(protocol) = custom_provider_protocol_from_npm(Some(&npm)) else {
+        return Err(CustomProviderProbeBuildError::Unsupported(format!(
+            "SDK package '{npm}' does not support automatic model discovery or validation yet."
+        )));
+    };
+    let base_url = resolve_custom_provider_base_url(req, saved_entry).ok_or_else(|| {
+        CustomProviderProbeBuildError::Failed("Custom provider requires a baseURL.".to_string())
+    })?;
+    let api_key = resolve_custom_provider_api_key(req, saved_entry).ok_or_else(|| {
+        CustomProviderProbeBuildError::Failed(
+            "API key is required. Saved provider credentials were not found for this provider id."
+                .to_string(),
+        )
+    })?;
+
+    let relative_path = match protocol {
+        CustomProviderProtocol::OpenAiCompatible => "models",
+        CustomProviderProtocol::Anthropic => "v1/models",
+        CustomProviderProtocol::Google => "v1beta/models",
+    };
+    let base_url =
+        validate_provider_endpoint(&base_url).map_err(CustomProviderProbeBuildError::Failed)?;
+    let url = join_validation_url(base_url, relative_path)
+        .map_err(CustomProviderProbeBuildError::Failed)?;
+    validation_request_spec_with_extra_headers(
+        url,
+        Some(custom_provider_auth_header(protocol, api_key)),
+        custom_provider_extra_headers(protocol),
+    )
+    .await
+    .map(|spec| (protocol, spec))
+    .map_err(CustomProviderProbeBuildError::Failed)
+}
+
+async fn build_custom_provider_model_validation_request(
+    req: &CustomProviderProbeRequest,
+    config: &CliConfig,
+    model_id: &str,
+) -> Result<ValidationRequestSpec, CustomProviderProbeBuildError> {
+    let saved_entry = saved_custom_provider_entry(config, &req.id);
+    let npm = resolve_custom_provider_npm(req, saved_entry);
+    let Some(protocol) = custom_provider_protocol_from_npm(Some(&npm)) else {
+        return Err(CustomProviderProbeBuildError::Unsupported(format!(
+            "SDK package '{npm}' does not support automatic model discovery or validation yet."
+        )));
+    };
+    let base_url = resolve_custom_provider_base_url(req, saved_entry).ok_or_else(|| {
+        CustomProviderProbeBuildError::Failed("Custom provider requires a baseURL.".to_string())
+    })?;
+    let api_key = resolve_custom_provider_api_key(req, saved_entry).ok_or_else(|| {
+        CustomProviderProbeBuildError::Failed(
+            "API key is required. Saved provider credentials were not found for this provider id."
+                .to_string(),
+        )
+    })?;
+
+    let base_url =
+        validate_provider_endpoint(&base_url).map_err(CustomProviderProbeBuildError::Failed)?;
+    match protocol {
+        CustomProviderProtocol::OpenAiCompatible => {
+            let url = join_validation_url(base_url, "chat/completions")
+                .map_err(CustomProviderProbeBuildError::Failed)?;
+            validation_post_request_spec_with_extra_headers(
+                url,
+                Some(custom_provider_auth_header(protocol, api_key)),
+                custom_provider_extra_headers(protocol),
+                json!({
+                    "model": model_id,
+                    "max_tokens": 1,
+                    "messages": [{
+                        "role": "user",
+                        "content": "ping"
+                    }]
+                }),
+            )
+            .await
+        }
+        CustomProviderProtocol::Anthropic => {
+            let url = join_validation_url(base_url, "v1/messages")
+                .map_err(CustomProviderProbeBuildError::Failed)?;
+            validation_post_request_spec_with_extra_headers(
+                url,
+                Some(custom_provider_auth_header(protocol, api_key)),
+                custom_provider_extra_headers(protocol),
+                json!({
+                    "model": model_id,
+                    "max_tokens": 1,
+                    "messages": [{
+                        "role": "user",
+                        "content": "ping"
+                    }]
+                }),
+            )
+            .await
+        }
+        CustomProviderProtocol::Google => {
+            let relative_path = format!(
+                "v1beta/models/{}:generateContent",
+                custom_provider_google_model_path(model_id)
+            );
+            let url = join_validation_url(base_url, &relative_path)
+                .map_err(CustomProviderProbeBuildError::Failed)?;
+            validation_post_request_spec_with_extra_headers(
+                url,
+                Some(custom_provider_auth_header(protocol, api_key)),
+                custom_provider_extra_headers(protocol),
+                json!({
+                    "contents": [{
+                        "role": "user",
+                        "parts": [{ "text": "ping" }]
+                    }]
+                }),
+            )
+            .await
+        }
+    }
+    .map_err(CustomProviderProbeBuildError::Failed)
+}
+
+async fn send_validation_request(spec: ValidationRequestSpec) -> Result<reqwest::Response, String> {
+    let mut client_builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    if let Some((domain, addrs)) = &spec.dns_override {
+        client_builder = client_builder.resolve_to_addrs(domain, addrs);
+    }
+
+    let client = client_builder.build().map_err(|err| err.to_string())?;
+    let mut request = client
+        .request(spec.method, spec.url)
+        .timeout(VALIDATION_TIMEOUT);
+    if let Some((header_name, header_value)) = spec.auth_header {
+        request = request.header(header_name, header_value);
+    }
+    for (header_name, header_value) in spec.extra_headers {
+        request = request.header(header_name, header_value);
+    }
+    if let Some(json_body) = spec.json_body {
+        request = request.json(&json_body);
+    }
+
+    request.send().await.map_err(|err| err.to_string())
+}
+
+fn custom_provider_build_error_response(
+    err: CustomProviderProbeBuildError,
+) -> ResponseJson<ApiResponse<CustomProviderProbeResponse>> {
+    match err {
+        CustomProviderProbeBuildError::Unsupported(message) => custom_provider_probe_response(
+            CustomProviderProbeStatus::Unsupported,
+            false,
+            message,
+            Vec::new(),
+        ),
+        CustomProviderProbeBuildError::Failed(message) => custom_provider_probe_response(
+            CustomProviderProbeStatus::Failed,
+            false,
+            message,
+            Vec::new(),
+        ),
+    }
+}
+
+async fn list_custom_provider_draft_models(
+    Json(req): Json<CustomProviderProbeRequest>,
+) -> ResponseJson<ApiResponse<CustomProviderProbeResponse>> {
+    let config = read_cli_config_from_disk().await;
+    let (protocol, spec) = match build_custom_provider_models_request(&req, &config).await {
+        Ok(built) => built,
+        Err(err) => return custom_provider_build_error_response(err),
+    };
+
+    let resp = match send_validation_request(spec).await {
+        Ok(resp) => resp,
+        Err(err) => {
+            tracing::warn!(%err, "custom provider model discovery request failed");
+            return custom_provider_probe_response(
+                CustomProviderProbeStatus::Failed,
+                false,
+                VALIDATION_CONNECTION_FAILED_MESSAGE,
+                Vec::new(),
+            );
+        }
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        return custom_provider_probe_response(
+            CustomProviderProbeStatus::Failed,
+            false,
+            custom_provider_http_error_message(status),
+            Vec::new(),
+        );
+    }
+
+    let value = match resp.json::<Value>().await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(%err, "custom provider model discovery returned invalid JSON");
+            return custom_provider_probe_response(
+                CustomProviderProbeStatus::Failed,
+                false,
+                "Model list response was not valid JSON.",
+                Vec::new(),
+            );
+        }
+    };
+    let models = dedupe_model_infos(parse_custom_provider_models_response(protocol, value));
+    if models.is_empty() {
+        return custom_provider_probe_response(
+            CustomProviderProbeStatus::Failed,
+            false,
+            "No models were returned by this provider.",
+            Vec::new(),
+        );
+    }
+
+    custom_provider_probe_response(
+        CustomProviderProbeStatus::Success,
+        true,
+        "Models discovered successfully.",
+        models,
+    )
+}
+
+async fn validate_custom_provider_draft(
+    Json(req): Json<CustomProviderProbeRequest>,
+) -> ResponseJson<ApiResponse<CustomProviderProbeResponse>> {
+    let config = read_cli_config_from_disk().await;
+    let is_model_validation = custom_provider_model_id(&req).is_some();
+    let spec = if let Some(model_id) = custom_provider_model_id(&req) {
+        match build_custom_provider_model_validation_request(&req, &config, &model_id).await {
+            Ok(spec) => spec,
+            Err(err) => return custom_provider_build_error_response(err),
+        }
+    } else {
+        match build_custom_provider_models_request(&req, &config).await {
+            Ok((_protocol, spec)) => spec,
+            Err(err) => return custom_provider_build_error_response(err),
+        }
+    };
+
+    let resp = match send_validation_request(spec).await {
+        Ok(resp) => resp,
+        Err(err) => {
+            tracing::warn!(%err, "custom provider validation request failed");
+            return custom_provider_probe_response(
+                CustomProviderProbeStatus::Failed,
+                false,
+                VALIDATION_CONNECTION_FAILED_MESSAGE,
+                Vec::new(),
+            );
+        }
+    };
+
+    let status = resp.status();
+    if status.is_success() {
+        return custom_provider_probe_response(
+            CustomProviderProbeStatus::Success,
+            true,
+            "Connection successful.",
+            Vec::new(),
+        );
+    }
+    if status == http::StatusCode::METHOD_NOT_ALLOWED && !is_model_validation {
+        return custom_provider_probe_response(
+            CustomProviderProbeStatus::Success,
+            true,
+            "Endpoint is reachable, but this URL does not expose GET model listing.",
+            Vec::new(),
+        );
+    }
+
+    custom_provider_probe_response(
+        CustomProviderProbeStatus::Failed,
+        false,
+        custom_provider_http_error_message(status),
+        Vec::new(),
+    )
 }
 
 fn validation_method_not_allowed_is_reachable(
@@ -1709,27 +2145,11 @@ fn parse_endpoint_url(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn validate_known_https_endpoint(raw: &str, allowed_hosts: &[&str]) -> Result<Url, String> {
+fn validate_provider_endpoint(raw: &str) -> Result<Url, String> {
     let url = parse_endpoint_url(raw)?;
 
-    if url.scheme() != "https" {
-        return Err("Endpoint must use HTTPS".into());
-    }
-
-    let host = url
-        .host_str()
-        .ok_or_else(|| "Endpoint URL must include a host".to_string())?;
-    if !allowed_hosts
-        .iter()
-        .any(|allowed| host.eq_ignore_ascii_case(allowed))
-    {
-        return Err("Endpoint host is not allowed for this provider".into());
-    }
-
-    if let Some(port) = url.port()
-        && port != 443
-    {
-        return Err("Endpoint port is not allowed for this provider".into());
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("Endpoint must use HTTP or HTTPS".into());
     }
 
     Ok(url)
@@ -1746,13 +2166,7 @@ fn validate_ollama_endpoint(raw: &str) -> Result<Url, String> {
 }
 
 async fn validate_custom_endpoint(raw: &str) -> Result<Url, String> {
-    let url = parse_endpoint_url(raw)?;
-
-    if url.scheme() != "https" {
-        return Err("Custom provider endpoint must use HTTPS".into());
-    }
-
-    Ok(url)
+    validate_provider_endpoint(raw)
 }
 
 async fn resolve_validation_host(url: &Url) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
@@ -1786,11 +2200,20 @@ async fn validation_request_spec(
     url: Url,
     auth_header: Option<(&'static str, String)>,
 ) -> Result<ValidationRequestSpec, String> {
+    validation_request_spec_with_extra_headers(url, auth_header, Vec::new()).await
+}
+
+async fn validation_request_spec_with_extra_headers(
+    url: Url,
+    auth_header: Option<(&'static str, String)>,
+    extra_headers: Vec<(&'static str, String)>,
+) -> Result<ValidationRequestSpec, String> {
     let dns_override = resolve_validation_host(&url).await?;
     Ok(ValidationRequestSpec {
         method: http::Method::GET,
         url,
         auth_header,
+        extra_headers,
         dns_override,
         json_body: None,
     })
@@ -1801,11 +2224,21 @@ async fn validation_post_request_spec(
     auth_header: Option<(&'static str, String)>,
     json_body: Value,
 ) -> Result<ValidationRequestSpec, String> {
+    validation_post_request_spec_with_extra_headers(url, auth_header, Vec::new(), json_body).await
+}
+
+async fn validation_post_request_spec_with_extra_headers(
+    url: Url,
+    auth_header: Option<(&'static str, String)>,
+    extra_headers: Vec<(&'static str, String)>,
+    json_body: Value,
+) -> Result<ValidationRequestSpec, String> {
     let dns_override = resolve_validation_host(&url).await?;
     Ok(ValidationRequestSpec {
         method: http::Method::POST,
         url,
         auth_header,
+        extra_headers,
         dns_override,
         json_body: Some(json_body),
     })
@@ -1824,12 +2257,11 @@ async fn build_validation_request(
     match provider {
         "anthropic" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_ANTHROPIC_ENDPOINT),
-                    &["api.anthropic.com"],
                 )?,
                 "v1/models",
             )?;
@@ -1838,12 +2270,11 @@ async fn build_validation_request(
         "openai" => {
             tracing::debug!("openai matched");
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_OPENAI_ENDPOINT),
-                    &["api.openai.com"],
                 )?,
                 "models",
             )?;
@@ -1851,12 +2282,11 @@ async fn build_validation_request(
         }
         "google" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_GOOGLE_ENDPOINT),
-                    &["generativelanguage.googleapis.com"],
                 )?,
                 "v1beta/models",
             )?;
@@ -1864,12 +2294,11 @@ async fn build_validation_request(
         }
         "openrouter" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_OPENROUTER_ENDPOINT),
-                    &["openrouter.ai"],
                 )?,
                 "models",
             )?;
@@ -1877,12 +2306,11 @@ async fn build_validation_request(
         }
         "minimax" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_MINIMAX_ENDPOINT),
-                    &["api.minimaxi.com"],
                 )?,
                 "messages",
             )?;
@@ -1946,13 +2374,12 @@ async fn validate_provider(
         provider =  ?provider,
         "provider"
     );
-    let api_key = request_api_key
-        .or_else(|| {
-            stored_config
-                .as_ref()
-                .and_then(|config| saved_provider_api_key(config, provider.as_str()))
-        })
-        .unwrap_or_default();
+    let api_key = resolve_provider_validation_api_key(
+        provider.as_str(),
+        &req,
+        request_api_key,
+        stored_config.as_ref(),
+    );
 
     // Providers that require an API key
     let requires_api_key = matches!(
@@ -1986,6 +2413,9 @@ async fn validate_provider(
         .timeout(VALIDATION_TIMEOUT);
     let request_method = spec.method.clone();
     if let Some((header_name, header_value)) = spec.auth_header {
+        request = request.header(header_name, header_value);
+    }
+    for (header_name, header_value) in spec.extra_headers {
         request = request.header(header_name, header_value);
     }
     if let Some(json_body) = spec.json_body {
@@ -2341,6 +2771,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_validation_allows_http_endpoint() {
+        let url = validate_provider_endpoint("http://api.openai.com/v1")
+            .expect("expected provider http endpoint to be accepted");
+
+        assert_eq!(url.as_str(), "http://api.openai.com/v1/");
+    }
+
+    #[test]
+    fn provider_validation_allows_custom_host_and_port() {
+        let url = validate_provider_endpoint("http://proxy.local:8080/v1")
+            .expect("expected custom host and port to be accepted");
+
+        assert_eq!(url.as_str(), "http://proxy.local:8080/v1/");
+    }
+
     #[tokio::test]
     async fn custom_validation_allows_private_ip_endpoints() {
         let req = ValidateProviderRequest {
@@ -2353,6 +2799,21 @@ mod tests {
             .expect("expected custom endpoint to be accepted");
 
         assert_eq!(spec.url.as_str(), "https://127.0.0.1:8443/models");
+        assert!(spec.dns_override.is_none());
+    }
+
+    #[tokio::test]
+    async fn custom_validation_allows_http_private_ip_endpoints() {
+        let req = ValidateProviderRequest {
+            api_key: None,
+            endpoint: Some("http://127.0.0.1:8080/v1".into()),
+        };
+
+        let spec = build_validation_request("custom", &req, "")
+            .await
+            .expect("expected custom http endpoint to be accepted");
+
+        assert_eq!(spec.url.as_str(), "http://127.0.0.1:8080/v1/models");
         assert!(spec.dns_override.is_none());
     }
 
@@ -2436,10 +2897,332 @@ mod tests {
         );
     }
 
+    fn custom_probe_request(
+        npm: &str,
+        base_url: Option<&str>,
+        api_key: Option<&str>,
+        model_id: Option<&str>,
+    ) -> CustomProviderProbeRequest {
+        CustomProviderProbeRequest {
+            id: "draft-provider".into(),
+            npm: Some(npm.into()),
+            options: CustomProviderOptions {
+                base_url: base_url.map(str::to_string),
+                api_key: api_key.map(str::to_string),
+                timeout: None,
+            },
+            model_id: model_id.map(str::to_string),
+        }
+    }
+
     #[test]
-    fn fallback_openai_models_include_gpt_5_4() {
-        let models = fallback_provider_models("openai");
-        assert!(models.iter().any(|model| model.id == "gpt-5.4"));
+    fn custom_provider_protocol_maps_supported_sdks_and_rejects_unknown() {
+        assert_eq!(
+            custom_provider_protocol_from_npm(Some("@ai-sdk/openai-compatible")),
+            Some(CustomProviderProtocol::OpenAiCompatible)
+        );
+        assert_eq!(
+            custom_provider_protocol_from_npm(Some("@ai-sdk/openai")),
+            Some(CustomProviderProtocol::OpenAiCompatible)
+        );
+        assert_eq!(
+            custom_provider_protocol_from_npm(Some("@openrouter/ai-sdk-provider")),
+            Some(CustomProviderProtocol::OpenAiCompatible)
+        );
+        assert_eq!(
+            custom_provider_protocol_from_npm(Some("@ai-sdk/groq")),
+            Some(CustomProviderProtocol::OpenAiCompatible)
+        );
+        assert_eq!(
+            custom_provider_protocol_from_npm(Some("@ai-sdk/anthropic")),
+            Some(CustomProviderProtocol::Anthropic)
+        );
+        assert_eq!(
+            custom_provider_protocol_from_npm(Some("@ai-sdk/google")),
+            Some(CustomProviderProtocol::Google)
+        );
+        assert_eq!(
+            custom_provider_protocol_from_npm(Some("@ai-sdk/azure")),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_provider_models_request_uses_openai_compatible_protocol() {
+        let config = CliConfig::default_config();
+        let req = custom_probe_request(
+            "@ai-sdk/openai-compatible",
+            Some("http://127.0.0.1:8080/v1"),
+            Some("secret-key"),
+            None,
+        );
+
+        let (protocol, spec) = build_custom_provider_models_request(&req, &config)
+            .await
+            .expect("expected custom model discovery request");
+
+        assert_eq!(protocol, CustomProviderProtocol::OpenAiCompatible);
+        assert_eq!(spec.method, http::Method::GET);
+        assert_eq!(spec.url.as_str(), "http://127.0.0.1:8080/v1/models");
+        assert_eq!(
+            spec.auth_header,
+            Some(("Authorization", "Bearer secret-key".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_provider_model_validation_builds_protocol_specific_requests() {
+        let config = CliConfig::default_config();
+        let openai_req = custom_probe_request(
+            "@ai-sdk/openai",
+            Some("http://127.0.0.1:8080/v1"),
+            Some("openai-secret"),
+            Some("gpt-test"),
+        );
+        let anthropic_req = custom_probe_request(
+            "@ai-sdk/anthropic",
+            Some("http://127.0.0.1:8081"),
+            Some("anthropic-secret"),
+            Some("claude-test"),
+        );
+        let google_req = custom_probe_request(
+            "@ai-sdk/google",
+            Some("http://127.0.0.1:8082"),
+            Some("google-secret"),
+            Some("models/gemini-test"),
+        );
+
+        let openai_spec =
+            build_custom_provider_model_validation_request(&openai_req, &config, "gpt-test")
+                .await
+                .expect("expected openai model validation request");
+        assert_eq!(openai_spec.method, http::Method::POST);
+        assert_eq!(
+            openai_spec.url.as_str(),
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_spec.auth_header,
+            Some(("Authorization", "Bearer openai-secret".to_string()))
+        );
+
+        let anthropic_spec =
+            build_custom_provider_model_validation_request(&anthropic_req, &config, "claude-test")
+                .await
+                .expect("expected anthropic model validation request");
+        assert_eq!(anthropic_spec.method, http::Method::POST);
+        assert_eq!(
+            anthropic_spec.url.as_str(),
+            "http://127.0.0.1:8081/v1/messages"
+        );
+        assert_eq!(
+            anthropic_spec.auth_header,
+            Some(("x-api-key", "anthropic-secret".to_string()))
+        );
+        assert_eq!(
+            anthropic_spec.extra_headers,
+            vec![("anthropic-version", "2023-06-01".to_string())]
+        );
+
+        let google_spec = build_custom_provider_model_validation_request(
+            &google_req,
+            &config,
+            "models/gemini-test",
+        )
+        .await
+        .expect("expected google model validation request");
+        assert_eq!(google_spec.method, http::Method::POST);
+        assert_eq!(
+            google_spec.url.as_str(),
+            "http://127.0.0.1:8082/v1beta/models/gemini-test:generateContent"
+        );
+        assert_eq!(
+            google_spec.auth_header,
+            Some(("x-goog-api-key", "google-secret".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_provider_probe_falls_back_to_saved_key_when_request_key_is_masked() {
+        let mut config = CliConfig::default_config();
+        config.provider.custom_providers = Some(HashMap::from([(
+            "draft-provider".to_string(),
+            CustomProviderEntry {
+                id: "draft-provider".into(),
+                name: Some("Draft Provider".into()),
+                npm: Some("@ai-sdk/openai-compatible".into()),
+                options: CustomProviderOptions {
+                    base_url: Some("http://127.0.0.1:8090/v1".into()),
+                    api_key: Some("saved-secret".into()),
+                    timeout: None,
+                },
+                models: None,
+            },
+        )]));
+        let req = CustomProviderProbeRequest {
+            id: "draft-provider".into(),
+            npm: Some("@ai-sdk/openai-compatible".into()),
+            options: CustomProviderOptions {
+                base_url: Some("http://127.0.0.1:8090/v1".into()),
+                api_key: Some("save***cret".into()),
+                timeout: None,
+            },
+            model_id: None,
+        };
+
+        let (_protocol, spec) = build_custom_provider_models_request(&req, &config)
+            .await
+            .expect("expected request to use saved credentials");
+
+        assert_eq!(
+            spec.auth_header,
+            Some(("Authorization", "Bearer saved-secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn legacy_custom_validate_can_find_saved_custom_provider_key_by_endpoint() {
+        let mut config = CliConfig::default_config();
+        config.provider.custom_providers = Some(HashMap::from([(
+            "proxy".to_string(),
+            CustomProviderEntry {
+                id: "proxy".into(),
+                name: Some("Proxy".into()),
+                npm: Some("@ai-sdk/openai-compatible".into()),
+                options: CustomProviderOptions {
+                    base_url: Some("https://proxy.example.com/v1".into()),
+                    api_key: Some("stored-secret".into()),
+                    timeout: None,
+                },
+                models: None,
+            },
+        )]));
+
+        assert_eq!(
+            saved_custom_provider_api_key_for_endpoint(
+                &config,
+                Some("https://proxy.example.com/v1")
+            )
+            .as_deref(),
+            Some("stored-secret")
+        );
+    }
+
+    #[test]
+    fn legacy_custom_validate_prefers_endpoint_matched_custom_provider_key_over_legacy_key() {
+        let mut config = CliConfig::default_config();
+        config.provider.custom = Some(services::services::cli_config::CustomProviderConfig {
+            name: Some("Legacy Custom".into()),
+            endpoint: Some("https://legacy.example.com/v1".into()),
+            api_key: Some("wrong-legacy-secret".into()),
+        });
+        config.provider.custom_providers = Some(HashMap::from([(
+            "proxy".to_string(),
+            CustomProviderEntry {
+                id: "proxy".into(),
+                name: Some("Proxy".into()),
+                npm: Some("@ai-sdk/openai-compatible".into()),
+                options: CustomProviderOptions {
+                    base_url: Some("https://proxy.example.com/v1".into()),
+                    api_key: Some("matched-provider-secret".into()),
+                    timeout: None,
+                },
+                models: None,
+            },
+        )]));
+        let req = ValidateProviderRequest {
+            api_key: Some("match***cret".into()),
+            endpoint: Some("https://proxy.example.com/v1".into()),
+        };
+
+        let resolved = resolve_provider_validation_api_key(
+            "custom",
+            &req,
+            normalize_validation_api_key(req.api_key.as_deref()),
+            Some(&config),
+        );
+
+        assert_eq!(resolved, "matched-provider-secret");
+    }
+
+    #[test]
+    fn custom_provider_model_parsers_cover_openai_anthropic_google_and_ollama_shapes() {
+        let openai = parse_custom_provider_models_response(
+            CustomProviderProtocol::OpenAiCompatible,
+            json!({ "data": [{ "id": "gpt-test", "name": "GPT Test" }] }),
+        );
+        let anthropic = parse_custom_provider_models_response(
+            CustomProviderProtocol::Anthropic,
+            json!({ "data": [{ "id": "claude-test", "display_name": "Claude Test" }] }),
+        );
+        let google = parse_custom_provider_models_response(
+            CustomProviderProtocol::Google,
+            json!({ "models": [{ "name": "models/gemini-test", "displayName": "Gemini Test" }] }),
+        );
+        let ollama = parse_provider_models_response(
+            "ollama",
+            json!({ "models": [{ "model": "llama-test", "name": "Llama Test" }] }),
+        );
+
+        assert_eq!(openai[0].id, "gpt-test");
+        assert_eq!(anthropic[0].name, "Claude Test");
+        assert_eq!(google[0].id, "gemini-test");
+        assert_eq!(ollama[0].id, "llama-test");
+    }
+
+    #[tokio::test]
+    async fn custom_provider_probe_returns_unsupported_for_unknown_npm() {
+        let config = CliConfig::default_config();
+        let req = custom_probe_request(
+            "@ai-sdk/azure",
+            Some("http://127.0.0.1:8080/v1"),
+            Some("secret-key"),
+            None,
+        );
+
+        match build_custom_provider_models_request(&req, &config).await {
+            Err(CustomProviderProbeBuildError::Unsupported(message)) => {
+                assert!(message.contains("@ai-sdk/azure"));
+            }
+            _ => panic!("expected unsupported custom provider protocol"),
+        }
+    }
+
+    #[test]
+    fn custom_provider_http_errors_are_user_safe_and_specific() {
+        assert!(
+            custom_provider_http_error_message(http::StatusCode::UNAUTHORIZED)
+                .contains("Authentication failed")
+        );
+        assert!(
+            custom_provider_http_error_message(http::StatusCode::FORBIDDEN)
+                .contains("Authentication failed")
+        );
+        assert!(
+            custom_provider_http_error_message(http::StatusCode::NOT_FOUND)
+                .contains("Base URL may not match")
+        );
+        assert!(
+            custom_provider_http_error_message(http::StatusCode::METHOD_NOT_ALLOWED)
+                .contains("Endpoint is reachable")
+        );
+        assert!(
+            !custom_provider_http_error_message(http::StatusCode::UNAUTHORIZED).contains("secret")
+        );
+    }
+
+    #[test]
+    fn provider_model_listing_returns_error_when_live_and_catalog_sources_fail() {
+        let result = resolve_provider_models_result(
+            "openai",
+            Err("live failed".into()),
+            Err("catalog failed".into()),
+        );
+
+        let message = result.expect_err("model listing should fail without static fallback");
+        assert!(message.contains("live failed"));
+        assert!(message.contains("catalog failed"));
+        assert!(!message.contains("gpt-5.4"));
     }
 
     #[test]
@@ -2452,6 +3235,7 @@ mod tests {
             method: http::Method::GET,
             url: Url::parse("https://proxy.example.com/v1/models").expect("valid url"),
             auth_header: None,
+            extra_headers: Vec::new(),
             dns_override: None,
             json_body: None,
         };

@@ -772,6 +772,12 @@ export type SyncToCliResponse = { synced: boolean, message: string, config_path:
 
 export type RestartCliResponse = { restarted: boolean, message: string, base_url: string | null, port: number | null, };
 
+export type CustomProviderProbeRequest = { id: string, npm: string | null, options: CustomProviderOptions, model_id: string | null, };
+
+export type CustomProviderProbeStatus = "success" | "failed" | "unsupported";
+
+export type CustomProviderProbeResponse = { status: CustomProviderProbeStatus, valid: boolean, message: string, models: Array<ModelInfo>, };
+
 export type TeamProtocolConfig = { content: string, enabled: boolean, };
 
 export type CreatePresetSnapshotRequest = { team_preset_id: string | null, name: string | null, description: string | null, overwrite_strategy: PresetSnapshotOverwriteStrategy | null, };

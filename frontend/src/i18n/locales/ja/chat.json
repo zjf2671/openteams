@@ -1002,7 +1002,9 @@
     },
     "generatedText": {
       "reviewLoop": "ループ「{{loopKey}}」をレビューしてください。",
-      "userApprovedStepResult": "ユーザーがステップ結果を承認しました。"
+      "reviewStepResult": "ステップ「{{stepTitle}}」の実行結果をレビューしてください。",
+      "userApprovedStepResult": "ユーザーがステップ結果を承認しました。",
+      "userApprovedLoopResult": "ユーザーがループ結果を承認しました。"
     },
     "finalReview": {
       "title": "最終レビュー",

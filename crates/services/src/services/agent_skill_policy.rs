@@ -23,8 +23,8 @@ pub fn required_builtin_skills(ctx: AgentPromptContext) -> &'static [&'static st
         AgentPromptContext::WorkflowChat => &["brainstorming"],
         AgentPromptContext::FreeChat => &[],
         AgentPromptContext::PlanGeneration => &["writing-plans"],
-        AgentPromptContext::StepExecution => &[],
-        AgentPromptContext::StepRevision => &["pua"],
+        AgentPromptContext::StepExecution => &["code-guidelines"],
+        AgentPromptContext::StepRevision => &["pua", "code-guidelines"],
         AgentPromptContext::LeadReview => &["pua"],
     }
 }
@@ -40,4 +40,19 @@ pub fn format_skills_prompt_section(skill_names: &[String]) -> Option<String> {
     section.push_str(&skill_names.join(", "));
     section.push('\n');
     Some(section)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_execution_context_requires_code_guidelines() {
+        assert!(
+            required_builtin_skills(AgentPromptContext::StepExecution).contains(&"code-guidelines")
+        );
+        assert!(
+            required_builtin_skills(AgentPromptContext::StepRevision).contains(&"code-guidelines")
+        );
+    }
 }

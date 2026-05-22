@@ -1002,7 +1002,9 @@
     },
     "generatedText": {
       "reviewLoop": "Revisa el bucle \"{{loopKey}}\".",
-      "userApprovedStepResult": "El usuario aprobó el resultado del paso."
+      "reviewStepResult": "Revisa el resultado de ejecucion del paso \"{{stepTitle}}\".",
+      "userApprovedStepResult": "El usuario aprobó el resultado del paso.",
+      "userApprovedLoopResult": "El usuario aprobo el resultado del bucle."
     },
     "finalReview": {
       "title": "Revisión final",
