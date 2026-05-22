@@ -54,6 +54,26 @@ export function WorkflowPendingReviewCard({
     : t('workflow.pendingReview.defaultMessage', {
         defaultValue: 'Please review the current result.',
       });
+  const feedbackLabel =
+    feedbackField?.key === 'feedback'
+      ? t('workflow.pendingReview.feedbackLabel', {
+          defaultValue: 'Feedback',
+        })
+      : feedbackField?.label
+        ? localizeWorkflowGeneratedText(feedbackField.label, t)
+        : t('workflow.pendingReview.feedbackLabel', {
+            defaultValue: 'Feedback',
+          });
+  const feedbackPlaceholder =
+    feedbackField?.key === 'feedback'
+      ? t('workflow.pendingReview.feedbackPlaceholder', {
+          defaultValue: 'Please provide specific revision comments',
+        })
+      : feedbackField?.placeholder
+        ? localizeWorkflowGeneratedText(feedbackField.placeholder, t)
+        : t('workflow.pendingReview.feedbackPlaceholder', {
+            defaultValue: 'Please provide specific revision comments',
+          });
 
   const handleApprove = () => {
     setExpandedReject(false);
@@ -107,7 +127,7 @@ export function WorkflowPendingReviewCard({
             {t('workflow.pendingReview.context', { defaultValue: 'Context' })}
           </div>
           <div className="text-[11px] text-slate-600 leading-relaxed whitespace-pre-wrap">
-            {pendingReview.context_summary}
+            {localizeWorkflowGeneratedText(pendingReview.context_summary, t)}
           </div>
         </div>
       )}
@@ -115,22 +135,14 @@ export function WorkflowPendingReviewCard({
       {expandedReject && (
         <div className="mb-3">
           <div className="text-[10px] font-bold uppercase tracking-widest text-rose-700 mb-1">
-            {feedbackField?.label ??
-              t('workflow.pendingReview.feedbackLabel', {
-                defaultValue: 'Feedback',
-              })}
+            {feedbackLabel}
           </div>
           <textarea
             value={feedback}
             onChange={(event) => setFeedback(event.target.value)}
             rows={3}
             disabled={disabled}
-            placeholder={
-              feedbackField?.placeholder ??
-              t('workflow.pendingReview.feedbackPlaceholder', {
-                defaultValue: 'Please provide specific revision comments',
-              })
-            }
+            placeholder={feedbackPlaceholder}
             className="w-full rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none transition-colors placeholder:text-slate-400 focus:border-rose-400 focus:ring-2 focus:ring-rose-400/20 disabled:cursor-not-allowed disabled:opacity-60"
           />
           {validationError && (

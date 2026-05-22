@@ -18,6 +18,9 @@ import type {
   RestartCliResponse as SharedRestartCliResponse,
   SyncToCliRequest as SharedSyncToCliRequest,
   SyncToCliResponse as SharedSyncToCliResponse,
+  CustomProviderProbeRequest as SharedCustomProviderProbeRequest,
+  CustomProviderProbeResponse as SharedCustomProviderProbeResponse,
+  CustomProviderProbeStatus as SharedCustomProviderProbeStatus,
   ValidateProviderRequest,
   ValidateProviderResponse,
 } from 'shared/types';
@@ -39,6 +42,9 @@ export type {
   SharedModelModalities,
   SharedModelVariantConfig,
   SharedRestartCliResponse,
+  SharedCustomProviderProbeRequest,
+  SharedCustomProviderProbeResponse,
+  SharedCustomProviderProbeStatus,
   ValidateProviderRequest,
   ValidateProviderResponse,
 };
@@ -139,6 +145,15 @@ export type CliModelInfo = ModelInfo;
 
 export type ValidateCliProviderRequest = ValidateProviderRequest;
 export type ValidateCliProviderResponse = ValidateProviderResponse;
+
+export type CustomProviderProbeRequest = Omit<
+  SharedCustomProviderProbeRequest,
+  'options'
+> & {
+  options: CustomProviderOptions;
+};
+export type CustomProviderProbeResponse = SharedCustomProviderProbeResponse;
+export type CustomProviderProbeStatus = SharedCustomProviderProbeStatus;
 
 export type RestartCliResponse = SharedRestartCliResponse;
 export type SyncToCliRequest = SharedSyncToCliRequest;

@@ -1002,7 +1002,9 @@
     },
     "generatedText": {
       "reviewLoop": "Please review loop \"{{loopKey}}\".",
-      "userApprovedStepResult": "User approved the step result."
+      "reviewStepResult": "Please review the execution result for step \"{{stepTitle}}\".",
+      "userApprovedStepResult": "User approved the step result.",
+      "userApprovedLoopResult": "User approved the loop result."
     },
     "finalReview": {
       "title": "Final Review",

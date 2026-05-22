@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { cliConfigApi } from '@/lib/api';
 import type {
   CliConfig,
+  CustomProviderProbeRequest,
   CustomProviderEntry,
   CliProviderId,
   ValidateCliProviderRequest,
@@ -99,6 +100,20 @@ export function useValidateCliProvider() {
       provider: CliProviderId;
       data: ValidateCliProviderRequest;
     }) => cliConfigApi.validateProvider(provider, data),
+  });
+}
+
+export function useDiscoverCustomProviderModels() {
+  return useMutation({
+    mutationFn: (data: CustomProviderProbeRequest) =>
+      cliConfigApi.listCustomProviderModels(data),
+  });
+}
+
+export function useValidateCustomProvider() {
+  return useMutation({
+    mutationFn: (data: CustomProviderProbeRequest) =>
+      cliConfigApi.validateCustomProvider(data),
   });
 }
 

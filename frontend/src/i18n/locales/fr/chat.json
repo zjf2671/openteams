@@ -1002,7 +1002,9 @@
     },
     "generatedText": {
       "reviewLoop": "Veuillez réviser la boucle « {{loopKey}} ».",
-      "userApprovedStepResult": "L'utilisateur a approuvé le résultat de l'étape."
+      "reviewStepResult": "Veuillez examiner le resultat d'execution de l'etape \"{{stepTitle}}\".",
+      "userApprovedStepResult": "L'utilisateur a approuvé le résultat de l'étape.",
+      "userApprovedLoopResult": "L'utilisateur a approuve le resultat de la boucle."
     },
     "finalReview": {
       "title": "Revue finale",
