@@ -1584,40 +1584,28 @@ async fn build_provider_models_request(
             if api_key.is_empty() {
                 return Err("Anthropic model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["api.anthropic.com"])?,
-                "v1/models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "v1/models")?;
             validation_request_spec(url, Some(("x-api-key", api_key))).await
         }
         "openai" => {
             if api_key.is_empty() {
                 return Err("OpenAI model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["api.openai.com"])?,
-                "models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "models")?;
             validation_request_spec(url, Some(("Authorization", format!("Bearer {api_key}")))).await
         }
         "google" => {
             if api_key.is_empty() {
                 return Err("Google model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["generativelanguage.googleapis.com"])?,
-                "v1beta/models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "v1beta/models")?;
             validation_request_spec(url, Some(("x-goog-api-key", api_key))).await
         }
         "openrouter" => {
             if api_key.is_empty() {
                 return Err("OpenRouter model discovery requires an API key".into());
             }
-            let url = join_validation_url(
-                validate_known_https_endpoint(&endpoint, &["openrouter.ai"])?,
-                "models",
-            )?;
+            let url = join_validation_url(validate_provider_endpoint(&endpoint)?, "models")?;
             validation_request_spec(url, Some(("Authorization", format!("Bearer {api_key}")))).await
         }
         "ollama" => {
@@ -1709,27 +1697,11 @@ fn parse_endpoint_url(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn validate_known_https_endpoint(raw: &str, allowed_hosts: &[&str]) -> Result<Url, String> {
+fn validate_provider_endpoint(raw: &str) -> Result<Url, String> {
     let url = parse_endpoint_url(raw)?;
 
-    if url.scheme() != "https" {
-        return Err("Endpoint must use HTTPS".into());
-    }
-
-    let host = url
-        .host_str()
-        .ok_or_else(|| "Endpoint URL must include a host".to_string())?;
-    if !allowed_hosts
-        .iter()
-        .any(|allowed| host.eq_ignore_ascii_case(allowed))
-    {
-        return Err("Endpoint host is not allowed for this provider".into());
-    }
-
-    if let Some(port) = url.port()
-        && port != 443
-    {
-        return Err("Endpoint port is not allowed for this provider".into());
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("Endpoint must use HTTP or HTTPS".into());
     }
 
     Ok(url)
@@ -1746,13 +1718,7 @@ fn validate_ollama_endpoint(raw: &str) -> Result<Url, String> {
 }
 
 async fn validate_custom_endpoint(raw: &str) -> Result<Url, String> {
-    let url = parse_endpoint_url(raw)?;
-
-    if url.scheme() != "https" {
-        return Err("Custom provider endpoint must use HTTPS".into());
-    }
-
-    Ok(url)
+    validate_provider_endpoint(raw)
 }
 
 async fn resolve_validation_host(url: &Url) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
@@ -1824,12 +1790,11 @@ async fn build_validation_request(
     match provider {
         "anthropic" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_ANTHROPIC_ENDPOINT),
-                    &["api.anthropic.com"],
                 )?,
                 "v1/models",
             )?;
@@ -1838,12 +1803,11 @@ async fn build_validation_request(
         "openai" => {
             tracing::debug!("openai matched");
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_OPENAI_ENDPOINT),
-                    &["api.openai.com"],
                 )?,
                 "models",
             )?;
@@ -1851,12 +1815,11 @@ async fn build_validation_request(
         }
         "google" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_GOOGLE_ENDPOINT),
-                    &["generativelanguage.googleapis.com"],
                 )?,
                 "v1beta/models",
             )?;
@@ -1864,12 +1827,11 @@ async fn build_validation_request(
         }
         "openrouter" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_OPENROUTER_ENDPOINT),
-                    &["openrouter.ai"],
                 )?,
                 "models",
             )?;
@@ -1877,12 +1839,11 @@ async fn build_validation_request(
         }
         "minimax" => {
             let url = join_validation_url(
-                validate_known_https_endpoint(
+                validate_provider_endpoint(
                     req.endpoint
                         .as_deref()
                         .filter(|endpoint| !endpoint.is_empty())
                         .unwrap_or(DEFAULT_MINIMAX_ENDPOINT),
-                    &["api.minimaxi.com"],
                 )?,
                 "messages",
             )?;
@@ -2341,6 +2302,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_validation_allows_http_endpoint() {
+        let url = validate_provider_endpoint("http://api.openai.com/v1")
+            .expect("expected provider http endpoint to be accepted");
+
+        assert_eq!(url.as_str(), "http://api.openai.com/v1/");
+    }
+
+    #[test]
+    fn provider_validation_allows_custom_host_and_port() {
+        let url = validate_provider_endpoint("http://proxy.local:8080/v1")
+            .expect("expected custom host and port to be accepted");
+
+        assert_eq!(url.as_str(), "http://proxy.local:8080/v1/");
+    }
+
     #[tokio::test]
     async fn custom_validation_allows_private_ip_endpoints() {
         let req = ValidateProviderRequest {
@@ -2353,6 +2330,21 @@ mod tests {
             .expect("expected custom endpoint to be accepted");
 
         assert_eq!(spec.url.as_str(), "https://127.0.0.1:8443/models");
+        assert!(spec.dns_override.is_none());
+    }
+
+    #[tokio::test]
+    async fn custom_validation_allows_http_private_ip_endpoints() {
+        let req = ValidateProviderRequest {
+            api_key: None,
+            endpoint: Some("http://127.0.0.1:8080/v1".into()),
+        };
+
+        let spec = build_validation_request("custom", &req, "")
+            .await
+            .expect("expected custom http endpoint to be accepted");
+
+        assert_eq!(spec.url.as_str(), "http://127.0.0.1:8080/v1/models");
         assert!(spec.dns_override.is_none());
     }
 
