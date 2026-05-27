@@ -675,6 +675,14 @@ impl AppServerClient {
         let raw = Cow::Borrowed(raw);
         self.log_writer.log_raw(&raw).await?;
 
+        if is_raw_turn_started_notification(&notification) {
+            self.turn_started.store(true, Ordering::SeqCst);
+            tracing::debug!(
+                method = %notification.method,
+                "[codex-client] raw turn started notification"
+            );
+        }
+
         if let Some(server_notification) = parsed_notification {
             if let ServerNotification::TurnStarted(started) = &server_notification {
                 self.turn_started.store(true, Ordering::SeqCst);
@@ -818,17 +826,26 @@ fn is_terminal_app_server_notification(
             .as_ref()
             .and_then(|params| params.get("turn"))
             .and_then(|turn| turn.get("status"))
-            .and_then(serde_json::Value::as_str)
+            .and_then(raw_status_type)
             .is_some_and(|status| matches!(status, "completed" | "interrupted" | "failed")),
         "thread/status/changed" => notification
             .params
             .as_ref()
             .and_then(|params| params.get("status"))
-            .and_then(|status| status.get("type"))
-            .and_then(serde_json::Value::as_str)
+            .and_then(raw_status_type)
             .is_some_and(|status| status == "idle" && turn_started),
         _ => false,
     }
+}
+
+fn is_raw_turn_started_notification(notification: &JSONRPCNotification) -> bool {
+    notification.method == "turn/started"
+}
+
+fn raw_status_type(status: &Value) -> Option<&str> {
+    status
+        .as_str()
+        .or_else(|| status.get("type").and_then(Value::as_str))
 }
 
 #[async_trait]
@@ -1198,6 +1215,112 @@ mod tests {
             "params": {
                 "threadId": "thread-1",
                 "status": { "type": "idle" }
+            }
+        })
+        .to_string();
+        let notification: JSONRPCNotification = serde_json::from_str(&raw).unwrap();
+
+        let should_finish = client
+            .handle_notification(&raw, notification)
+            .await
+            .unwrap();
+
+        assert!(should_finish);
+    }
+
+    #[tokio::test]
+    async fn raw_turn_started_with_unknown_payload_allows_idle_to_finish_stream() {
+        let client = build_client();
+        let turn_started_raw = serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-1",
+                    "status": { "type": "in_progress" },
+                    "newProtocolField": "ignored"
+                }
+            }
+        })
+        .to_string();
+        let turn_started_notification: JSONRPCNotification =
+            serde_json::from_str(&turn_started_raw).unwrap();
+        let started_should_finish = client
+            .handle_notification(&turn_started_raw, turn_started_notification)
+            .await
+            .unwrap();
+        assert!(!started_should_finish);
+
+        let raw = serde_json::json!({
+            "method": "thread/status/changed",
+            "params": {
+                "threadId": "thread-1",
+                "status": { "type": "idle" }
+            }
+        })
+        .to_string();
+        let notification: JSONRPCNotification = serde_json::from_str(&raw).unwrap();
+
+        let should_finish = client
+            .handle_notification(&raw, notification)
+            .await
+            .unwrap();
+
+        assert!(should_finish);
+    }
+
+    #[tokio::test]
+    async fn raw_string_idle_status_after_turn_start_finishes_stream() {
+        let client = build_client();
+        let turn_started_raw = serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-1",
+                    "status": { "type": "in_progress" }
+                }
+            }
+        })
+        .to_string();
+        let turn_started_notification: JSONRPCNotification =
+            serde_json::from_str(&turn_started_raw).unwrap();
+        let started_should_finish = client
+            .handle_notification(&turn_started_raw, turn_started_notification)
+            .await
+            .unwrap();
+        assert!(!started_should_finish);
+
+        let raw = serde_json::json!({
+            "method": "thread/status/changed",
+            "params": {
+                "threadId": "thread-1",
+                "status": "idle"
+            }
+        })
+        .to_string();
+        let notification: JSONRPCNotification = serde_json::from_str(&raw).unwrap();
+
+        let should_finish = client
+            .handle_notification(&raw, notification)
+            .await
+            .unwrap();
+
+        assert!(should_finish);
+    }
+
+    #[tokio::test]
+    async fn raw_turn_completed_with_object_status_finishes_stream() {
+        let client = build_client();
+        let raw = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-1",
+                    "status": { "type": "completed" },
+                    "error": null
+                }
             }
         })
         .to_string();
