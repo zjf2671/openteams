@@ -1,0 +1,1257 @@
+/// Pending message to be processed by an agent
+#[derive(Clone, Debug)]
+struct PendingMessage {
+    session_id: Uuid,
+    agent_id: Uuid,
+    agent_name: String,
+    message: ChatMessage,
+    track_source_message: bool,
+}
+
+#[derive(Clone)]
+struct RunLifecycleControl {
+    run_id: Uuid,
+    stop: CancellationToken,
+}
+
+enum LifecycleEvent {
+    ProcessExited(std::io::Result<std::process::ExitStatus>),
+    ExitSignal(executors::executors::ExecutorExitResult),
+    StopRequested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunCompletionStatus {
+    Succeeded,
+    Failed,
+    Stopped,
+}
+
+impl RunCompletionStatus {
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Succeeded => 0,
+            Self::Failed => 1,
+            Self::Stopped => 2,
+        }
+    }
+
+    fn from_atomic(value: &AtomicU8) -> Self {
+        match value.load(Ordering::Relaxed) {
+            1 => Self::Failed,
+            2 => Self::Stopped,
+            _ => Self::Succeeded,
+        }
+    }
+
+    fn store(self, value: &AtomicU8) {
+        value.store(self.as_u8(), Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone)]
+pub struct ChatRunner {
+    db: DBService,
+    analytics: Option<AnalyticsService>,
+    analytics_enabled: Arc<AtomicBool>,
+    streams: Arc<DashMap<Uuid, broadcast::Sender<ChatStreamEvent>>>,
+    // Store per-run lifecycle controls, key = session_agent_id
+    run_controls: Arc<DashMap<Uuid, RunLifecycleControl>>,
+    // Message queue for each session_agent, keyed by session_agent_id
+    // When an agent is running, new messages are queued here and processed after completion
+    pending_messages: Arc<DashMap<Uuid, VecDeque<PendingMessage>>>,
+    // Session-level background context compaction dedupe.
+    // At most one compaction task per session is allowed at a time.
+    background_compaction_inflight: Arc<DashMap<Uuid, ()>>,
+    workspace_live_log_bytes: Arc<DashMap<String, u64>>,
+    workspace_janitor_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl ChatRunner {
+    pub fn new(db: DBService) -> Self {
+        Self::with_analytics(db, None, Arc::new(AtomicBool::new(true)))
+    }
+
+    pub fn with_analytics(
+        db: DBService,
+        analytics: Option<AnalyticsService>,
+        analytics_enabled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            db,
+            analytics,
+            analytics_enabled,
+            streams: Arc::new(DashMap::new()),
+            run_controls: Arc::new(DashMap::new()),
+            pending_messages: Arc::new(DashMap::new()),
+            background_compaction_inflight: Arc::new(DashMap::new()),
+            workspace_live_log_bytes: Arc::new(DashMap::new()),
+            workspace_janitor_locks: Arc::new(DashMap::new()),
+        }
+    }
+
+    pub fn analytics_service(&self) -> Option<&AnalyticsService> {
+        workflow_analytics::analytics_if_enabled(
+            self.analytics.as_ref(),
+            self.analytics_enabled.load(Ordering::Relaxed),
+        )
+    }
+
+    fn analytics_projector(&self) -> AnalyticsProjector<'_> {
+        AnalyticsProjector::new(
+            &self.db.pool,
+            self.analytics.as_ref(),
+            self.analytics_enabled.load(Ordering::Relaxed),
+        )
+    }
+
+    async fn ensure_openteams_ignored_for_git_workspace(
+        workspace_path: &Path,
+    ) -> Result<(), ChatRunnerError> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(workspace_path)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Ok(());
+        }
+
+        let repo_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if repo_root.is_empty() {
+            return Ok(());
+        }
+
+        let gitignore_path = PathBuf::from(repo_root).join(".gitignore");
+        let existing = match fs::read_to_string(&gitignore_path).await {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(err.into()),
+        };
+
+        let already_present = existing.lines().map(str::trim).any(|line| {
+            matches!(
+                line,
+                ".openteams/" | "/.openteams/" | ".openteams" | "/.openteams"
+            )
+        });
+
+        if already_present {
+            return Ok(());
+        }
+
+        let mut updated = existing;
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str(OPENTEAMS_GITIGNORE_ENTRY);
+        updated.push('\n');
+
+        fs::write(&gitignore_path, updated).await?;
+        Ok(())
+    }
+
+    pub async fn recover_orphaned_session_agents(&self) -> Result<usize, ChatRunnerError> {
+        let active_agents = ChatSessionAgent::find_all_active(&self.db.pool).await?;
+
+        for session_agent in &active_agents {
+            let recovered = ChatSessionAgent::reset_runtime_state(
+                &self.db.pool,
+                session_agent.id,
+                ChatSessionAgentState::Idle,
+            )
+            .await?;
+            self.run_controls.remove(&session_agent.id);
+            tracing::warn!(
+                session_id = %recovered.session_id,
+                session_agent_id = %recovered.id,
+                agent_id = %recovered.agent_id,
+                previous_state = ?session_agent.state,
+                "Recovered orphaned chat session agent left active after backend interruption"
+            );
+        }
+
+        Ok(active_agents.len())
+    }
+
+    pub fn subscribe(&self, session_id: Uuid) -> broadcast::Receiver<ChatStreamEvent> {
+        self.sender_for(session_id).subscribe()
+    }
+
+    pub fn emit_message_new(&self, session_id: Uuid, message: ChatMessage) {
+        self.emit(session_id, ChatStreamEvent::MessageNew { message });
+    }
+
+    pub fn emit_message_updated(&self, session_id: Uuid, message: ChatMessage) {
+        self.emit(session_id, ChatStreamEvent::MessageUpdated { message });
+    }
+
+    pub fn emit_work_item_new(&self, session_id: Uuid, work_item: ChatWorkItem) {
+        self.emit(session_id, ChatStreamEvent::WorkItemNew { work_item });
+    }
+
+    pub fn emit_workflow_execution_updated(&self, session_id: Uuid, execution_id: Uuid) {
+        self.emit(
+            session_id,
+            ChatStreamEvent::WorkflowExecutionUpdated {
+                session_id,
+                execution_id,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_workflow_graph_updated(
+        &self,
+        session_id: Uuid,
+        execution_id: Uuid,
+        graph_version: String,
+        reason: String,
+        nodes: Vec<WorkflowPlanNode>,
+        edges: Vec<WorkflowPlanEdge>,
+        changed_step_ids: Vec<String>,
+    ) {
+        self.emit(
+            session_id,
+            ChatStreamEvent::WorkflowGraphUpdated {
+                session_id,
+                execution_id,
+                graph_version,
+                reason,
+                nodes,
+                edges,
+                changed_step_ids,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_workflow_runtime_line(
+        &self,
+        session_id: Uuid,
+        execution_id: Uuid,
+        workflow_agent_session_id: Option<Uuid>,
+        step_id: Uuid,
+        step_key: String,
+        agent_id: Uuid,
+        agent_name: String,
+        stream_type: ChatStreamDeltaType,
+        content: String,
+        created_at: String,
+    ) {
+        self.emit(
+            session_id,
+            ChatStreamEvent::WorkflowRuntimeLine {
+                line_id: Uuid::new_v4(),
+                session_id,
+                execution_id,
+                workflow_agent_session_id,
+                step_id,
+                step_key,
+                agent_id,
+                agent_name,
+                stream_type,
+                content,
+                created_at,
+            },
+        );
+    }
+
+    /// Update the mention_statuses field in a message's meta
+    async fn update_mention_status(&self, message_id: Uuid, agent_name: &str, status: &str) {
+        // Fetch the current message
+        let Ok(Some(message)) = ChatMessage::find_by_id(&self.db.pool, message_id).await else {
+            tracing::warn!(
+                message_id = %message_id,
+                "failed to fetch message for mention status update"
+            );
+            return;
+        };
+
+        // Update the meta with new mention status
+        let mut meta = message.meta.0.clone();
+        let mention_statuses = meta
+            .get_mut("mention_statuses")
+            .and_then(|v| v.as_object_mut());
+
+        if let Some(statuses) = mention_statuses {
+            statuses.insert(agent_name.to_string(), serde_json::json!(status));
+        } else {
+            let mut new_statuses = serde_json::Map::new();
+            new_statuses.insert(agent_name.to_string(), serde_json::json!(status));
+            meta["mention_statuses"] = serde_json::Value::Object(new_statuses);
+        }
+
+        // Persist the updated meta
+        if let Err(err) = ChatMessage::update_meta(&self.db.pool, message_id, meta).await {
+            tracing::warn!(
+                message_id = %message_id,
+                error = %err,
+                "failed to update message mention status"
+            );
+        }
+    }
+
+    fn mention_status_as_str(status: &MentionStatus) -> &'static str {
+        match status {
+            MentionStatus::Received => "received",
+            MentionStatus::Running => "running",
+            MentionStatus::Completed => "completed",
+            MentionStatus::Failed => "failed",
+        }
+    }
+
+    async fn set_mention_status(
+        &self,
+        session_id: Uuid,
+        message_id: Uuid,
+        agent_name: &str,
+        agent_id: Option<Uuid>,
+        status: MentionStatus,
+    ) {
+        self.update_mention_status(message_id, agent_name, Self::mention_status_as_str(&status))
+            .await;
+
+        if let Some(agent_id) = agent_id {
+            self.emit(
+                session_id,
+                ChatStreamEvent::MentionAcknowledged {
+                    session_id,
+                    message_id,
+                    mentioned_agent: agent_name.to_string(),
+                    agent_id,
+                    status,
+                },
+            );
+        }
+    }
+
+    async fn report_mention_failure(
+        &self,
+        session_id: Uuid,
+        message_id: Uuid,
+        agent_name: &str,
+        agent_id: Option<Uuid>,
+        reason: impl Into<String>,
+    ) {
+        let reason = reason.into();
+        let compact_reason = reason
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let compact_reason = if compact_reason.is_empty() {
+            "Unknown error".to_string()
+        } else {
+            compact_reason.clone()
+        };
+
+        tracing::debug!(
+            session_id = %session_id,
+            message_id = %message_id,
+            agent_name = %agent_name,
+            agent_id = ?agent_id,
+            compact_reason = %compact_reason,
+            full_reason_len = reason.len(),
+            "[chat_runner] Reporting mention failure"
+        );
+
+        self.set_mention_status(
+            session_id,
+            message_id,
+            agent_name,
+            agent_id,
+            MentionStatus::Failed,
+        )
+        .await;
+
+        if let Ok(Some(msg)) = ChatMessage::find_by_id(&self.db.pool, message_id).await {
+            let mut meta = msg.meta.0.clone();
+            if let Some(meta_obj) = meta.as_object_mut() {
+                let mention_errors = meta_obj
+                    .entry("mention_errors")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(errors) = mention_errors.as_object_mut() {
+                    let mut error_info = serde_json::json!({
+                        "reason": compact_reason.clone(),
+                    });
+                    if let Some(aid) = agent_id {
+                        error_info["agent_id"] = serde_json::json!(aid);
+                    }
+                    errors.insert(agent_name.to_string(), error_info);
+                }
+            }
+            let _ = ChatMessage::update_meta(&self.db.pool, message_id, meta).await;
+        }
+
+        self.emit(
+            session_id,
+            ChatStreamEvent::MentionError {
+                session_id,
+                message_id,
+                agent_name: agent_name.to_string(),
+                agent_id,
+                reason: compact_reason.clone(),
+            },
+        );
+
+        let mut failure_meta = serde_json::json!({
+            "mention_failure": {
+                "source_message_id": message_id,
+                "mentioned_agent": agent_name,
+                "reason": compact_reason.clone(),
+            }
+        });
+
+        if let Some(value) = agent_id {
+            failure_meta["mention_failure"]["agent_id"] = serde_json::json!(value);
+        }
+
+        let system_content = format!(
+            "Agent \"{}\" failed to execute this mention: {}",
+            agent_name, compact_reason
+        );
+
+        match chat::create_message(
+            &self.db.pool,
+            session_id,
+            ChatSenderType::System,
+            None,
+            system_content,
+            Some(failure_meta),
+        )
+        .await
+        {
+            Ok(message) => self.emit_message_new(session_id, message),
+            Err(err) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    message_id = %message_id,
+                    agent_name = %agent_name,
+                    error = %err,
+                    "failed to emit mention failure system message"
+                );
+            }
+        }
+    }
+
+    pub async fn handle_message(&self, session: &ChatSession, message: &ChatMessage) {
+        self.emit_message_new(session.id, message.clone());
+
+        // Check chain depth to prevent infinite loops
+        let chain_depth = self.extract_chain_depth(&message.meta);
+        let max_agent_chain_depth = config::load_config_from_file(&config_path())
+            .await
+            .max_agent_chain_depth
+            .max(1);
+        if chain_depth >= max_agent_chain_depth {
+            tracing::warn!(
+                session_id = %session.id,
+                chain_depth = chain_depth,
+                max_agent_chain_depth = max_agent_chain_depth,
+                "agent chain depth limit reached; not triggering further agents"
+            );
+            return;
+        }
+
+        let session_id = session.id;
+        let mut mentions = message.mentions.0.clone();
+        if mentions.is_empty() {
+            match self
+                .resolve_default_mention_for_unmentioned_user_message(session, message)
+                .await
+            {
+                Ok(Some(default_mention)) => {
+                    tracing::debug!(
+                        session_id = %session_id,
+                        message_id = %message.id,
+                        mention = %default_mention,
+                        "routing unmentioned user message to first session agent"
+                    );
+                    mentions.push(default_mention);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        message_id = %message.id,
+                        error = %err,
+                        "failed to resolve default session agent for unmentioned user message"
+                    );
+                }
+            }
+        }
+
+        for mention in mentions {
+            if message.sender_type == ChatSenderType::Agent
+                && mention.eq_ignore_ascii_case(RESERVED_USER_HANDLE)
+            {
+                tracing::debug!(
+                    session_id = %session_id,
+                    message_id = %message.id,
+                    mention = mention,
+                    "skipping reserved user mention in agent message"
+                );
+                continue;
+            }
+
+            let runner = self.clone();
+            let message_clone = message.clone();
+            tokio::spawn(async move {
+                if let Err(err) = runner
+                    .run_agent_for_mention(session_id, &mention, &message_clone)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %err,
+                        mention = mention,
+                        session_id = %session_id,
+                        "chat runner failed for mention"
+                    );
+                }
+            });
+        }
+    }
+
+    async fn resolve_default_mention_for_unmentioned_user_message(
+        &self,
+        session: &ChatSession,
+        message: &ChatMessage,
+    ) -> Result<Option<String>, ChatRunnerError> {
+        if message.sender_type != ChatSenderType::User || !message.mentions.0.is_empty() {
+            return Ok(None);
+        }
+
+        let session_agents =
+            ChatSessionAgent::find_all_for_session(&self.db.pool, session.id).await?;
+        if session_agents.is_empty() {
+            return Ok(None);
+        }
+
+        let agents = ChatAgent::find_all(&self.db.pool).await?;
+
+        // In workflow mode, route to the designated lead agent (falls back to first if none set).
+        // In free mode, route to the first session agent (original behaviour).
+        let is_workflow_mode = message
+            .meta
+            .get("chat_input_mode")
+            .and_then(|v| v.as_str())
+            .map(|v| v == "workflow")
+            .unwrap_or(false);
+
+        if is_workflow_mode {
+            tracing::debug!(
+                session_id = %session.id,
+                message_id = %message.id,
+                "attempting to resolve lead agent for workflow mode message"
+            );
+            match resolve_lead_agent(session, &session_agents, &agents) {
+                Ok((lead_agent, _)) => return Ok(Some(lead_agent.name.clone())),
+                Err(_) => return Ok(None),
+            }
+        }
+
+        // Free mode: first available agent
+        let agent_map: std::collections::HashMap<Uuid, &ChatAgent> =
+            agents.iter().map(|a| (a.id, a)).collect();
+        for session_agent in &session_agents {
+            if let Some(agent) = agent_map.get(&session_agent.agent_id) {
+                return Ok(Some(agent.name.clone()));
+            }
+            tracing::warn!(
+                session_id = %session.id,
+                session_agent_id = %session_agent.id,
+                agent_id = %session_agent.agent_id,
+                "default route skipped session agent with missing backing agent"
+            );
+        }
+
+        Ok(None)
+    }
+
+    fn extract_chain_depth(&self, meta: &sqlx::types::Json<serde_json::Value>) -> u32 {
+        meta.get("chain_depth")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(0)
+    }
+
+    /// Extract the protocol retry attempt count from a source message's metadata.
+    /// Returns 0 if the message is not a retry (normal first attempt).
+    fn extract_protocol_retry_attempt(meta: &sqlx::types::Json<serde_json::Value>) -> u32 {
+        meta.get("protocol_retry")
+            .and_then(|v| v.get("attempt"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(0)
+    }
+
+    fn emit(&self, session_id: Uuid, event: ChatStreamEvent) {
+        let sender = self.sender_for(session_id);
+        let _ = sender.send(event);
+    }
+
+    fn sender_for(&self, session_id: Uuid) -> broadcast::Sender<ChatStreamEvent> {
+        if let Some(entry) = self.streams.get(&session_id) {
+            return entry.clone();
+        }
+
+        let (sender, _) = broadcast::channel(1024);
+        self.streams.insert(session_id, sender.clone());
+        sender
+    }
+
+    /// Process the next pending message for a session agent after it becomes idle
+    async fn process_pending_queue(&self, session_id: Uuid, session_agent_id: Uuid) {
+        // Get the next pending message from the queue
+        let pending = self
+            .pending_messages
+            .get_mut(&session_agent_id)
+            .and_then(|mut queue| queue.pop_front());
+
+        if let Some(pending_msg) = pending {
+            tracing::info!(
+                session_agent_id = %session_agent_id,
+                message_id = %pending_msg.message.id,
+                agent_name = %pending_msg.agent_name,
+                "processing queued message for agent"
+            );
+
+            // Process the queued message by calling run_agent_for_mention
+            // Use the stored agent_name to find the agent (handles rename gracefully)
+            if let Err(err) = self
+                .run_agent_for_mention_internal(
+                    pending_msg.session_id,
+                    &pending_msg.agent_name,
+                    &pending_msg.message,
+                    pending_msg.track_source_message,
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    agent_name = %pending_msg.agent_name,
+                    session_agent_id = %session_agent_id,
+                    "failed to process queued message"
+                );
+                // Continue processing the rest of the queue
+                Box::pin(self.process_pending_queue(session_id, session_agent_id)).await;
+            }
+        } else {
+            // Clean up empty queue entry
+            self.pending_messages.remove(&session_agent_id);
+        }
+    }
+
+    /// Clear all pending messages for a session agent and mark them as failed
+    /// Called when an agent fails/dies to prevent messages from being stuck
+    async fn clear_pending_queue_on_failure(&self, _session_id: Uuid, session_agent_id: Uuid) {
+        // Remove and get all pending messages for this agent
+        let pending_messages = self.pending_messages.remove(&session_agent_id);
+
+        if let Some((_, messages)) = pending_messages {
+            for pending_msg in messages {
+                tracing::info!(
+                    session_agent_id = %session_agent_id,
+                    message_id = %pending_msg.message.id,
+                    agent_name = %pending_msg.agent_name,
+                    "marking queued message as failed due to agent failure"
+                );
+
+                if pending_msg.track_source_message {
+                    // Update message meta to show failed status
+                    self.update_mention_status(
+                        pending_msg.message.id,
+                        &pending_msg.agent_name,
+                        "failed",
+                    )
+                    .await;
+
+                    // Emit failed event
+                    self.emit(
+                        pending_msg.session_id,
+                        ChatStreamEvent::MentionAcknowledged {
+                            session_id: pending_msg.session_id,
+                            message_id: pending_msg.message.id,
+                            mentioned_agent: pending_msg.agent_name.clone(),
+                            agent_id: pending_msg.agent_id,
+                            status: MentionStatus::Failed,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    async fn resolve_session_agent_for_mention(
+        &self,
+        session_id: Uuid,
+        mention: &str,
+    ) -> Result<Option<(ChatSessionAgent, ChatAgent)>, ChatRunnerError> {
+        let session_agents =
+            ChatSessionAgent::find_all_for_session(&self.db.pool, session_id).await?;
+        if session_agents.is_empty() {
+            return Ok(None);
+        }
+
+        let agents = ChatAgent::find_all(&self.db.pool).await?;
+        let agent_map: HashMap<Uuid, ChatAgent> =
+            agents.into_iter().map(|agent| (agent.id, agent)).collect();
+
+        let mut exact_match: Option<(ChatSessionAgent, ChatAgent)> = None;
+        let mut ci_match: Option<(ChatSessionAgent, ChatAgent)> = None;
+
+        for session_agent in session_agents {
+            let Some(agent) = agent_map.get(&session_agent.agent_id) else {
+                tracing::warn!(
+                    session_agent_id = %session_agent.id,
+                    agent_id = %session_agent.agent_id,
+                    "chat session agent missing backing agent"
+                );
+                continue;
+            };
+
+            if agent.name == mention {
+                exact_match = Some((session_agent, agent.clone()));
+                break;
+            }
+
+            if agent.name.eq_ignore_ascii_case(mention) {
+                if ci_match.is_some() {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        mention = mention,
+                        "multiple session agents matched mention; skipping"
+                    );
+                    return Ok(None);
+                }
+                ci_match = Some((session_agent, agent.clone()));
+            }
+        }
+
+        let Some((session_agent, agent)) = exact_match.or(ci_match) else {
+            return Ok(None);
+        };
+
+        if session_agent.workspace_path.is_none() {
+            let workspace_path = self
+                .resolve_workspace_path_for_agent(session_id, agent.id, None)
+                .await?;
+            let updated = ChatSessionAgent::update_workspace_path(
+                &self.db.pool,
+                session_agent.id,
+                Some(workspace_path),
+            )
+            .await?;
+            return Ok(Some((updated, agent)));
+        }
+
+        Ok(Some((session_agent, agent)))
+    }
+
+    async fn run_agent_for_mention(
+        &self,
+        session_id: Uuid,
+        mention: &str,
+        source_message: &ChatMessage,
+    ) -> Result<(), ChatRunnerError> {
+        self.run_agent_for_mention_internal(session_id, mention, source_message, true)
+            .await
+    }
+
+    async fn run_agent_for_mention_internal(
+        &self,
+        session_id: Uuid,
+        mention: &str,
+        source_message: &ChatMessage,
+        track_source_message: bool,
+    ) -> Result<(), ChatRunnerError> {
+        if source_message.sender_type == ChatSenderType::Agent
+            && mention.eq_ignore_ascii_case(RESERVED_USER_HANDLE)
+        {
+            tracing::debug!(
+                session_id = %session_id,
+                message_id = %source_message.id,
+                mention = mention,
+                "skipping reserved user mention in agent message"
+            );
+            return Ok(());
+        }
+
+        let resolved = self
+            .resolve_session_agent_for_mention(session_id, mention)
+            .await;
+        let Some((session_agent, agent)) = (match resolved {
+            Ok(value) => value,
+            Err(err) => {
+                if track_source_message {
+                    self.report_mention_failure(
+                        session_id,
+                        source_message.id,
+                        mention,
+                        None,
+                        format!("Failed to resolve mentioned agent: {err}"),
+                    )
+                    .await;
+                }
+                return Err(err);
+            }
+        }) else {
+            if let Some(agent) = ChatAgent::find_by_name(&self.db.pool, mention).await? {
+                tracing::debug!(
+                    session_id = %session_id,
+                    agent_id = %agent.id,
+                    mention = mention,
+                    "chat session agent not configured; marking mention as failed"
+                );
+                if track_source_message {
+                    self.report_mention_failure(
+                        session_id,
+                        source_message.id,
+                        &agent.name,
+                        Some(agent.id),
+                        "Agent is not configured in this session.",
+                    )
+                    .await;
+                }
+                return Err(ChatRunnerError::AgentNotFound(mention.to_string()));
+            }
+            if track_source_message {
+                self.report_mention_failure(
+                    session_id,
+                    source_message.id,
+                    mention,
+                    None,
+                    "Mentioned agent was not found.",
+                )
+                .await;
+            }
+            return Err(ChatRunnerError::AgentNotFound(mention.to_string()));
+        };
+
+        if source_message.sender_type == ChatSenderType::Agent
+            && let Some(sender_id) = source_message.sender_id
+            && sender_id == agent.id
+        {
+            tracing::debug!(
+                agent_id = %sender_id,
+                mention = mention,
+                "skipping self-mention by agent"
+            );
+            return Ok(());
+        }
+
+        if matches!(
+            session_agent.state,
+            ChatSessionAgentState::Running | ChatSessionAgentState::Stopping
+        ) {
+            // Queue the message for later processing instead of skipping
+            tracing::debug!(
+                session_agent_id = %session_agent.id,
+                agent_id = %agent.id,
+                message_id = %source_message.id,
+                state = ?session_agent.state,
+                "chat session agent already active; queueing message for later"
+            );
+
+            let pending = PendingMessage {
+                session_id,
+                agent_id: agent.id,
+                agent_name: agent.name.clone(),
+                message: source_message.clone(),
+                track_source_message,
+            };
+
+            self.pending_messages
+                .entry(session_agent.id)
+                .or_default()
+                .push_back(pending);
+
+            if track_source_message {
+                // Emit a "received" status to indicate the message is queued
+                self.emit(
+                    session_id,
+                    ChatStreamEvent::MentionAcknowledged {
+                        session_id,
+                        message_id: source_message.id,
+                        mentioned_agent: agent.name.clone(),
+                        agent_id: agent.id,
+                        status: MentionStatus::Received,
+                    },
+                );
+
+                // Persist received status to message meta
+                self.update_mention_status(source_message.id, &agent.name, "received")
+                    .await;
+            }
+
+            return Ok(());
+        }
+
+        let mut session_agent = if session_agent.state != ChatSessionAgentState::Running {
+            ChatSessionAgent::update_state(
+                &self.db.pool,
+                session_agent.id,
+                ChatSessionAgentState::Running,
+            )
+            .await?
+        } else {
+            session_agent
+        };
+
+        let session_agent_id = session_agent.id;
+        let agent_id = agent.id;
+        let run_started_at = session_agent.updated_at;
+        let run_id = Uuid::new_v4();
+        // Register the stop control before broadcasting the running state so an
+        // immediate user stop request cannot miss the active run.
+        let stop = self.register_run_control(session_agent_id, run_id);
+
+        self.emit(
+            session_id,
+            ChatStreamEvent::AgentState {
+                session_agent_id,
+                agent_id,
+                state: ChatSessionAgentState::Running,
+                started_at: Some(session_agent.updated_at),
+            },
+        );
+
+        workflow_analytics::track_agent_state_changed(
+            self.analytics_service(),
+            session_id,
+            None,
+            "running",
+        );
+
+        if track_source_message {
+            // Emit MentionAcknowledged running event
+            self.emit(
+                session_id,
+                ChatStreamEvent::MentionAcknowledged {
+                    session_id,
+                    message_id: source_message.id,
+                    mentioned_agent: agent.name.clone(),
+                    agent_id: agent.id,
+                    status: MentionStatus::Running,
+                },
+            );
+
+            // Persist running status to message meta
+            self.update_mention_status(source_message.id, &agent.name, "running")
+                .await;
+        }
+
+        let chain_depth = self.extract_chain_depth(&source_message.meta);
+        let protocol_retry_attempt = Self::extract_protocol_retry_attempt(&source_message.meta);
+
+        let result = async {
+            let workspace_path = self
+                .resolve_workspace_path_for_agent(
+                    session_id,
+                    agent_id,
+                    session_agent.workspace_path.clone(),
+                )
+                .await?;
+            fs::create_dir_all(&workspace_path).await?;
+            if let Err(err) =
+                Self::ensure_openteams_ignored_for_git_workspace(Path::new(&workspace_path)).await
+            {
+                tracing::warn!(
+                    workspace_path = %workspace_path,
+                    error = %err,
+                    "Failed to ensure .openteams is gitignored for workspace"
+                );
+            }
+            let tracked_diff_baseline =
+                Self::capture_tracked_git_diff_snapshot(PathBuf::from(&workspace_path).as_path())
+                    .await;
+            let run_records_dir = Self::workspace_run_records_dir(
+                PathBuf::from(&workspace_path).as_path(),
+                session_id,
+            );
+            fs::create_dir_all(&run_records_dir).await?;
+            tracing::info!(
+                session_id = %session_id,
+                workspace_path = %workspace_path,
+                runs_dir = %run_records_dir.display(),
+                "Using workspace runs directory"
+            );
+
+            let run_index = ChatRun::next_run_index(&self.db.pool, session_agent_id).await?;
+            let run_dir =
+                run_records_dir.join(Self::run_records_prefix(session_agent_id, run_index));
+            fs::create_dir_all(&run_dir).await?;
+
+            tracing::debug!(
+                session_id = %session_id,
+                run_id = %run_id,
+                run_index = run_index,
+                run_dir = %run_dir.display(),
+                "[chat_runner] Created run directory for agent execution"
+            );
+
+            let input_path = run_dir.join("input.md");
+            let output_path = run_dir.join("output.md");
+            let tail_log_path = run_dir.join("raw.tail.log");
+            let meta_path = run_dir.join("meta.json");
+            let live_spool_path =
+                Self::workspace_live_spool_path(PathBuf::from(&workspace_path).as_path(), run_id);
+
+            let context_snapshot = self
+                .build_context_snapshot(session_id, &workspace_path)
+                .await?;
+            if let Some(warning) = context_snapshot.compression_warning.clone() {
+                self.emit(
+                    session_id,
+                    ChatStreamEvent::CompressionWarning {
+                        session_id,
+                        warning: warning.into(),
+                    },
+                );
+            }
+            let context_dir = context_snapshot
+                .workspace_path
+                .parent()
+                .map(|path| path.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from(&workspace_path));
+            let reference_context = self
+                .build_reference_context(session_id, source_message, &context_dir)
+                .await?;
+            let message_attachments = self
+                .build_message_attachment_context(source_message, &context_dir)
+                .await?;
+            let session_agents = self.build_session_agent_summaries(session_id).await?;
+            let session = ChatSession::find_by_id(&self.db.pool, session_id).await?;
+
+            // Resolve builtin + user-configured skills for this agent.
+            let prompt_context = if is_workflow_chat_input_mode(&source_message.meta.0) {
+                crate::services::agent_skill_policy::AgentPromptContext::WorkflowChat
+            } else {
+                crate::services::agent_skill_policy::AgentPromptContext::FreeChat
+            };
+            let agent_skills = self
+                .prepare_and_resolve_agent_skills(&mut session_agent, &agent, prompt_context)
+                .await?;
+
+            // Load UI language setting for agent response language
+            let ui_config = config::load_config_from_file(&config_path()).await;
+            let ui_language = ui_config.language;
+            let prompt_language = Self::resolve_prompt_language(source_message, &ui_language);
+
+            let prompt = self.build_prompt(
+                &agent,
+                source_message,
+                &context_snapshot.workspace_path,
+                Path::new(&workspace_path),
+                &session_agents,
+                message_attachments.as_ref(),
+                reference_context.as_ref(),
+                &agent_skills,
+                prompt_language,
+                Self::resolve_session_team_protocol(session.as_ref()),
+            );
+            fs::write(&input_path, &prompt).await?;
+
+            let _run = ChatRun::create(
+                &self.db.pool,
+                &CreateChatRun {
+                    session_id,
+                    session_agent_id,
+                    workspace_path: Some(workspace_path.clone()),
+                    run_index,
+                    run_dir: run_dir.to_string_lossy().to_string(),
+                    input_path: Some(input_path.to_string_lossy().to_string()),
+                    output_path: Some(output_path.to_string_lossy().to_string()),
+                    raw_log_path: Some(live_spool_path.to_string_lossy().to_string()),
+                    meta_path: Some(meta_path.to_string_lossy().to_string()),
+                },
+                run_id,
+            )
+            .await?;
+
+            let executor_profile_id = self.parse_executor_profile_id(&agent)?;
+            let mut executor =
+                ExecutorConfigs::get_cached().get_coding_agent_or_default(&executor_profile_id);
+            executor.use_approvals(Arc::new(NoopExecutorApprovalService));
+
+            if let Some(model_name) = &agent.model_name
+                && let Some(executor_with_model) = with_model(&executor, model_name)
+            {
+                executor = executor_with_model;
+            }
+
+            let repo_context = RepoContext::new(PathBuf::from(&workspace_path), Vec::new());
+            let mut env = ExecutionEnv::new(repo_context, false, String::new());
+            env.insert("VK_CHAT_SESSION_ID", session_id.to_string());
+            env.insert("VK_CHAT_AGENT_ID", agent_id.to_string());
+            env.insert("VK_CHAT_SESSION_AGENT_ID", session_agent_id.to_string());
+            env.insert("VK_CHAT_RUN_ID", run_id.to_string());
+            env.insert(
+                "VK_CHAT_CONTEXT_PATH",
+                context_snapshot
+                    .workspace_path
+                    .to_string_lossy()
+                    .to_string(),
+            );
+
+            let mut spawned = if session_agent.state != ChatSessionAgentState::Dead {
+                if let Some(agent_session_id) = session_agent.agent_session_id.as_deref() {
+                    executor
+                        .spawn_follow_up(
+                            PathBuf::from(&workspace_path).as_path(),
+                            &prompt,
+                            agent_session_id,
+                            session_agent.agent_message_id.as_deref(),
+                            &env,
+                        )
+                        .await?
+                } else {
+                    executor
+                        .spawn(PathBuf::from(&workspace_path).as_path(), &prompt, &env)
+                        .await?
+                }
+            } else {
+                executor
+                    .spawn(PathBuf::from(&workspace_path).as_path(), &prompt, &env)
+                    .await?
+            };
+
+            let msg_store = Arc::new(MsgStore::new());
+            let raw_log_spool = Arc::new(Mutex::new(
+                runtime::RunLogSpool::new(
+                    live_spool_path,
+                    run_id,
+                    self.db.pool.clone(),
+                    workspace_path.clone(),
+                    self.workspace_live_log_bytes.clone(),
+                )
+                .await?,
+            ));
+
+            self.analytics_projector()
+                .project_or_warn(DomainEvent::AgentRunStarted {
+                    session_id,
+                    agent_id,
+                    run_id,
+                    executor_profile: Some(executor_profile_id.to_string()),
+                })
+                .await;
+
+            let log_forwarders = self.spawn_log_forwarders(
+                &mut spawned.child,
+                msg_store.clone(),
+                raw_log_spool.clone(),
+            );
+            executor.normalize_logs(msg_store.clone(), PathBuf::from(&workspace_path).as_path());
+
+            let completion_status = Arc::new(AtomicU8::new(RunCompletionStatus::Succeeded.as_u8()));
+
+            self.spawn_stream_bridge(
+                msg_store.clone(),
+                session_id,
+                agent_id,
+                session_agent_id,
+                run_index,
+                run_id,
+                output_path,
+                meta_path,
+                PathBuf::from(&workspace_path),
+                run_dir,
+                tail_log_path,
+                raw_log_spool,
+                completion_status.clone(),
+                tracked_diff_baseline,
+                chain_depth,
+                context_snapshot.context_compacted,
+                context_snapshot.compression_warning.clone(),
+                self.clone(),
+                source_message.id,
+                source_message.created_at,
+                source_message.content.clone(),
+                agent.name.clone(),
+                prompt_language,
+                run_started_at,
+                protocol_retry_attempt,
+                track_source_message,
+                executor_profile_id.executor == BaseCodingAgent::Codex,
+            );
+
+            self.spawn_exit_watcher(
+                runtime::ExitWatcherArgs {
+                    child: spawned.child,
+                    stop,
+                    executor_cancel: spawned.cancel,
+                    exit_signal: spawned.exit_signal,
+                    msg_store,
+                    completion_status,
+                    log_forwarders,
+                },
+                session_agent_id,
+                run_id,
+            );
+
+            Ok::<(), ChatRunnerError>(())
+        }
+        .await;
+
+        if result.is_err() {
+            self.run_controls.remove(&session_agent_id);
+            if let Err(err) = &result {
+                self.analytics_projector()
+                    .project_or_warn(DomainEvent::AgentRunErrored {
+                        session_id,
+                        agent_id,
+                        run_id,
+                        error_type: "startup_failure".to_string(),
+                        error_code: "agent_startup_failed".to_string(),
+                    })
+                    .await;
+                workflow_analytics::track_agent_error(
+                    self.analytics_service(),
+                    session_id,
+                    None,
+                    None,
+                    "agent_startup_failed",
+                    None,
+                );
+                if track_source_message {
+                    self.report_mention_failure(
+                        session_id,
+                        source_message.id,
+                        &agent.name,
+                        Some(agent_id),
+                        format!("Failed to start agent run: {err}"),
+                    )
+                    .await;
+                }
+            }
+            let _ = ChatSessionAgent::update_state(
+                &self.db.pool,
+                session_agent_id,
+                ChatSessionAgentState::Dead,
+            )
+            .await;
+            self.emit(
+                session_id,
+                ChatStreamEvent::AgentState {
+                    session_agent_id,
+                    agent_id,
+                    state: ChatSessionAgentState::Dead,
+                    started_at: None,
+                },
+            );
+            workflow_analytics::track_agent_state_changed(
+                self.analytics_service(),
+                session_id,
+                None,
+                "dead",
+            );
+        }
+
+        result
+    }
+}

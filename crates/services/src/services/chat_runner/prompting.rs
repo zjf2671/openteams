@@ -783,15 +783,6 @@ impl ChatRunner {
         Ok(summaries)
     }
 
-    /// Escape special characters for TOML string values
-    pub(super) fn escape_toml_string(s: &str) -> String {
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t")
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_exact_markdown_prompt(
         agent: &ChatAgent,
@@ -1097,105 +1088,6 @@ impl ChatRunner {
         markdown
     }
 
-    #[allow(dead_code)]
-    pub(super) fn push_markdown_section(markdown: &mut String, level: usize, title: &str) {
-        let heading_level = level.clamp(1, 6);
-        markdown.push_str(&"#".repeat(heading_level));
-        markdown.push(' ');
-        markdown.push_str(title);
-        markdown.push_str("\n\n");
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn push_markdown_field(markdown: &mut String, label: &str, value: &str) {
-        if value.contains('\n') {
-            Self::push_markdown_block_field(markdown, label, value, "text");
-            return;
-        }
-        markdown.push_str("- **");
-        markdown.push_str(label);
-        markdown.push_str("**: ");
-        markdown.push_str(value);
-        markdown.push('\n');
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn push_markdown_bool_field(markdown: &mut String, label: &str, value: bool) {
-        markdown.push_str("- **");
-        markdown.push_str(label);
-        markdown.push_str("**: ");
-        markdown.push_str(if value { "true" } else { "false" });
-        markdown.push('\n');
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn push_markdown_number_field(markdown: &mut String, label: &str, value: i64) {
-        markdown.push_str("- **");
-        markdown.push_str(label);
-        markdown.push_str("**: ");
-        markdown.push_str(&value.to_string());
-        markdown.push('\n');
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn push_markdown_json_field<T>(markdown: &mut String, label: &str, value: &T)
-    where
-        T: Serialize + ?Sized,
-    {
-        let json = serde_json::to_string(value).expect("markdown JSON field should serialize");
-        markdown.push_str("- **");
-        markdown.push_str(label);
-        markdown.push_str("**: ");
-        markdown.push_str(&json);
-        markdown.push('\n');
-    }
-
-    pub(super) fn push_markdown_block_field(
-        markdown: &mut String,
-        label: &str,
-        value: &str,
-        language: &str,
-    ) {
-        markdown.push_str("- **");
-        markdown.push_str(label);
-        markdown.push_str("**:\n\n");
-
-        let fence = Self::markdown_fence_for_content(value);
-        markdown.push_str(&fence);
-        if !language.is_empty() {
-            markdown.push_str(language);
-        }
-        markdown.push('\n');
-        markdown.push_str(value);
-        if !value.ends_with('\n') {
-            markdown.push('\n');
-        }
-        markdown.push_str(&fence);
-        markdown.push_str("\n\n");
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn set_trailing_newlines(markdown: &mut String, newline_count: usize) {
-        while markdown.ends_with('\n') {
-            markdown.pop();
-        }
-        markdown.push_str(&"\n".repeat(newline_count));
-    }
-
-    pub(super) fn markdown_fence_for_content(content: &str) -> String {
-        let mut longest_run = 0usize;
-        let mut current_run = 0usize;
-        for ch in content.chars() {
-            if ch == '`' {
-                current_run += 1;
-                longest_run = longest_run.max(current_run);
-            } else {
-                current_run = 0;
-            }
-        }
-        "`".repeat(longest_run.max(2) + 1)
-    }
-
     pub(super) fn resolve_prompt_language(
         message: &ChatMessage,
         configured_language: &UiLanguage,
@@ -1400,21 +1292,6 @@ impl ChatRunner {
         Some(Self::resolve_prompt_language_from_ui_language(
             &UiLanguage::En,
         ))
-    }
-
-    #[allow(dead_code)]
-    /// Get language code and instruction based on UiLanguage setting
-    pub(super) fn get_language_instruction(language: &UiLanguage) -> (&'static str, &'static str) {
-        match language {
-            UiLanguage::Browser => ("en", "You MUST respond in English."),
-            UiLanguage::En => ("en", "You MUST respond in English."),
-            UiLanguage::ZhHans => ("zh-Hans", "You MUST respond in Simplified Chinese."),
-            UiLanguage::ZhHant => ("zh-Hant", "You MUST respond in Traditional Chinese."),
-            UiLanguage::Ja => ("ja", "You MUST respond in Japanese."),
-            UiLanguage::Ko => ("ko", "You MUST respond in Korean."),
-            UiLanguage::Fr => ("fr", "You MUST respond in French."),
-            UiLanguage::Es => ("es", "You MUST respond in Spanish."),
-        }
     }
 
     pub(super) fn parse_agent_protocol_messages(
@@ -2244,117 +2121,6 @@ impl ChatRunner {
                 }
             })
             .collect()
-    }
-
-    /// Legacy TOML-based user prompt builder kept for transition safety.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn build_user_prompt(
-        &self,
-        agent: &ChatAgent,
-        message: &ChatMessage,
-        message_attachments: Option<&MessageAttachmentContext>,
-        reference: Option<&ReferenceContext>,
-    ) -> String {
-        let mut toml = String::new();
-
-        // 1. Envelope section
-        toml.push_str("[envelope]\n");
-        toml.push_str(&format!("session_id = \"{}\"\n", message.session_id));
-        let sender = Self::resolve_message_sender_identity(message);
-        toml.push_str(&format!(
-            "from = \"{}\"\n",
-            Self::escape_toml_string(&sender.address)
-        ));
-        toml.push_str(&format!(
-            "to = \"agent:{}\"\n",
-            Self::escape_toml_string(&agent.name)
-        ));
-        toml.push_str(&format!("message_id = \"{}\"\n", message.id));
-        toml.push_str(&format!("timestamp = \"{}\"\n\n", message.created_at));
-
-        // 2. Message section
-        toml.push_str("[message]\n");
-        toml.push_str(&format!(
-            "sender = \"{}\"\n",
-            Self::escape_toml_string(&sender.label)
-        ));
-        toml.push_str(&format!(
-            "content = \"\"\"\n{}\n\"\"\"\n",
-            message.content.trim()
-        ));
-
-        if let Some(reference) = reference {
-            toml.push_str("\n[message.reference]\n");
-            toml.push_str(
-                "note = \"User referenced the following historical message. Prioritize it.\"\n",
-            );
-            toml.push_str(&format!("message_id = \"{}\"\n", reference.message_id));
-            toml.push_str(&format!(
-                "sender = \"{}\"\n",
-                Self::escape_toml_string(&reference.sender_label)
-            ));
-            toml.push_str(&format!("sender_type = \"{:?}\"\n", reference.sender_type));
-            toml.push_str(&format!(
-                "created_at = \"{}\"\n",
-                Self::escape_toml_string(&reference.created_at)
-            ));
-            toml.push_str(&format!(
-                "content = \"\"\"\n{}\n\"\"\"\n",
-                reference.content.trim()
-            ));
-
-            if !reference.attachments.is_empty() {
-                for attachment in &reference.attachments {
-                    toml.push_str("\n[[message.reference.attachments]]\n");
-                    toml.push_str(&format!(
-                        "name = \"{}\"\n",
-                        Self::escape_toml_string(&attachment.name)
-                    ));
-                    toml.push_str(&format!(
-                        "kind = \"{}\"\n",
-                        Self::escape_toml_string(&attachment.kind)
-                    ));
-                    toml.push_str(&format!("size_bytes = {}\n", attachment.size_bytes));
-                    toml.push_str(&format!(
-                        "mime_type = \"{}\"\n",
-                        attachment.mime_type.as_deref().unwrap_or("unknown")
-                    ));
-                    toml.push_str(&format!(
-                        "local_path = \"{}\"\n",
-                        Self::escape_toml_string(&attachment.local_path)
-                    ));
-                }
-            }
-        }
-
-        // 3. Message attachments (optional)
-        if let Some(attachments_ctx) = message_attachments
-            && !attachments_ctx.attachments.is_empty()
-        {
-            for attachment in &attachments_ctx.attachments {
-                toml.push_str("\n[[message.attachments]]\n");
-                toml.push_str(&format!(
-                    "name = \"{}\"\n",
-                    Self::escape_toml_string(&attachment.name)
-                ));
-                toml.push_str(&format!(
-                    "kind = \"{}\"\n",
-                    Self::escape_toml_string(&attachment.kind)
-                ));
-                toml.push_str(&format!("size_bytes = {}\n", attachment.size_bytes));
-                toml.push_str(&format!(
-                    "mime_type = \"{}\"\n",
-                    attachment.mime_type.as_deref().unwrap_or("unknown")
-                ));
-                toml.push_str(&format!(
-                    "local_path = \"{}\"\n",
-                    Self::escape_toml_string(&attachment.local_path)
-                ));
-            }
-        }
-
-        toml
     }
 
     #[cfg(test)]
