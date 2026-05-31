@@ -1,0 +1,556 @@
+import React, { useEffect, useRef, useState } from "react";
+import { WorkspaceProvider, useWorkspace } from "@/context/WorkspaceContext";
+import { WorkflowWorkspace } from "@/components/WorkflowWorkspace";
+import { CreateAgentSessionModal } from "@/components/CreateAgentSessionModal";
+import { DialogManager } from "@/components/DialogManager";
+import { ProjectSidebar } from "@/components/ProjectSidebar";
+import { GitHubRepositoryPage } from "@/pages/GitHubRepositoryPage";
+import { RoutingPage } from "@/pages/RoutingPage";
+import { SettingsPage } from "@/pages/SettingsPage";
+import { TasksPage } from "@/pages/TasksPage";
+import { TeamPage } from "@/pages/TeamPage";
+import { TokensPage } from "@/pages/TokensPage";
+import {
+  BookOpen,
+  Github,
+  Menu,
+  Network,
+  Plus,
+  Route,
+  Settings2,
+  Sparkles,
+  SquareCheckBig,
+  Users,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { mockFrontendApi } from "@/lib/mockFrontendApi";
+import type { ShellOptionsMock } from "@/mockApiData";
+import type {
+  SidebarNavigationItem,
+  SidebarNavigationTarget,
+  SidebarPrimaryAction,
+} from "@/types";
+
+type WorkspaceTab =
+  | { id: string; kind: "session"; sessionId: string }
+  | { id: string; kind: "page"; page: SidebarNavigationTarget; label: string };
+
+type RenderedWorkspaceTab = {
+  tab: WorkspaceTab;
+  label: string;
+  Icon: LucideIcon;
+};
+
+const pageTabConfig: Record<
+  SidebarNavigationTarget,
+  { label: string; icon: LucideIcon }
+> = {
+  workspace: { label: "Workspace", icon: Network },
+  team: { label: "AI team", icon: Users },
+  tasks: { label: "Action center", icon: SquareCheckBig },
+  routing: { label: "Routing engine", icon: Route },
+  github: { label: "GitHub", icon: Github },
+  providers: { label: "Settings", icon: Settings2 },
+  tokens: { label: "Skill library", icon: BookOpen },
+};
+
+const createSessionTabId = (sessionId: string) => `session:${sessionId}`;
+const createPageTabId = (page: SidebarNavigationTarget) => `page:${page}`;
+
+const createSessionTab = (sessionId: string): WorkspaceTab => ({
+  id: createSessionTabId(sessionId),
+  kind: "session",
+  sessionId,
+});
+
+const createPageTab = (
+  page: SidebarNavigationTarget,
+  label?: string,
+): WorkspaceTab => ({
+  id: createPageTabId(page),
+  kind: "page",
+  page,
+  label: label ?? pageTabConfig[page].label,
+});
+
+const defaultSidebarWidth = 224;
+const minSidebarWidth = 184;
+const maxSidebarWidth = 360;
+
+const clampSidebarWidth = (width: number) =>
+  Math.min(maxSidebarWidth, Math.max(minSidebarWidth, width));
+
+function WorkspaceLayout() {
+  const {
+    t,
+    toast,
+    sessions,
+    members,
+    activeSessionId,
+    setActiveSessionId,
+    weeklyCost,
+    showToast,
+  } = useWorkspace();
+
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [desktopSidebarWidth, setDesktopSidebarWidth] =
+    useState(defaultSidebarWidth);
+  const [isSidebarResizing, setIsSidebarResizing] = useState(false);
+  const [isCreateSessionModalOpen, setIsCreateSessionModalOpen] =
+    useState(false);
+  const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>(() =>
+    activeSessionId ? [createSessionTab(activeSessionId)] : [],
+  );
+  const [activeTabId, setActiveTabId] = useState<string>(() =>
+    activeSessionId ? createSessionTabId(activeSessionId) : "",
+  );
+  const [shellOptions, setShellOptions] = useState<ShellOptionsMock | null>(
+    null,
+  );
+  const sidebarResizeRef = useRef({
+    startX: 0,
+    startWidth: defaultSidebarWidth,
+  });
+
+  const translate = (
+    key: string,
+    fallback: string,
+    replacements?: Record<string, string | number>,
+  ) => {
+    const translated = t(key, replacements);
+    return translated && translated !== key ? translated : fallback;
+  };
+
+  const getPageTabLabel = (page: SidebarNavigationTarget) =>
+    translate(`page.${page}`, pageTabConfig[page].label);
+
+  useEffect(() => {
+    void mockFrontendApi.getShellOptions().then(setShellOptions);
+  }, []);
+
+  useEffect(() => {
+    if (!isSidebarResizing) return;
+
+    const originalCursor = document.body.style.cursor;
+    const originalUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const deltaX = event.clientX - sidebarResizeRef.current.startX;
+      setDesktopSidebarWidth(
+        clampSidebarWidth(sidebarResizeRef.current.startWidth + deltaX),
+      );
+    };
+
+    const handlePointerUp = () => {
+      setIsSidebarResizing(false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      document.body.style.cursor = originalCursor;
+      document.body.style.userSelect = originalUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isSidebarResizing]);
+
+  useEffect(() => {
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    setOpenTabs((currentTabs) => {
+      const validTabs = currentTabs.filter(
+        (tab) => tab.kind !== "session" || sessionIds.has(tab.sessionId),
+      );
+      if (validTabs.length > 0) return validTabs;
+      return activeSessionId ? [createSessionTab(activeSessionId)] : [];
+    });
+  }, [activeSessionId, sessions]);
+
+  useEffect(() => {
+    setActiveTabId((currentTabId) => {
+      if (openTabs.some((tab) => tab.id === currentTabId)) return currentTabId;
+      return openTabs[0]?.id ?? "";
+    });
+  }, [openTabs]);
+
+  const activeTab = openTabs.find((tab) => tab.id === activeTabId);
+  const activeAppPage: SidebarNavigationTarget =
+    activeTab?.kind === "page" ? activeTab.page : "workspace";
+  const renderedTabs = openTabs
+    .map<RenderedWorkspaceTab | null>((tab) => {
+      if (tab.kind === "session") {
+        const session = sessions.find(
+          (candidate) => candidate.id === tab.sessionId,
+        );
+        if (!session) return null;
+        return { tab, label: session.title, Icon: Network };
+      }
+      const config = pageTabConfig[tab.page];
+      return { tab, label: getPageTabLabel(tab.page), Icon: config.icon };
+    })
+    .filter((tab): tab is RenderedWorkspaceTab => Boolean(tab));
+  const openSessionTabIds = openTabs
+    .filter((tab): tab is Extract<WorkspaceTab, { kind: "session" }> =>
+      tab.kind === "session",
+    )
+    .map((tab) => tab.sessionId);
+
+  const renderActivePage = () => {
+    switch (activeAppPage) {
+      case "team":
+        return <TeamPage />;
+      case "tasks":
+        return <TasksPage />;
+      case "routing":
+        return <RoutingPage />;
+      case "github":
+        return <GitHubRepositoryPage />;
+      case "providers":
+        return <SettingsPage />;
+      case "tokens":
+        return <TokensPage />;
+      case "workspace":
+      default:
+        return (
+          <div className="h-full w-full flex flex-col min-h-0">
+            <WorkflowWorkspace />
+          </div>
+        );
+    }
+  };
+
+  const closeMobileSidebar = () => setIsMobileSidebarOpen(false);
+
+  const replaceActiveTab = (nextTab: WorkspaceTab) => {
+    setOpenTabs((currentTabs) => {
+      if (currentTabs.length === 0) return [nextTab];
+
+      const activeIndex = currentTabs.findIndex(
+        (tab) => tab.id === activeTabId,
+      );
+      const replaceIndex = activeIndex >= 0 ? activeIndex : 0;
+
+      return currentTabs.reduce<WorkspaceTab[]>((nextTabs, tab, index) => {
+        if (index === replaceIndex) {
+          nextTabs.push(nextTab);
+          return nextTabs;
+        }
+        if (tab.id !== nextTab.id) nextTabs.push(tab);
+        return nextTabs;
+      }, []);
+    });
+    setActiveTabId(nextTab.id);
+  };
+
+  const openSessionTab = (sessionId: string) => {
+    const nextTab = createSessionTab(sessionId);
+    setOpenTabs((currentTabs) => {
+      if (currentTabs.some((tab) => tab.id === nextTab.id)) return currentTabs;
+      if (currentTabs.length === 0) return [nextTab];
+
+      const activeSessionTabIndex = currentTabs.findIndex(
+        (tab) => tab.id === activeTabId && tab.kind === "session",
+      );
+      if (activeSessionTabIndex < 0) return [...currentTabs, nextTab];
+
+      return currentTabs.map((tab, index) =>
+        index === activeSessionTabIndex ? nextTab : tab,
+      );
+    });
+    setActiveTabId(nextTab.id);
+  };
+
+  const openPageTab = (page: SidebarNavigationTarget, label?: string) => {
+    replaceActiveTab(createPageTab(page, label));
+  };
+
+  const handleSidebarNavigate = (item: SidebarNavigationItem) => {
+    if (!item.targetPage) {
+      handleSidebarProjectAction(item.id);
+      return;
+    }
+
+    if (item.targetPage === "workspace") {
+      const nextSessionId = activeSessionId || sessions[0]?.id;
+      if (nextSessionId) {
+        replaceActiveTab(createSessionTab(nextSessionId));
+        setActiveSessionId(nextSessionId);
+      }
+      closeMobileSidebar();
+      return;
+    }
+
+    openPageTab(item.targetPage, item.label);
+    closeMobileSidebar();
+  };
+
+  const handleSidebarSessionSelect = (sessionId: string) => {
+    replaceActiveTab(createSessionTab(sessionId));
+    setActiveSessionId(sessionId);
+    closeMobileSidebar();
+  };
+
+  const handleAddSessionTab = () => {
+    const nextSession = sessions.find(
+      (session) => !openSessionTabIds.includes(session.id),
+    );
+
+    if (!nextSession) {
+      showToast(t("toast.allSessionsOpen"));
+      return;
+    }
+
+    setOpenTabs((currentTabs) => [
+      ...currentTabs,
+      createSessionTab(nextSession.id),
+    ]);
+    setActiveTabId(createSessionTabId(nextSession.id));
+    setActiveSessionId(nextSession.id);
+    closeMobileSidebar();
+  };
+
+  const getTabLabel = (tab: WorkspaceTab) => {
+    if (tab.kind === "page") return getPageTabLabel(tab.page);
+    return (
+      sessions.find((session) => session.id === tab.sessionId)?.title ??
+      tab.sessionId
+    );
+  };
+
+  const handleCloseTab = (closingTab: WorkspaceTab) => {
+    if (openTabs.length <= 1) {
+      showToast(t("toast.keepOneTab"));
+      return;
+    }
+
+    const closingIndex = openTabs.findIndex((tab) => tab.id === closingTab.id);
+    const nextTabs = openTabs.filter((tab) => tab.id !== closingTab.id);
+
+    setOpenTabs(nextTabs);
+
+    if (closingTab.id === activeTabId) {
+      const nextActiveTab =
+        nextTabs[Math.max(0, closingIndex - 1)] ?? nextTabs[0];
+      setActiveTabId(nextActiveTab.id);
+      if (nextActiveTab.kind === "session") {
+        setActiveSessionId(nextActiveTab.sessionId);
+      }
+    }
+
+    showToast(t("toast.closedTab", { label: getTabLabel(closingTab) }));
+  };
+
+  const handlePrimarySidebarAction = (action: SidebarPrimaryAction) => {
+    if (action.id === "new-session") {
+      setIsCreateSessionModalOpen(true);
+      closeMobileSidebar();
+      return;
+    }
+    showToast(translate(`sidebar.primary.${action.id}.helper`, action.helper));
+    closeMobileSidebar();
+  };
+
+  const handleCreateAgentSession = (
+    _prompt: string,
+    options: { memberName?: string },
+  ) => {
+    showToast(
+      t("createSession.taskSentToast", {
+        member: options.memberName ?? t("createSession.memberFallback"),
+      }),
+    );
+  };
+
+  const handleSidebarResizePointerDown = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    sidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: desktopSidebarWidth,
+    };
+    setIsSidebarResizing(true);
+  };
+
+  const handleSidebarProjectAction = (actionId: string) => {
+    const messages: Record<string, string> = {
+      back: t("toast.historyPlaceholder"),
+      forward: t("toast.historyPlaceholder"),
+      history: t("toast.historyPlaceholder"),
+      "project-switcher": t("toast.projectSwitcherPlaceholder"),
+    };
+    showToast(messages[actionId] ?? t("toast.projectActionPlaceholder"));
+  };
+
+  const projectSidebarProps = {
+    shellOptions,
+    sessions,
+    activeSessionId,
+    activePage: activeAppPage,
+    weeklyCost,
+    t,
+    onNavigate: handleSidebarNavigate,
+    onSessionSelect: handleSidebarSessionSelect,
+    onPrimaryAction: handlePrimarySidebarAction,
+    onProjectAction: handleSidebarProjectAction,
+  };
+  const activeProjectName = shellOptions?.projects.find(
+    (project) => project.active,
+  )?.label;
+
+  return (
+    <div className="h-screen w-screen flex bg-[var(--canvas)] text-[var(--ink)] font-sans antialiased overflow-hidden selection:bg-[var(--primary)] selection:text-white transition-colors duration-200">
+      {toast && (
+        <div className="fixed bottom-5 right-5 z-50 rounded-lg border border-[var(--primary)] bg-[var(--surface-1)] px-4 py-3 text-xs font-semibold text-[var(--ink)] shadow-md animate-fade-in-up flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-[var(--primary)] animate-pulse" />
+          <span>{toast}</span>
+        </div>
+      )}
+
+      <DialogManager />
+      <CreateAgentSessionModal
+        open={isCreateSessionModalOpen}
+        projectName={activeProjectName}
+        members={members}
+        t={t}
+        onClose={() => setIsCreateSessionModalOpen(false)}
+        onCreate={handleCreateAgentSession}
+      />
+
+      <aside
+        className="relative h-full hidden md:block shrink-0"
+        style={{ width: desktopSidebarWidth }}
+      >
+        <ProjectSidebar {...projectSidebarProps} />
+        <button
+          type="button"
+          className="group absolute -right-3 top-3 bottom-3 z-20 flex w-3 cursor-col-resize items-stretch justify-end outline-none"
+          aria-label={translate("aria.resizeSidebar", "Resize sidebar")}
+          data-sidebar-resize-handle="true"
+          onPointerDown={handleSidebarResizePointerDown}
+        >
+          <span
+            className={`h-full w-1 rounded-full transition-colors ${
+              isSidebarResizing
+                ? "bg-[var(--hairline-tertiary)]"
+                : "bg-transparent group-hover:bg-[var(--hairline-tertiary)] group-focus-visible:bg-[var(--hairline-tertiary)]"
+            }`}
+          />
+        </button>
+      </aside>
+
+      {isMobileSidebarOpen && (
+        <div className="fixed inset-0 z-50 flex md:hidden animate-fade-in">
+          <div
+            onClick={() => setIsMobileSidebarOpen(false)}
+            className="absolute inset-0 bg-[#000000]/40 backdrop-blur-xs"
+          />
+          <div className="absolute top-0 left-0 bottom-0 w-64 bg-[var(--canvas)] animate-fade-in-right">
+            <div className="absolute top-3 right-3 z-10">
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(false)}
+                className="p-1 rounded border border-[var(--hairline)] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] cursor-pointer"
+                aria-label={t("aria.closeNavigationDrawer")}
+              >
+                <X className="h-4 w-4 text-[var(--ink-subtle)]" />
+              </button>
+            </div>
+            <ProjectSidebar {...projectSidebarProps} />
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 h-full min-w-0 overflow-hidden bg-[var(--canvas)] p-2 md:p-3">
+        <section className="flex h-full min-h-0 flex-col overflow-hidden gap-2">
+          <header className="h-10 bg-[var(--canvas)] flex items-center justify-between shrink-0 select-none z-10">
+            <div className="flex items-center gap-3 flex-1 min-w-0 h-full">
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(true)}
+                className="p-1.5 rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] md:hidden hover:bg-[var(--surface-2)] text-[var(--ink-subtle)] hover:text-[var(--ink)] cursor-pointer shrink-0"
+                aria-label={t("aria.toggleNavigationDrawer")}
+              >
+                <Menu className="h-4 w-4" />
+              </button>
+
+              <nav className="flex h-full min-w-0 flex-1 items-center overflow-hidden">
+                <div
+                  className="flex h-9 w-full max-w-full min-w-0 items-center gap-1 overflow-hidden rounded-md bg-[var(--canvas)]"
+                >
+                  {renderedTabs.map(({ tab, label, Icon }) => {
+                    const active = tab.id === activeTabId;
+                    return (
+                      <div
+                        key={tab.id}
+                        style={{ flex: "1 1 clamp(7rem, 22%, 15rem)" }}
+                        className={`group flex h-8 min-w-0 max-w-60 items-center gap-2 rounded-md border px-2.5 text-left text-[11px] transition cursor-pointer relative ${
+                          active
+                            ? "border-transparent bg-[var(--surface-3)] text-[var(--ink)] font-semibold shadow-sm"
+                            : "border-transparent bg-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-3)] hover:text-[var(--ink)] opacity-75 hover:opacity-100"
+                        }`}
+                        onClick={() => {
+                          setActiveTabId(tab.id);
+                          if (tab.kind === "session") {
+                            setActiveSessionId(tab.sessionId);
+                          }
+                          setIsMobileSidebarOpen(false);
+                        }}
+                      >
+                        <Icon
+                          className={`h-3.5 w-3.5 shrink-0 transition-colors ${active ? "text-[var(--primary)]" : "text-[var(--ink-tertiary)] group-hover:text-[var(--ink-subtle)]"}`}
+                        />
+                        <span className="truncate flex-1 pr-4">{label}</span>
+                        <button
+                          type="button"
+                          className={`absolute right-2 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded-sm hover:bg-[var(--surface-2)] hover:text-[var(--ink)] ${active ? "text-[var(--ink-subtle)] opacity-100" : "text-[var(--ink-tertiary)]"}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCloseTab(tab);
+                          }}
+                          aria-label={t("aria.closeTab")}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={handleAddSessionTab}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+                    aria-label={t("aria.openSessionTab")}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
+              </nav>
+            </div>
+          </header>
+
+          <main
+            className={`flex-1 min-h-0 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] ${
+              activeAppPage === "providers"
+                ? "overflow-hidden p-0"
+                : "overflow-y-auto p-4 md:p-6"
+            }`}
+          >
+            {renderActivePage()}
+          </main>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <WorkspaceProvider>
+      <WorkspaceLayout />
+    </WorkspaceProvider>
+  );
+}
