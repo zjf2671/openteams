@@ -95,7 +95,12 @@ check('supports Ctrl/Cmd+Enter submit', source.includes("event.key === 'Enter'")
 check('supports Escape close', source.includes("event.key === 'Escape'"), source);
 check('uses shared DropdownSelect for member picking', source.includes('import {') && source.includes('DropdownSelect') && !source.includes('<select'), source);
 check('only uses shared DropdownSelect for free chat member picking', source.includes("taskMode === 'workflow' ?") && source.includes('<DropdownSelect'), source);
-check('free-chat member dropdown uses half-width control', source.includes('className="w-[140px] max-w-full shrink-0"'), source);
+check(
+  'free-chat member dropdown is wider and shorter',
+  source.includes('className="w-[168px] max-w-full shrink-0') &&
+    source.includes('maxPanelHeightClassName="max-h-[144px]"'),
+  source,
+);
 check('mode switch uses smaller text and a switch mark', source.includes('text-[13px]') && source.includes('ArrowLeftRight'), source);
 check('mode control toggles between workflow and free chat', source.includes('handleToggleTaskMode') && source.includes("'freeChat' : 'workflow'"), source);
 check('free-chat mode keeps all members selectable in source', source.includes("taskMode === 'workflow'") && source.includes(': members'), source);

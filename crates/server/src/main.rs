@@ -7,7 +7,7 @@ use executors::{
     model_sync,
 };
 use server::{DeploymentImpl, npx_browser_lifecycle, routes};
-use services::services::container::ContainerService;
+use services::services::{container::ContainerService, project_migration::ProjectMigrationService};
 use sqlx::Error as SqlxError;
 use strip_ansi_escapes::strip;
 use thiserror::Error;
@@ -37,6 +37,15 @@ fn is_desktop_mode() -> bool {
 
 fn should_skip_browser_launch() -> bool {
     std::env::var_os("OPENTEAMS_SKIP_BROWSER").is_some()
+}
+
+fn should_auto_migrate_projects() -> bool {
+    std::env::var("OPENTEAMS_AUTO_MIGRATE_PROJECTS")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            value != "0" && value != "false"
+        })
+        .unwrap_or(true)
 }
 
 #[tokio::main]
@@ -134,6 +143,27 @@ async fn main() -> Result<(), OpenTeamsError> {
         .backfill_repo_names()
         .await
         .map_err(DeploymentError::from)?;
+    if should_auto_migrate_projects() {
+        match ProjectMigrationService::has_legacy_sessions(&deployment.db().pool).await {
+            Ok(true) => {
+                tracing::info!("Legacy chat sessions detected; running project migration");
+                if let Err(err) = ProjectMigrationService::new()
+                    .migrate_legacy_sessions(&deployment.db().pool, deployment.user_id())
+                    .await
+                {
+                    tracing::error!("Failed to migrate legacy chat sessions: {err}");
+                }
+            }
+            Ok(false) => {
+                tracing::debug!("No legacy chat sessions detected for project migration");
+            }
+            Err(err) => {
+                tracing::warn!("Failed to check for legacy chat sessions: {err}");
+            }
+        }
+    } else {
+        tracing::info!("Automatic legacy project migration disabled by configuration");
+    }
     // Keep executor profiles in sync with agent model listings.
     let model_refresh_dir = std::env::current_dir().unwrap_or_else(|_| asset_dir());
     let model_refresh_env = ExecutionEnv::new(RepoContext::default(), false, String::new());

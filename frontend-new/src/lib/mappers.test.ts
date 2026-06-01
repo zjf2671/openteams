@@ -76,6 +76,7 @@ const sessB: BackendChatSession = {
   team_protocol_enabled: false,
   default_workspace_path: null,
   chat_input_mode: null,
+  project_id: 'project-x',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   archived_at: null,
@@ -129,7 +130,11 @@ eq('agent model carried through', a.model, 'Claude 3.5 Sonnet');
 eq('agent not isUser', a.isUser, undefined);
 eq('relative time 30s', a.time, '30s ago');
 
-eq('mapMessages length matches', mapMessages([userMsg, agentMsg], { now }).length, 2);
+eq(
+  'mapMessages length matches',
+  mapMessages([userMsg, agentMsg], { now }).length,
+  2,
+);
 
 // ---- mapAgentToMember + mapSessionAgentsToMembers ---------------------------
 console.log('mapAgentToMember');
@@ -175,7 +180,11 @@ eq('joins by agent_id and drops orphans', membersJoined.length, 1);
 
 // ---- mapProvider ------------------------------------------------------------
 console.log('mapProvider');
-const info: ProviderInfo = { id: 'anthropic', name: 'Anthropic', configured: true };
+const info: ProviderInfo = {
+  id: 'anthropic',
+  name: 'Anthropic',
+  configured: true,
+};
 const cli: CliConfig = {
   provider: {
     default: 'anthropic',
@@ -197,7 +206,11 @@ eq('provider active follows configured', prov.active, true);
 eq('provider lastUsed mock fallback', prov.lastUsed, 'Unknown');
 
 const provNoCli = mapProvider(info, null);
-eq('provider falls back to bullets when no key', provNoCli.keyMask, '••••••••••••');
+eq(
+  'provider falls back to bullets when no key',
+  provNoCli.keyMask,
+  '••••••••••••',
+);
 
 // ---- Result ----------------------------------------------------------------
 if (failures > 0) {

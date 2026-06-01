@@ -4,7 +4,11 @@
 
 // If you are an AI, and you absolutely have to edit this file, please confirm with the user first.
 
-export type Project = { id: string, name: string, default_agent_working_dir: string | null, remote_project_id: string | null, created_at: Date, updated_at: Date, };
+export type Project = { id: string, name: string, default_agent_working_dir: string | null, remote_project_id: string | null, description: string | null, status: string | null, default_workspace_path: string | null, active_repo_id: string | null, created_at: Date, updated_at: Date, };
+
+export type CreateProject = { name: string, repositories: Array<CreateProjectRepo>, description: string | null, status: string | null, default_workspace_path: string | null, active_repo_id: string | null, };
+
+export type UpdateProject = { name: string | null, description: string | null, status: string | null, default_workspace_path: string | null, active_repo_id: string | null, };
 
 export type SearchResult = { path: string, is_file: boolean, match_type: SearchMatchType, 
 /**
@@ -13,6 +17,38 @@ export type SearchResult = { path: string, is_file: boolean, match_type: SearchM
 score: bigint, };
 
 export type SearchMatchType = "FileName" | "DirectoryName" | "FullPath";
+
+export type ProjectMember = { id: string, project_id: string, member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: string[], is_default: boolean, created_at: Date, updated_at: Date, };
+
+export enum ProjectMemberType { human = "human", agent = "agent" }
+
+export type CreateProjectMember = { member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: Array<string>, is_default: boolean, };
+
+export type UpdateProjectMember = { member_type: ProjectMemberType | null, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint | null, default_workspace_path: string | null, allowed_skill_ids: Array<string> | null, is_default: boolean | null, };
+
+export type ProjectPath = { id: string, project_id: string, path: string, label: string | null, kind: ProjectPathKind, is_default: boolean, created_at: Date, updated_at: Date, };
+
+export enum ProjectPathKind { workspace = "workspace", artifact = "artifact", external = "external" }
+
+export type CreateProjectPath = { path: string, label: string | null, kind: ProjectPathKind, is_default: boolean, };
+
+export type UpdateProjectPath = { path: string | null, label: string | null, kind: ProjectPathKind | null, is_default: boolean | null, };
+
+export type CreateProjectRepo = { display_name: string, git_repo_path: string, };
+
+export type ProjectStats = { id: string, project_id: string, period_start: string | null, period_end: string | null, feature_count: bigint, bugfix_count: bigint, test_count: bigint, input_tokens: bigint, output_tokens: bigint, total_tokens: bigint, cost_total: number | null, updated_at: Date, };
+
+export type ProjectDeliveryEvent = { id: string, project_id: string, session_id: string | null, workflow_execution_id: string | null, step_id: string | null, event_type: ProjectDeliveryEventType, title: string | null, source: string | null, created_at: Date, };
+
+export enum ProjectDeliveryEventType { feature = "feature", bugfix = "bugfix", test = "test" }
+
+export type Repo = { id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
+
+export type RepoIntegration = { id: string, repo_id: string, provider: string, owner: string | null, name: string | null, remote_url: string | null, default_branch: string | null, external_id: string | null, installation_id: string | null, sync_status: string | null, last_synced_at: Date | null, created_at: Date, updated_at: Date, };
+
+export type UpdateRepoIntegration = { provider: string | null, owner: string | null, name: string | null, remote_url: string | null, default_branch: string | null, external_id: string | null, installation_id: string | null, sync_status: string | null, last_synced_at: Date | null, };
+
+export type ProjectDetail = { project: Project, paths: Array<ProjectPath>, members: Array<ProjectMember>, sessions: Array<ChatSession>, repos: Array<Repo>, stats: Array<ProjectStats>, };
 
 export type RepoWithTargetBranch = { target_branch: string, id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
 
@@ -90,11 +126,11 @@ export type CreateScratch = { payload: ScratchPayload, };
 
 export type UpdateScratch = { payload: ScratchPayload, };
 
-export type ChatSession = { id: string, title: string | null, status: ChatSessionStatus, lead_agent_id: string | null, summary_text: string | null, archive_ref: string | null, last_seen_diff_key: string | null, team_protocol: string | null, team_protocol_enabled: boolean, default_workspace_path: string | null, chat_input_mode: string | null, created_at: string, updated_at: string, archived_at: string | null, };
+export type ChatSession = { id: string, title: string | null, status: ChatSessionStatus, lead_agent_id: string | null, summary_text: string | null, archive_ref: string | null, last_seen_diff_key: string | null, team_protocol: string | null, team_protocol_enabled: boolean, default_workspace_path: string | null, chat_input_mode: string | null, project_id: string | null, created_at: string, updated_at: string, archived_at: string | null, };
 
 export enum ChatSessionStatus { active = "active", archived = "archived" }
 
-export type CreateChatSession = { title: string | null, workspace_path: string | null, };
+export type CreateChatSession = { title: string | null, workspace_path: string | null, project_id: string | null, };
 
 export type UpdateChatSession = { title: string | null, status: ChatSessionStatus | null, lead_agent_id?: string | null, summary_text: string | null, archive_ref: string | null, last_seen_diff_key: string | null, team_protocol: string | null, team_protocol_enabled: boolean | null, default_workspace_path: string | null, chat_input_mode?: string | null, };
 
@@ -342,7 +378,7 @@ export type ValidateProviderRequest = { api_key: string | null, endpoint: string
 
 export type ValidateProviderResponse = { valid: boolean, message: string, };
 
-export type ChatSessionListQuery = { status: ChatSessionStatus | null, };
+export type ChatSessionListQuery = { status: ChatSessionStatus | null, project_id: string | null, };
 
 export type CreateChatSessionAgentRequest = { agent_id: string, workspace_path: string | null, allowed_skill_ids: Array<string> | null, };
 
@@ -393,6 +429,34 @@ export type UserIterationFeedbackDetailRequest = { what_wrong: string, expected:
 export type UserIterationFeedbackRequest = { execution_id: string, action: string, feedback: UserIterationFeedbackDetailRequest | null, };
 
 export type UserIterationFeedbackResponse = { execution_id: string, status: string, current_round: number, };
+
+export type CreateProjectRequest = { name: string, repositories: Array<CreateProjectRepo>, description: string | null, status: string | null, default_workspace_path: string | null, active_repo_id: string | null, };
+
+export type AddProjectMemberRequest = { member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: Array<string>, is_default: boolean, };
+
+export type UpdateProjectMemberRequest = { role: string | null, display_order: bigint | null, default_workspace_path: string | null, is_default: boolean | null, allowed_skill_ids: Array<string> | null, };
+
+export type CreateProjectSessionRequest = { title: string | null, workspace_path: string | null, };
+
+export type ProjectStatsQuery = { period_start: string | null, period_end: string | null, };
+
+export type ProjectListResponse = { projects: Array<Project>, };
+
+export type ProjectResponse = { project: Project, };
+
+export type ProjectDetailResponse = { project: Project, paths: Array<ProjectPath>, members: Array<ProjectMember>, sessions: Array<ChatSession>, repos: Array<Repo>, stats: Array<ProjectStats>, };
+
+export type ProjectMembersResponse = { members: Array<ProjectMember>, };
+
+export type ProjectMemberResponse = { member: ProjectMember, };
+
+export type ProjectSessionsResponse = { sessions: Array<ChatSession>, };
+
+export type ProjectSessionResponse = { session: ChatSession, };
+
+export type ProjectReposResponse = { repos: Array<Repo>, };
+
+export type ProjectStatsResponse = { stats: Array<ProjectStats>, };
 
 export type ImageResponse = { id: string, file_path: string, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, created_at: string, updated_at: string, };
 

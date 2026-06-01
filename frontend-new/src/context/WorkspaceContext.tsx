@@ -28,11 +28,13 @@ import {
   chatMessagesApi,
   chatSessionsApi,
   cliConfigApi,
+  projectApi,
   sessionAgentsApi,
   skillsApi,
   systemApi,
   workflowApi,
 } from '@/lib/api';
+import type { CreateProjectRequest, Project } from '../../../shared/types';
 import {
   mapMessages,
   mapProviders,
@@ -60,6 +62,12 @@ interface WorkspaceContextProps {
   setMembers: (m: ListUpdater<Member>) => void;
   sessions: Session[];
   setSessions: (s: ListUpdater<Session>) => void;
+  projects: Project[];
+  projectsAsync: AsyncResourceState<Project[]>;
+  selectedProjectId: string;
+  setSelectedProjectId: (id: string) => void;
+  refreshProjects: () => Promise<void>;
+  createProject: (data: CreateProjectRequest) => Promise<Project>;
   messages: Message[];
   activeSessionId: string;
   setActiveSessionId: (id: string) => void;
@@ -172,6 +180,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // is unreachable / has a contract gap).
   const [sessionsAsync, setSessionsAsync] =
     useState<AsyncResourceState<Session[]>>(() => initialAsync([]));
+  const [projectsAsync, setProjectsAsync] =
+    useState<AsyncResourceState<Project[]>>(() => initialAsync([]));
+  const [selectedProjectId, setSelectedProjectIdState] = useState<string>('');
   const [allMessages, setAllMessages] =
     useState<Record<string, Message[]>>({});
   const [messagesAsync, setMessagesAsync] =
@@ -226,9 +237,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Cache the latest activeSessionId so async callbacks see the live value.
   const activeSessionIdRef = useRef(activeSessionId);
+  const selectedProjectIdRef = useRef(selectedProjectId);
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -273,6 +288,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const setMembers = useCallback(makeListSetter<Member>(setMembersAsync), []);
   const setProviders = useCallback(makeListSetter<Provider>(setProvidersAsync), []);
 
+  const setSelectedProjectId = useCallback((id: string) => {
+    selectedProjectIdRef.current = id;
+    setSelectedProjectIdState(id);
+  }, []);
+
   const applyMockBootstrap = useCallback((bootstrap: WorkspaceBootstrapMock) => {
     mockBootstrapRef.current = bootstrap;
     toastDurationMsRef.current = bootstrap.defaults.toastDurationMs;
@@ -302,10 +322,40 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setActiveSettingsTab(bootstrap.defaults.activeSettingsTab);
   }, []);
 
+  const refreshProjects = useCallback(async (): Promise<void> => {
+    setProjectsAsync(beginLoad);
+    try {
+      const projects = await projectApi.listProjects();
+      setProjectsAsync(succeed(projects));
+      const currentProjectId = selectedProjectIdRef.current;
+      if (
+        projects.length > 0 &&
+        !projects.some((project) => project.id === currentProjectId)
+      ) {
+        setSelectedProjectId(projects[0].id);
+      }
+    } catch (err) {
+      setProjectsAsync((prev) => fail(prev, err, []));
+    }
+  }, [setSelectedProjectId]);
+
+  const createProject = useCallback(
+    async (data: CreateProjectRequest): Promise<Project> => {
+      const project = await projectApi.createProject(data);
+      setProjectsAsync((prev) =>
+        succeed([project, ...prev.data.filter((item) => item.id !== project.id)]),
+      );
+      setSelectedProjectId(project.id);
+      return project;
+    },
+    [setSelectedProjectId],
+  );
+
   const refreshSessions = useCallback(async (): Promise<void> => {
     setSessionsAsync(beginLoad);
     try {
-      const backend = await chatSessionsApi.list();
+      const projectId = selectedProjectIdRef.current || undefined;
+      const backend = await chatSessionsApi.list(undefined, projectId);
       const mapped = mapSessions(backend, activeSessionIdRef.current);
       setSessionsAsync(succeed(mapped));
       // If the previously active session id no longer exists, fall back to the
@@ -315,6 +365,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         !mapped.some((s) => s.id === activeSessionIdRef.current)
       ) {
         setActiveSessionId(mapped[0].id);
+      } else if (mapped.length === 0 && activeSessionIdRef.current) {
+        activeSessionIdRef.current = '';
+        setActiveSessionId('');
       }
     } catch (err) {
       setSessionsAsync((prev) => fail(prev, err));
@@ -436,6 +489,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const refreshAll = useCallback(async (): Promise<void> => {
     await Promise.all([
+      refreshProjects(),
       refreshSessions(),
       refreshProviders(),
       refreshSkills(),
@@ -445,6 +499,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     ]);
   }, [
     refreshSessions,
+    refreshProjects,
     refreshProviders,
     refreshSkills,
     refreshConfig,
@@ -471,6 +526,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId]);
 
+  useEffect(() => {
+    void refreshSessions();
+  }, [refreshSessions, selectedProjectId]);
+
   // ---------------------------------------------------------------------------
   // i18n
   // ---------------------------------------------------------------------------
@@ -487,6 +546,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const sessions = sessionsAsync.data;
+  const projects = projectsAsync.data;
   const members = membersAsync.data;
   const providers = providersAsync.data;
   const messages = allMessages[activeSessionId] || messagesAsync.data;
@@ -760,6 +820,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setMembers,
         sessions,
         setSessions,
+        projects,
+        projectsAsync,
+        selectedProjectId,
+        setSelectedProjectId,
+        refreshProjects,
+        createProject,
         messages,
         activeSessionId,
         setActiveSessionId,

@@ -9,7 +9,6 @@ import { RoutingPage } from "@/pages/RoutingPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { TasksPage } from "@/pages/TasksPage";
 import { TeamPage } from "@/pages/TeamPage";
-import { TokensPage } from "@/pages/TokensPage";
 import {
   BookOpen,
   Github,
@@ -24,13 +23,21 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { projectApi } from "@/lib/api";
+import { mapSession } from "@/lib/mappers";
 import { mockFrontendApi } from "@/lib/mockFrontendApi";
+import { projectDisplayName } from "@/lib/projectDisplay";
 import type { ShellOptionsMock } from "@/mockApiData";
 import type {
   SidebarNavigationItem,
   SidebarNavigationTarget,
   SidebarPrimaryAction,
 } from "@/types";
+import type {
+  ChatTeamPreset,
+  CreateProjectRequest,
+  UpdateProject,
+} from "../../shared/types";
 
 type WorkspaceTab =
   | { id: string; kind: "session"; sessionId: string }
@@ -75,7 +82,7 @@ const createPageTab = (
 });
 
 const defaultSidebarWidth = 224;
-const minSidebarWidth = 184;
+const minSidebarWidth = 180;
 const maxSidebarWidth = 360;
 
 const clampSidebarWidth = (width: number) =>
@@ -86,6 +93,15 @@ function WorkspaceLayout() {
     t,
     toast,
     sessions,
+    setSessions,
+    projects,
+    projectsAsync,
+    config,
+    selectedProjectId,
+    setSelectedProjectId,
+    refreshProjects,
+    createProject,
+    refreshSessions,
     members,
     activeSessionId,
     setActiveSessionId,
@@ -194,8 +210,9 @@ function WorkspaceLayout() {
     })
     .filter((tab): tab is RenderedWorkspaceTab => Boolean(tab));
   const openSessionTabIds = openTabs
-    .filter((tab): tab is Extract<WorkspaceTab, { kind: "session" }> =>
-      tab.kind === "session",
+    .filter(
+      (tab): tab is Extract<WorkspaceTab, { kind: "session" }> =>
+        tab.kind === "session",
     )
     .map((tab) => tab.sessionId);
 
@@ -212,7 +229,19 @@ function WorkspaceLayout() {
       case "providers":
         return <SettingsPage />;
       case "tokens":
-        return <TokensPage />;
+        return (
+          <div className="max-w-6xl mx-auto space-y-6">
+            <div className="pb-4 mb-2 select-all">
+              <h1 className="text-base font-bold tracking-tight text-[var(--ink)]">
+                Dialog Manager
+              </h1>
+              <p className="text-xs text-[var(--ink-subtle)] mt-1">
+                DialogManager.tsx UI content preview for the skill library tab.
+              </p>
+            </div>
+            <DialogManager preview />
+          </div>
+        );
       case "workspace":
       default:
         return (
@@ -378,16 +407,104 @@ function WorkspaceLayout() {
 
   const handleSidebarProjectAction = (actionId: string) => {
     const messages: Record<string, string> = {
-      back: t("toast.historyPlaceholder"),
-      forward: t("toast.historyPlaceholder"),
       history: t("toast.historyPlaceholder"),
-      "project-switcher": t("toast.projectSwitcherPlaceholder"),
     };
     showToast(messages[actionId] ?? t("toast.projectActionPlaceholder"));
   };
 
+  const handleProjectSelect = (projectId: string) => {
+    setSelectedProjectId(projectId);
+    const selectedProject = projects.find(
+      (project) => project.id === projectId,
+    );
+    const projectName = selectedProject
+      ? projectDisplayName(selectedProject)
+      : projectId;
+    showToast(
+      translate("toast.projectSelected", `Switched to ${projectName}`, {
+        name: projectName,
+      }),
+    );
+    closeMobileSidebar();
+  };
+
+  const handleCreateProject = async (data: CreateProjectRequest) => {
+    const project = await createProject(data);
+    const session = await projectApi.createSession(project.id, {
+      title: null,
+      workspace_path: data.default_workspace_path,
+    });
+    const mappedSession = mapSession(session, {
+      activeSessionId: session.id,
+    });
+    setSessions((currentSessions) => [
+      mappedSession,
+      ...currentSessions
+        .filter((item) => item.id !== mappedSession.id)
+        .map((item) => ({ ...item, active: false })),
+    ]);
+    replaceActiveTab(createSessionTab(session.id));
+    setActiveSessionId(session.id);
+    showToast(
+      translate("toast.projectCreated", `Created ${project.name}`, {
+        name: project.name,
+      }),
+    );
+    closeMobileSidebar();
+  };
+
+  const handleUpdateProject = async (
+    projectId: string,
+    data: UpdateProject,
+  ) => {
+    const project = await projectApi.updateProject(projectId, data);
+    await refreshProjects();
+    const projectName = projectDisplayName(project);
+    showToast(
+      translate("toast.projectUpdated", `Updated ${projectName}`, {
+        name: projectName,
+      }),
+    );
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    const deletingProject = projects.find(
+      (project) => project.id === projectId,
+    );
+    const projectName = deletingProject
+      ? projectDisplayName(deletingProject)
+      : projectId;
+    await projectApi.deleteProject(projectId);
+    if (selectedProjectId === projectId) {
+      const nextProject = projects.find((project) => project.id !== projectId);
+      setSelectedProjectId(nextProject?.id ?? "");
+    }
+    await refreshProjects();
+    await refreshSessions();
+    showToast(
+      translate("toast.projectDeleted", `Deleted ${projectName}`, {
+        name: projectName,
+      }),
+    );
+  };
+
+  const teamPresets =
+    (config as { chat_presets?: { teams?: ChatTeamPreset[] } } | null)
+      ?.chat_presets?.teams ?? [];
+
+  const currentProject = projects.find(
+    (project) => project.id === selectedProjectId,
+  );
+  const activeProjectName = currentProject
+    ? projectDisplayName(currentProject)
+    : shellOptions?.projects.find((project) => project.active)?.label;
+
   const projectSidebarProps = {
     shellOptions,
+    projects,
+    selectedProjectId,
+    projectsLoading: projectsAsync.loading,
+    projectsError: projectsAsync.error,
     sessions,
     activeSessionId,
     activePage: activeAppPage,
@@ -397,11 +514,12 @@ function WorkspaceLayout() {
     onSessionSelect: handleSidebarSessionSelect,
     onPrimaryAction: handlePrimarySidebarAction,
     onProjectAction: handleSidebarProjectAction,
+    onProjectSelect: handleProjectSelect,
+    onCreateProject: handleCreateProject,
+    onUpdateProject: handleUpdateProject,
+    onDeleteProject: handleDeleteProject,
+    teamPresets,
   };
-  const activeProjectName = shellOptions?.projects.find(
-    (project) => project.active,
-  )?.label;
-
   return (
     <div className="h-screen w-screen flex bg-[var(--canvas)] text-[var(--ink)] font-sans antialiased overflow-hidden selection:bg-[var(--primary)] selection:text-white transition-colors duration-200">
       {toast && (
@@ -411,7 +529,7 @@ function WorkspaceLayout() {
         </div>
       )}
 
-      <DialogManager />
+      {activeAppPage !== "tokens" && <DialogManager />}
       <CreateAgentSessionModal
         open={isCreateSessionModalOpen}
         projectName={activeProjectName}
@@ -479,9 +597,7 @@ function WorkspaceLayout() {
               </button>
 
               <nav className="flex h-full min-w-0 flex-1 items-center overflow-hidden">
-                <div
-                  className="flex h-9 w-full max-w-full min-w-0 items-center gap-1 overflow-hidden rounded-md bg-[var(--canvas)]"
-                >
+                <div className="flex h-9 w-full max-w-full min-w-0 items-center gap-1 overflow-hidden rounded-md bg-[var(--canvas)]">
                   {renderedTabs.map(({ tab, label, Icon }) => {
                     const active = tab.id === activeTabId;
                     return (

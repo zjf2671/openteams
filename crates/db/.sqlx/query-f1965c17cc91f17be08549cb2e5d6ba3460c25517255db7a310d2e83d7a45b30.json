@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE repo_integrations\n               SET provider = $2,\n                   owner = $3,\n                   name = $4,\n                   remote_url = $5,\n                   default_branch = $6,\n                   external_id = $7,\n                   installation_id = $8,\n                   sync_status = $9,\n                   last_synced_at = $10,\n                   updated_at = datetime('now', 'subsec')\n               WHERE id = $1\n               RETURNING id as \"id!: Uuid\",\n                         repo_id as \"repo_id!: Uuid\",\n                         provider,\n                         owner,\n                         name,\n                         remote_url,\n                         default_branch,\n                         external_id,\n                         installation_id,\n                         sync_status,\n                         last_synced_at as \"last_synced_at: DateTime<Utc>\",\n                         created_at as \"created_at!: DateTime<Utc>\",\n                         updated_at as \"updated_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "provider",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "owner",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "remote_url",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "default_branch",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "external_id",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "installation_id",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "sync_status",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_synced_at: DateTime<Utc>",
+        "ordinal": 10,
+        "type_info": "Null"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 11,
+        "type_info": "Null"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 12,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "f1965c17cc91f17be08549cb2e5d6ba3460c25517255db7a310d2e83d7a45b30"
+}

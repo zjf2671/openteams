@@ -26,6 +26,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use services::services::{
     analytics_events::{AnalyticsProjector, DomainEvent},
+    chat::create_session_with_project_members,
     workflow_analytics::{self, hash_user_id},
 };
 use sqlx::FromRow;
@@ -42,13 +43,15 @@ use crate::{DeploymentImpl, error::ApiError};
 #[derive(Debug, Deserialize, TS)]
 pub struct ChatSessionListQuery {
     pub status: Option<ChatSessionStatus>,
+    pub project_id: Option<Uuid>,
 }
 
 pub async fn get_sessions(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<ChatSessionListQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<ChatSession>>>, ApiError> {
-    let sessions = ChatSession::find_all(&deployment.db().pool, query.status).await?;
+    let sessions =
+        ChatSession::find_all(&deployment.db().pool, query.status, query.project_id).await?;
     Ok(ResponseJson(ApiResponse::success(sessions)))
 }
 
@@ -62,7 +65,9 @@ pub async fn create_session(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateChatSession>,
 ) -> Result<ResponseJson<ApiResponse<ChatSession>>, ApiError> {
-    let session = ChatSession::create(&deployment.db().pool, &payload, Uuid::new_v4()).await?;
+    let session =
+        create_session_with_project_members(&deployment.db().pool, &payload, Uuid::new_v4())
+            .await?;
     let user_id_hash = hash_user_id(deployment.user_id());
     workflow_analytics::track_session_created(
         workflow_analytics::analytics_if_enabled(
@@ -1826,6 +1831,7 @@ mod tests {
             team_protocol_enabled: false,
             default_workspace_path: default_workspace_path.map(str::to_string),
             chat_input_mode: None,
+            project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,

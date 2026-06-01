@@ -44,16 +44,16 @@ export type DropdownSelectProps =
   | DropdownSelectMultiProps;
 
 const triggerClass =
-  'flex w-full items-center gap-2 rounded border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-1.5 text-sm text-[var(--ink)] cursor-pointer hover:border-[var(--hairline-strong)] disabled:cursor-not-allowed disabled:opacity-60';
+  'flex w-full items-center gap-2 rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2 text-[14px] text-[var(--ink)] cursor-pointer hover:border-[var(--hairline-strong)] disabled:cursor-not-allowed disabled:opacity-60 transition';
 
 const panelClass =
-  'absolute left-0 top-full mt-2 w-full max-w-[280px] overflow-hidden rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-xs animate-fade-in-down z-30';
+  'absolute left-0 top-full mt-1 w-full max-w-[280px] overflow-hidden rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-3)] z-30';
 
 const searchClass =
-  'flex items-center gap-2 border-b border-[var(--hairline)] bg-[var(--canvas)] px-3 py-2 text-sm text-[var(--ink-tertiary)]';
+  'flex items-center gap-2 border-b border-[var(--hairline)] px-3 py-2 text-[14px] text-[var(--ink-tertiary)]';
 
 const optionClass =
-  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm cursor-pointer hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-45';
+  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[14px] cursor-pointer hover:bg-[var(--surface-1)] disabled:cursor-not-allowed disabled:opacity-45 transition';
 
 const getOptionSearchText = (option: DropdownSelectOption) =>
   [option.label, option.description, option.group, option.hint]
@@ -170,7 +170,7 @@ export function DropdownSelect(props: DropdownSelectProps) {
             <div className={searchClass}>
               <Search className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
               <input
-                className="flex-1 border-none bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text"
+                className="flex-1 border-none bg-transparent text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text"
                 placeholder={searchPlaceholder}
                 value={searchText}
                 onChange={(event) => setSearchText(event.target.value)}
@@ -184,14 +184,14 @@ export function DropdownSelect(props: DropdownSelectProps) {
             className={`overflow-y-auto py-1 divide-y divide-[var(--hairline)] ${maxPanelHeightClassName}`}
           >
             {groupedOptions.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-[var(--ink-tertiary)]">
+              <div className="px-3 py-2 text-[14px] text-[var(--ink-tertiary)]">
                 {emptyLabel}
               </div>
             ) : (
               groupedOptions.map((group) => (
                 <div key={group.name || 'ungrouped'} className="py-1">
                   {group.name && (
-                    <div className="px-3 py-1 font-mono text-sm uppercase tracking-wider text-[var(--ink-tertiary)]">
+                    <div className="px-3 py-1 text-[13px] font-medium uppercase tracking-[0.4px] text-[var(--ink-tertiary)]">
                       {group.name}
                     </div>
                   )}
@@ -207,25 +207,25 @@ export function DropdownSelect(props: DropdownSelectProps) {
                         onClick={() => handleOptionClick(option)}
                         className={`${optionClass} ${
                           active
-                            ? 'font-semibold text-[var(--primary)]'
+                            ? 'bg-[var(--surface-1)] font-medium text-[var(--ink)]'
                             : 'text-[var(--ink)]'
                         }`}
                       >
                         {option.leading}
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-semibold leading-tight">
+                          <span className="block truncate text-[14px] font-medium leading-tight">
                             {option.label}
                           </span>
                           {option.description && (
-                            <span className="mt-0.5 block truncate font-mono text-sm leading-none text-[var(--ink-tertiary)]">
+                            <span className="mt-0.5 block truncate font-mono text-[13px] leading-none text-[var(--ink-tertiary)]">
                               {option.description}
                             </span>
                           )}
                         </span>
                         {active ? (
-                          <Check className="h-3.5 w-3.5 shrink-0 text-[var(--primary)]" />
+                          <Check className="h-3.5 w-3.5 shrink-0 text-[var(--success)]" />
                         ) : option.hint ? (
-                          <kbd className="rounded bg-[var(--surface-3)] px-1 font-mono text-sm text-[var(--ink-tertiary)]">
+                          <kbd className="rounded-xs bg-[var(--surface-4)] px-1 font-mono text-[12px] text-[var(--ink-tertiary)]">
                             {option.hint}
                           </kbd>
                         ) : null}
@@ -238,7 +238,7 @@ export function DropdownSelect(props: DropdownSelectProps) {
           </div>
 
           {footer && (
-            <div className="flex items-center gap-3 border-t border-[var(--hairline)] bg-[var(--surface-3)] px-3 py-1.5 text-sm font-mono text-[var(--ink-tertiary)]">
+            <div className="flex items-center gap-3 border-t border-[var(--hairline)] bg-[var(--surface-4)] px-3 py-1.5 text-[13px] font-mono text-[var(--ink-tertiary)]">
               {footer}
             </div>
           )}

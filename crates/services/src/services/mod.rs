@@ -22,11 +22,16 @@ pub mod native_skills;
 pub mod notification;
 pub mod oauth_credentials;
 pub mod project;
+pub mod project_member;
+pub mod project_migration;
+pub mod project_path;
+pub mod project_stats;
 #[cfg(feature = "qa-mode")]
 pub mod qa_repos;
 pub mod queued_message;
 pub mod remote_client;
 pub mod repo;
+pub mod repo_integration;
 pub mod skill_registry;
 pub mod workflow_analytics;
 pub mod workflow_compiler;

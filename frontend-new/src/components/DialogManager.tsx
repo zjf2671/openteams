@@ -5,7 +5,13 @@ import { ResourceStateNotice } from '@/components/ResourceState';
 import { mockFrontendApi } from '@/lib/mockFrontendApi';
 import type { DialogOptionsMock } from '@/mockApiData';
 
-export const DialogManager: React.FC = () => {
+type DialogManagerProps = {
+  preview?: boolean;
+};
+
+export const DialogManager: React.FC<DialogManagerProps> = ({
+  preview = false,
+}) => {
   const {
     t,
     isNewTaskModalOpen,
@@ -84,12 +90,22 @@ export const DialogManager: React.FC = () => {
     setProviderKey('');
   };
 
+  const dialogShellClass = preview
+    ? 'relative flex min-h-[280px] items-center justify-center rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] p-4'
+    : 'fixed inset-0 z-50 flex items-center justify-center p-4';
+  const showRetryModal = preview || isRetryModalOpen;
+  const showNewTaskModal = preview || isNewTaskModalOpen;
+  const showAddMemberModal = preview || isAddMemberModalOpen;
+  const showAddProviderModal = preview || isAddProviderModalOpen;
+
   return (
-    <>
+    <div className={preview ? 'grid grid-cols-1 gap-6 xl:grid-cols-2' : undefined}>
       {/* 4A: RETRY CONFIRM MODAL */}
-      {isRetryModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsRetryModalOpen(false)} />
+      {showRetryModal && (
+        <div className={dialogShellClass}>
+          {!preview && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsRetryModalOpen(false)} />
+          )}
           <div className="relative w-full max-w-md overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--canvas)] select-none">
             <div className="p-5">
               <ResourceStateNotice
@@ -123,7 +139,7 @@ export const DialogManager: React.FC = () => {
                 </button>
                 <button 
                   className="flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--primary-hover)] cursor-pointer"
-                  onClick={handleRetry}
+                  onClick={preview ? undefined : handleRetry}
                 >
                   <RefreshCw className="h-3.5 w-3.5 animate-spin-slow" />
                   {t('retryFromStep3')}
@@ -135,9 +151,11 @@ export const DialogManager: React.FC = () => {
       )}
 
       {/* 4B: NEW TASK MODAL */}
-      {isNewTaskModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsNewTaskModalOpen(false)} />
+      {showNewTaskModal && (
+        <div className={dialogShellClass}>
+          {!preview && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsNewTaskModalOpen(false)} />
+          )}
           <div className="relative w-full max-w-lg overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--canvas)]">
             <div className="flex items-center justify-between border-b border-[var(--hairline)] px-5 py-3">
               <div className="flex items-center gap-2">
@@ -234,7 +252,7 @@ export const DialogManager: React.FC = () => {
                 <button 
                   className="flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--primary-hover)] cursor-pointer"
                   disabled={membersAsync.loading}
-                  onClick={handleCreateTask}
+                  onClick={preview ? undefined : handleCreateTask}
                 >
                   {t('start')}
                 </button>
@@ -245,9 +263,11 @@ export const DialogManager: React.FC = () => {
       )}
 
       {/* 4C: ADD MEMBER MODAL */}
-      {isAddMemberModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsAddMemberModalOpen(false)} />
+      {showAddMemberModal && (
+        <div className={dialogShellClass}>
+          {!preview && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsAddMemberModalOpen(false)} />
+          )}
           <div className="relative w-full max-w-sm overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--canvas)]">
             <div className="flex items-center justify-between border-b border-[var(--hairline)] px-5 py-3">
               <div className="flex items-center gap-2">
@@ -313,7 +333,7 @@ export const DialogManager: React.FC = () => {
               <button 
                 className="rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--primary-hover)] cursor-pointer"
                 disabled={membersAsync.loading}
-                onClick={handleAddMemberSubmit}
+                onClick={preview ? undefined : handleAddMemberSubmit}
               >
                 {t('addMemberBtn')}
               </button>
@@ -323,9 +343,11 @@ export const DialogManager: React.FC = () => {
       )}
 
       {/* 4D: ADD PROVIDER MODAL */}
-      {isAddProviderModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsAddProviderModalOpen(false)} />
+      {showAddProviderModal && (
+        <div className={dialogShellClass}>
+          {!preview && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsAddProviderModalOpen(false)} />
+          )}
           <div className="relative w-full max-w-sm overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--canvas)]">
             <div className="flex items-center justify-between border-b border-[var(--hairline)] px-5 py-3">
               <div className="flex items-center gap-2">
@@ -374,7 +396,7 @@ export const DialogManager: React.FC = () => {
                   type="password"
                   className="w-full rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-1.5 text-xs text-[var(--ink)] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/30 font-mono"
                   value={providerKey}
-                  placeholder="sk-••••••••••••••••••••"
+                  placeholder="sk-..."
                   onChange={e => setProviderKey(e.target.value)}
                 />
               </div>
@@ -390,7 +412,7 @@ export const DialogManager: React.FC = () => {
               <button 
                 className="rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--primary-hover)] cursor-pointer"
                 disabled={providersAsync.loading}
-                onClick={handleAddProviderSubmit}
+                onClick={preview ? undefined : handleAddProviderSubmit}
               >
                 {t('addProviderBtn')}
               </button>
@@ -398,6 +420,6 @@ export const DialogManager: React.FC = () => {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 };

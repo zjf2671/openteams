@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id as \"id!: Uuid\",\n                          title,\n                          status as \"status!: ChatSessionStatus\",\n                          lead_agent_id as \"lead_agent_id: Uuid\",\n                          summary_text,\n                          archive_ref,\n                          last_seen_diff_key,\n                          team_protocol,\n                          team_protocol_enabled as \"team_protocol_enabled!: bool\",\n                          default_workspace_path,\n                          chat_input_mode,\n                          created_at as \"created_at!: DateTime<Utc>\",\n                          updated_at as \"updated_at!: DateTime<Utc>\",\n                          archived_at as \"archived_at: DateTime<Utc>\"\n                   FROM chat_sessions\n                   ORDER BY updated_at DESC",
+  "query": "SELECT id as \"id!: Uuid\",\n                          title,\n                          status as \"status!: ChatSessionStatus\",\n                          lead_agent_id as \"lead_agent_id: Uuid\",\n                          summary_text,\n                          archive_ref,\n                          last_seen_diff_key,\n                          team_protocol,\n                          team_protocol_enabled as \"team_protocol_enabled!: bool\",\n                          default_workspace_path,\n                          chat_input_mode,\n                          project_id as \"project_id: Uuid\",\n                          created_at as \"created_at!: DateTime<Utc>\",\n                          updated_at as \"updated_at!: DateTime<Utc>\",\n                          archived_at as \"archived_at: DateTime<Utc>\"\n                   FROM chat_sessions\n                   WHERE status = $1\n                   ORDER BY updated_at DESC",
   "describe": {
     "columns": [
       {
@@ -59,23 +59,28 @@
         "type_info": "Text"
       },
       {
-        "name": "created_at!: DateTime<Utc>",
+        "name": "project_id: Uuid",
         "ordinal": 11,
         "type_info": "Text"
       },
       {
-        "name": "updated_at!: DateTime<Utc>",
+        "name": "created_at!: DateTime<Utc>",
         "ordinal": 12,
         "type_info": "Text"
       },
       {
-        "name": "archived_at: DateTime<Utc>",
+        "name": "updated_at!: DateTime<Utc>",
         "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "archived_at: DateTime<Utc>",
+        "ordinal": 14,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       true,
@@ -89,10 +94,11 @@
       true,
       true,
       true,
+      true,
       false,
       false,
       true
     ]
   },
-  "hash": "dce202c6436b09d36214d880e3b3f4193bdc0e1ba88185252ac49c03782527ad"
+  "hash": "28887384898d718bbdab348631d5a8a5fda9937adee6f747dee6bcaf2b978fee"
 }

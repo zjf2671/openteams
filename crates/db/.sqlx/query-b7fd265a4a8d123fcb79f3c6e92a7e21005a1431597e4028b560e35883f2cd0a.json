@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE chat_sessions\n               SET title = $2,\n                   status = $3,\n                   lead_agent_id = $4,\n                   summary_text = $5,\n                   archive_ref = $6,\n                   last_seen_diff_key = $7,\n                   team_protocol = $8,\n                   team_protocol_enabled = $9,\n                   archived_at = $10,\n                   default_workspace_path = $11,\n                   chat_input_mode = $12,\n                   updated_at = datetime('now', 'subsec')\n               WHERE id = $1\n               RETURNING id as \"id!: Uuid\",\n                         title,\n                         status as \"status!: ChatSessionStatus\",\n                         lead_agent_id as \"lead_agent_id: Uuid\",\n                         summary_text,\n                         archive_ref,\n                         last_seen_diff_key,\n                         team_protocol,\n                         team_protocol_enabled as \"team_protocol_enabled!: bool\",\n                         default_workspace_path,\n                         chat_input_mode,\n                         created_at as \"created_at!: DateTime<Utc>\",\n                         updated_at as \"updated_at!: DateTime<Utc>\",\n                         archived_at as \"archived_at: DateTime<Utc>\"",
+  "query": "SELECT id as \"id!: Uuid\",\n                      title,\n                      status as \"status!: ChatSessionStatus\",\n                      lead_agent_id as \"lead_agent_id: Uuid\",\n                      summary_text,\n                      archive_ref,\n                      last_seen_diff_key,\n                      team_protocol,\n                      team_protocol_enabled as \"team_protocol_enabled!: bool\",\n                      default_workspace_path,\n                      chat_input_mode,\n                      project_id as \"project_id: Uuid\",\n                      created_at as \"created_at!: DateTime<Utc>\",\n                      updated_at as \"updated_at!: DateTime<Utc>\",\n                      archived_at as \"archived_at: DateTime<Utc>\"\n               FROM chat_sessions\n               WHERE project_id = $1\n               ORDER BY updated_at DESC",
   "describe": {
     "columns": [
       {
@@ -59,23 +59,28 @@
         "type_info": "Text"
       },
       {
-        "name": "created_at!: DateTime<Utc>",
+        "name": "project_id: Uuid",
         "ordinal": 11,
         "type_info": "Text"
       },
       {
-        "name": "updated_at!: DateTime<Utc>",
+        "name": "created_at!: DateTime<Utc>",
         "ordinal": 12,
         "type_info": "Text"
       },
       {
-        "name": "archived_at: DateTime<Utc>",
+        "name": "updated_at!: DateTime<Utc>",
         "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "archived_at: DateTime<Utc>",
+        "ordinal": 14,
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 12
+      "Right": 1
     },
     "nullable": [
       true,
@@ -89,10 +94,11 @@
       true,
       true,
       true,
+      true,
       false,
       false,
       true
     ]
   },
-  "hash": "6bb7b3a8820cb60844d54ffca9a0bb6e5d480e2b54044088f089e6bab1f59a1f"
+  "hash": "b7fd265a4a8d123fcb79f3c6e92a7e21005a1431597e4028b560e35883f2cd0a"
 }

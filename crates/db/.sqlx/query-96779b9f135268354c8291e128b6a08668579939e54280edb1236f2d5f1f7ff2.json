@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id as \"id!: Uuid\",\n                      project_id as \"project_id!: Uuid\",\n                      member_type as \"member_type!: ProjectMemberType\",\n                      user_id,\n                      agent_id as \"agent_id: Uuid\",\n                      role,\n                      display_order as \"display_order!: i64\",\n                      default_workspace_path,\n                      COALESCE(allowed_skill_ids, '[]') as \"allowed_skill_ids!: Json<Vec<String>>\",\n                      is_default as \"is_default!: bool\",\n                      created_at as \"created_at!: DateTime<Utc>\",\n                      updated_at as \"updated_at!: DateTime<Utc>\"\n               FROM project_members\n               WHERE project_id = $1\n               ORDER BY display_order ASC, created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "project_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "member_type!: ProjectMemberType",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "user_id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "agent_id: Uuid",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "role",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "display_order!: i64",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "default_workspace_path",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "allowed_skill_ids!: Json<Vec<String>>",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "is_default!: bool",
+        "ordinal": 9,
+        "type_info": "Bool"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 10,
+        "type_info": "Null"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 11,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "96779b9f135268354c8291e128b6a08668579939e54280edb1236f2d5f1f7ff2"
+}

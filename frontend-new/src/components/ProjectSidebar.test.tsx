@@ -4,11 +4,12 @@
 //     pnpm exec tsx src/components/ProjectSidebar.test.tsx
 // Exits non-zero if any assertion fails.
 
-import React from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { readFileSync } from 'node:fs';
-import { ProjectSidebar } from './ProjectSidebar';
-import { mockShellOptions, mockWorkspaceBootstrap } from '@/mockApiData';
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { ProjectSidebar } from "./ProjectSidebar";
+import { mockShellOptions, mockWorkspaceBootstrap } from "@/mockApiData";
+import type { Project } from "../../../shared/types";
 
 let failures = 0;
 const check = (label: string, cond: boolean, detail?: unknown) => {
@@ -18,15 +19,77 @@ const check = (label: string, cond: boolean, detail?: unknown) => {
   } else {
     failures += 1;
     // eslint-disable-next-line no-console
-    console.error(`  FAIL ${label}`, detail ?? '');
+    console.error(`  FAIL ${label}`, detail ?? "");
   }
 };
 
-console.log('ProjectSidebar');
+console.log("ProjectSidebar");
 
 const html = renderToStaticMarkup(
   <ProjectSidebar
     shellOptions={mockShellOptions}
+    sessions={mockWorkspaceBootstrap.sessions}
+    activeSessionId={mockWorkspaceBootstrap.defaults.activeSessionId}
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
+const apiProjects: Project[] = [
+  {
+    id: "project-api-1",
+    name: "API Project",
+    default_agent_working_dir: null,
+    remote_project_id: null,
+    description: "Loaded from project API",
+    status: "active",
+    default_workspace_path: "E:/workspace/api-project",
+    active_repo_id: null,
+    created_at: new Date("2026-05-31T00:00:00Z"),
+    updated_at: new Date("2026-05-31T00:00:00Z"),
+  },
+];
+const migratedProjects: Project[] = [
+  {
+    id: "11111111-1111-4111-8111-111111111111",
+    name: "已迁移会话",
+    default_agent_working_dir: null,
+    remote_project_id: null,
+    description: "__migrate__:legacy_chat_sessions",
+    status: "system",
+    default_workspace_path: "E:/workspace/legacy",
+    active_repo_id: null,
+    created_at: new Date("2026-05-31T00:00:00Z"),
+    updated_at: new Date("2026-05-31T00:00:00Z"),
+  },
+];
+const projectSwitcherHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    projects={apiProjects}
+    selectedProjectId="project-api-1"
+    sessions={mockWorkspaceBootstrap.sessions}
+    activeSessionId={mockWorkspaceBootstrap.defaults.activeSessionId}
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+    onProjectSelect={() => undefined}
+    onCreateProject={async () => undefined}
+    onUpdateProject={async () => undefined}
+    onDeleteProject={async () => undefined}
+  />,
+);
+const migratedProjectHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    projects={migratedProjects}
+    selectedProjectId="11111111-1111-4111-8111-111111111111"
     sessions={mockWorkspaceBootstrap.sessions}
     activeSessionId={mockWorkspaceBootstrap.defaults.activeSessionId}
     activePage="workspace"
@@ -46,10 +109,10 @@ const translatedHtml = renderToStaticMarkup(
     weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
     t={(key, replacements) => {
       const translated: Record<string, string> = {
-        'sidebar.sessions': 'SESSIONS_TRANSLATED',
-        'sidebar.more': 'MORE_TRANSLATED',
-        'sidebar.projectManagement': 'PROJECT_MANAGEMENT_TRANSLATED',
-        'sidebar.showMoreSessions': 'SHOW_{count}_MORE_TRANSLATED',
+        "sidebar.sessions": "SESSIONS_TRANSLATED",
+        "sidebar.more": "MORE_TRANSLATED",
+        "sidebar.projectManagement": "PROJECT_MANAGEMENT_TRANSLATED",
+        "sidebar.showMoreSessions": "SHOW_{count}_MORE_TRANSLATED",
       };
       let value = translated[key] ?? key;
       if (replacements) {
@@ -67,67 +130,272 @@ const translatedHtml = renderToStaticMarkup(
 );
 const moreAttrStart = html.indexOf('data-sidebar-more="true"');
 const moreStart =
-  moreAttrStart >= 0 ? html.lastIndexOf('<button', moreAttrStart) : -1;
+  moreAttrStart >= 0 ? html.lastIndexOf("<button", moreAttrStart) : -1;
 const moreHtml =
-  moreStart >= 0 ? html.slice(moreStart, html.indexOf('</button>', moreStart)) : '';
-const hiddenSessionCount = Math.max(mockWorkspaceBootstrap.sessions.length - 6, 0);
+  moreStart >= 0
+    ? html.slice(moreStart, html.indexOf("</button>", moreStart))
+    : "";
+const hiddenSessionCount = Math.max(
+  mockWorkspaceBootstrap.sessions.length - 6,
+  0,
+);
 const componentSource = readFileSync(
-  new URL('./ProjectSidebar.tsx', import.meta.url),
-  'utf8',
+  new URL("./ProjectSidebar.tsx", import.meta.url),
+  "utf8",
 );
 
-check('renders active project monogram', html.includes('MS'), html);
-check('renders active project name', html.includes('my-saas'), html);
-check('renders Inbox action', html.includes('Inbox'), html);
-check('renders New session action', html.includes('New session'), html);
-check('renders build stats default expanded', html.includes('aria-expanded="true"'), html);
-check('renders weekly cost from workspace state', html.includes('$8.42'), html);
-check('renders session section', html.includes('Sessions'), html);
+check("renders active project monogram", html.includes("MS"), html);
+check("renders active project name", html.includes("my-saas"), html);
 check(
-  'renders translated sidebar labels when translator is provided',
-  translatedHtml.includes('SESSIONS_TRANSLATED') &&
-    translatedHtml.includes('MORE_TRANSLATED') &&
-    translatedHtml.includes('PROJECT_MANAGEMENT_TRANSLATED') &&
-    translatedHtml.includes(`aria-label="SHOW_${hiddenSessionCount}_MORE_TRANSLATED"`),
+  "renders API-backed active project name",
+  projectSwitcherHtml.includes("API Project"),
+  projectSwitcherHtml,
+);
+check(
+  "renders API-backed active project monogram",
+  projectSwitcherHtml.includes("AP"),
+  projectSwitcherHtml,
+);
+check(
+  "renders migrated project with legacy session copy",
+  migratedProjectHtml.includes("旧版本会话") &&
+    !migratedProjectHtml.includes("已迁移会话"),
+  migratedProjectHtml,
+);
+check(
+  "hides migrated project marker text",
+  !migratedProjectHtml.includes("__migrate__"),
+  migratedProjectHtml,
+);
+check("renders Inbox action", html.includes("Inbox"), html);
+check("renders New session action", html.includes("New session"), html);
+check(
+  "renders build stats default expanded",
+  html.includes('aria-expanded="true"'),
+  html,
+);
+check("renders weekly cost from workspace state", html.includes("$8.42"), html);
+check("renders session section", html.includes("Sessions"), html);
+check(
+  "renders translated sidebar labels when translator is provided",
+  translatedHtml.includes("SESSIONS_TRANSLATED") &&
+    translatedHtml.includes("MORE_TRANSLATED") &&
+    translatedHtml.includes("PROJECT_MANAGEMENT_TRANSLATED") &&
+    translatedHtml.includes(
+      `aria-label="SHOW_${hiddenSessionCount}_MORE_TRANSLATED"`,
+    ),
   translatedHtml,
 );
-check('renders workspace sessions', html.includes('Fix login flicker'), html);
-check('keeps collapsed session list height content-sized', html.includes('space-y-1 pr-1 overflow-visible') && !html.includes('h-52 overflow-y-auto'), html);
-check('keeps expanded session list fixed-height scrollable', componentSource.includes("sessionsExpanded ? 'h-52 overflow-y-auto' : 'overflow-visible'"), componentSource);
-check('uses compact sidebar item spacing', html.includes('min-h-6') && html.includes('py-[3px]'), html);
-check('uses wider spacing between sidebar sections', html.includes('flex-1 space-y-5.5 overflow-y-auto'), html);
-check('removes back and forward controls', !componentSource.includes('ArrowLeft') && !componentSource.includes('ArrowRight') && !html.includes('Go back') && !html.includes('Go forward'), componentSource);
-check('removes project switcher divider lines', !componentSource.includes('border-b border-[var(--hairline)] px-3 py-1.5') && componentSource.includes('<div className="px-3 py-1.5">'), componentSource);
-check('renders increased sidebar item font size', html.includes('text-[14px]'), html);
-check('renders capitalized overflow session indicator', html.includes('More'), html);
-check('does not render legacy lowercase dotted more text', !html.includes('...more'), html);
-check('renders more indicator without icon wrapper', moreHtml.length > 0, html);
-check('renders more indicator as a clickable button', moreHtml.includes('type="button"'), moreHtml);
-check('more indicator starts collapsed', moreHtml.includes('aria-expanded="false"'), moreHtml);
+check("renders workspace sessions", html.includes("Fix login flicker"), html);
 check(
-  'more indicator announces expandable session count',
+  "keeps collapsed session list height content-sized",
+  html.includes("space-y-1 pr-1 overflow-visible") &&
+    !html.includes("h-52 overflow-y-auto"),
+  html,
+);
+check(
+  "keeps expanded session list fixed-height scrollable",
+  componentSource.includes(
+    'sessionsExpanded ? "h-52 overflow-y-auto" : "overflow-visible"',
+  ),
+  componentSource,
+);
+check(
+  "uses compact sidebar item spacing",
+  html.includes("py-[4px]") && html.includes("px-[7px]"),
+  html,
+);
+check(
+  "uses wider spacing between sidebar sections",
+  html.includes("flex-1 space-y-5 overflow-y-auto"),
+  html,
+);
+check(
+  "removes back and forward controls",
+  !componentSource.includes("ArrowLeft") &&
+    !componentSource.includes("ArrowRight") &&
+    !html.includes("Go back") &&
+    !html.includes("Go forward"),
+  componentSource,
+);
+check(
+  "removes project switcher divider lines",
+  !componentSource.includes("border-b border-[var(--hairline)] px-3 py-1.5") &&
+    componentSource.includes('<div className="px-3 py-1.5">'),
+  componentSource,
+);
+check(
+  "renders sidebar item caption font size",
+  html.includes("text-[12px]"),
+  html,
+);
+check(
+  "renders capitalized overflow session indicator",
+  html.includes("More"),
+  html,
+);
+check(
+  "does not render legacy lowercase dotted more text",
+  !html.includes("...more"),
+  html,
+);
+check("renders more indicator without icon wrapper", moreHtml.length > 0, html);
+check(
+  "renders more indicator as a clickable button",
+  moreHtml.includes('type="button"'),
+  moreHtml,
+);
+check(
+  "more indicator starts collapsed",
+  moreHtml.includes('aria-expanded="false"'),
+  moreHtml,
+);
+check(
+  "more indicator announces expandable session count",
   moreHtml.includes(`aria-label="Show ${hiddenSessionCount} more sessions"`),
   moreHtml,
 );
-check('more indicator uses a three-dot icon', moreHtml.includes('<svg'), moreHtml);
 check(
-  'renders more indicator with larger bold text',
-  html.includes('text-[14px] font-semibold'),
+  "more indicator uses a three-dot icon",
+  moreHtml.includes("<svg"),
+  moreHtml,
+);
+check(
+  "renders more indicator with medium weight text",
+  html.includes("font-medium"),
   html,
 );
-check('renders hidden session count', html.includes(`+${hiddenSessionCount}`), html);
-check('limits extra mock sessions behind more indicator', !html.includes('Profile API review'), html);
 check(
-  'more indicator can toggle back to collapsed state',
+  "renders hidden session count",
+  html.includes(`+${hiddenSessionCount}`),
+  html,
+);
+check(
+  "limits extra mock sessions behind more indicator",
+  !html.includes("Profile API review"),
+  html,
+);
+check(
+  "more indicator can toggle back to collapsed state",
   componentSource.includes("setSessionsExpanded((expanded) => !expanded)") &&
-    componentSource.includes("translate('sidebar.less', 'Less')") &&
-    componentSource.includes("translate('sidebar.more', 'More')"),
+    componentSource.includes('translate("sidebar.less", "Less")') &&
+    componentSource.includes('translate("sidebar.more", "More")'),
   componentSource,
 );
-check('renders project management section', html.includes('Project management'), html);
-check('renders system section', html.includes('System'), html);
-check('renders Skill library with book icon', html.includes('Skill library') && html.includes('lucide-book-open'), html);
-check('does not render duplicate project sessions from shell data', !html.includes('undefined'));
+check(
+  "renders project switcher as a portal-backed floating menu",
+  componentSource.includes("createPortal") &&
+    componentSource.includes("fixed z-[1000]") &&
+    !componentSource.includes("absolute top-full left-3 right-3"),
+  componentSource,
+);
+check(
+  "supports project switcher open state",
+  componentSource.includes("toggleProjectSwitcher") &&
+    componentSource.includes("setProjectSwitcherOpen((open) => {"),
+  componentSource,
+);
+check(
+  "supports selecting API projects from sidebar",
+  componentSource.includes("onProjectSelect?.(actionMenuProject.id)"),
+  componentSource,
+);
+check(
+  "opens a horizontal project action submenu from project rows",
+  componentSource.includes(
+    "openProjectActionMenu(project, event.currentTarget)",
+  ) && componentSource.includes("fixed z-[1001] w-[180px]"),
+  componentSource,
+);
+check(
+  "moves project path display into the action submenu",
+  componentSource.includes("repository: project.default_workspace_path ??") &&
+    !componentSource.includes(
+      "project.description ?? project.default_workspace_path",
+    ) &&
+    componentSource.includes('translate("sidebar.projectPath"') &&
+    componentSource.includes("actionMenuProject.repository") &&
+    componentSource.includes('translate("sidebar.projectPathEmpty"') &&
+    !componentSource.includes("{actionMenuProject.label}"),
+  componentSource,
+);
+check(
+  "project action submenu includes switch edit and delete actions",
+  componentSource.includes('translate("sidebar.switchProject"') &&
+    componentSource.includes('translate("sidebar.editProject"') &&
+    componentSource.includes('translate("sidebar.deleteProject"'),
+  componentSource,
+);
+check(
+  "project delete action uses red text and light red hover",
+  componentSource.includes("text-red-400") &&
+    componentSource.includes("hover:bg-red-500/10"),
+  componentSource,
+);
+check(
+  "supports editing and deleting projects from sidebar",
+  componentSource.includes("onUpdateProject(editingProject.id") &&
+    componentSource.includes("onDeleteProject(actionMenuProject.id)"),
+  componentSource,
+);
+check(
+  "supports creating projects from sidebar",
+  componentSource.includes("onCreateProject") &&
+    componentSource.includes("Create project"),
+  componentSource,
+);
+check(
+  "project switcher create row inherits menu background at rest",
+  componentSource.includes("cursor-pointer border-none bg-transparent"),
+  componentSource,
+);
+check(
+  "project switcher create row uses plain plus icon",
+  componentSource.includes('<Plus className="h-3.5 w-3.5') &&
+    !componentSource.includes("<PlusCircle className="),
+  componentSource,
+);
+check(
+  "builds create project request with backend fields",
+  componentSource.includes("repositories: []") &&
+    componentSource.includes("active_repo_id: null"),
+  componentSource,
+);
+check(
+  "create project modal uses searchable team select",
+  componentSource.includes("<DropdownSelect") &&
+    componentSource.includes('selectionMode="single"') &&
+    componentSource.includes('"sidebar.searchTeams"'),
+  componentSource,
+);
+check(
+  "create project modal can read local workspace directories",
+  componentSource.includes("filesystemApi.listDirectory") &&
+    componentSource.includes("filesystemApi.listRoots") &&
+    componentSource.includes('translate("sidebar.readWorkspace"'),
+  componentSource,
+);
+check(
+  "create project modal omits description and status fields",
+  !componentSource.includes("setProjectDescription") &&
+    !componentSource.includes("setProjectStatus"),
+  componentSource,
+);
+check(
+  "renders project management section",
+  html.includes("Project management"),
+  html,
+);
+check("renders system section", html.includes("System"), html);
+check(
+  "renders Skill library with book icon",
+  html.includes("Skill library") && html.includes("lucide-book-open"),
+  html,
+);
+check(
+  "does not render duplicate project sessions from shell data",
+  !html.includes("undefined"),
+);
 
 if (failures > 0) {
   // eslint-disable-next-line no-console
@@ -135,5 +403,5 @@ if (failures > 0) {
   process.exit(1);
 } else {
   // eslint-disable-next-line no-console
-  console.log('\nAll ProjectSidebar assertions passed.');
+  console.log("\nAll ProjectSidebar assertions passed.");
 }

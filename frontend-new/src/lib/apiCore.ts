@@ -62,3 +62,8 @@ export const qs = (
   for (const [k, v] of entries) sp.set(k, String(v));
   return `?${sp.toString()}`;
 };
+
+export const jsonBody = (data: unknown): string =>
+  JSON.stringify(data, (_key, value) =>
+    typeof value === 'bigint' ? Number(value) : value,
+  );

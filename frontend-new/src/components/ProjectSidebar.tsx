@@ -1,4 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   Activity,
   BookOpen,
@@ -7,26 +15,58 @@ import {
   ChevronRight,
   CircleDot,
   ChevronUp,
+  FileText,
+  Folder,
+  FolderOpen,
   Github,
   History,
   Inbox,
   Network,
   MoreHorizontal,
+  Plus,
   PlusCircle,
   Settings2,
   Users,
+  X,
   type LucideIcon,
-} from 'lucide-react';
+} from "lucide-react";
 import type {
+  DirectoryEntry,
   Session,
   SidebarNavigationItem,
   SidebarNavigationTarget,
   SidebarPrimaryAction,
-} from '@/types';
-import type { ShellOptionsMock } from '@/mockApiData';
+  SidebarProjectDisplay,
+} from "@/types";
+import { DropdownSelect, type DropdownSelectOption } from "./DropdownSelect";
+import { filesystemApi } from "@/lib/api";
+import {
+  projectDisplayDescription,
+  projectDisplayName,
+} from "@/lib/projectDisplay";
+import type { ShellOptionsMock } from "@/mockApiData";
+import type {
+  ChatTeamPreset,
+  CreateProjectRequest,
+  Project,
+  UpdateProject,
+} from "../../../shared/types";
+
+type EditableProjectDraft = {
+  id: string;
+  name: string;
+  description: string | null;
+  status: string | null;
+  defaultWorkspacePath: string | null;
+  activeRepoId: string | null;
+};
 
 interface ProjectSidebarProps {
   shellOptions: ShellOptionsMock | null;
+  projects?: Project[];
+  selectedProjectId?: string;
+  projectsLoading?: boolean;
+  projectsError?: string | null;
   sessions: Session[];
   activeSessionId: string;
   activePage: SidebarNavigationTarget;
@@ -36,34 +76,97 @@ interface ProjectSidebarProps {
   onSessionSelect: (sessionId: string) => void;
   onPrimaryAction: (action: SidebarPrimaryAction) => void;
   onProjectAction: (actionId: string) => void;
+  onProjectSelect?: (projectId: string) => void;
+  onCreateProject?: (data: CreateProjectRequest) => Promise<void>;
+  onUpdateProject?: (projectId: string, data: UpdateProject) => Promise<void>;
+  onDeleteProject?: (projectId: string) => Promise<void>;
+  teamPresets?: ChatTeamPreset[];
 }
 
-const primaryActionIcons: Record<SidebarPrimaryAction['icon'], LucideIcon> = {
+const primaryActionIcons: Record<SidebarPrimaryAction["icon"], LucideIcon> = {
   inbox: Inbox,
-  'plus-circle': PlusCircle,
+  "plus-circle": PlusCircle,
 };
 
 const navigationIcons: Record<string, LucideIcon> = {
   bot: Bot,
-  'book-open': BookOpen,
+  "book-open": BookOpen,
   github: Github,
   settings: Settings2,
   users: Users,
 };
 
 const topControlClass =
-  'flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-[var(--ink-tertiary)] transition hover:border-[var(--hairline)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]';
+  "flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-[var(--ink-tertiary)] transition hover:border-[var(--hairline)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]";
 
 const sectionLabelClass =
-  'px-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--ink-tertiary)]';
+  "px-2 text-[14px] font-medium uppercase tracking-[0.04em] text-[var(--ink-tertiary)]";
 
 const sidebarItemClass =
-  'flex min-h-6 w-full items-center gap-2 rounded-md border px-2 py-[3px] text-left text-[14px] transition';
+  "flex w-full items-center gap-[6px] rounded-sm border px-[7px] py-[4px] text-left text-[14px] leading-[1.4] transition";
 
 const visibleSessionLimit = 6;
 
+const fallbackTeamOptions: DropdownSelectOption[] = [
+  {
+    id: "fullstack_delivery",
+    label: "Full-stack delivery",
+    description: "Lead, backend, frontend, QA",
+  },
+  {
+    id: "rapid_bugfix",
+    label: "Rapid bugfix",
+    description: "Triage, implementation, review",
+  },
+  {
+    id: "product_discovery",
+    label: "Product discovery",
+    description: "PM, design, research",
+  },
+];
+
 const getNavigationIcon = (icon: string): LucideIcon =>
   navigationIcons[icon] ?? CircleDot;
+
+const projectMonogram = (name: string): string => {
+  const letters = name
+    .split(/[\s-_]+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("");
+  return (letters || name).slice(0, 2).toUpperCase();
+};
+
+const projectDisplayFromApi = (
+  project: Project,
+  selectedProjectId?: string,
+): SidebarProjectDisplay => {
+  const label = projectDisplayName(project);
+  return {
+    id: project.id,
+    label,
+    active: project.id === selectedProjectId,
+    monogram: projectMonogram(label),
+    repository: project.default_workspace_path ?? "",
+    description: projectDisplayDescription(project),
+  };
+};
+
+const getParentPath = (path: string): string => {
+  const trimmed = path.trim().replace(/[\\/]+$/, "");
+  if (!trimmed) return "";
+
+  const slash = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  if (slash < 0) return "";
+  if (slash === 0) return "/";
+  if (/^[A-Za-z]:$/.test(trimmed.slice(0, slash))) {
+    return `${trimmed.slice(0, slash)}\\`;
+  }
+  return trimmed.slice(0, slash);
+};
+
+const directoryEntryTime = (entry: DirectoryEntry): number =>
+  typeof entry.last_modified === "number" ? entry.last_modified : 0;
 
 function SidebarSection({
   title,
@@ -105,13 +208,13 @@ function SidebarNavigationButton({
       title={title}
       className={`${sidebarItemClass} ${
         active
-          ? 'border-[var(--hairline)] bg-[var(--surface-1)] font-medium text-[var(--ink)]'
-          : 'border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]'
-      } ${item.disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'}`}
+          ? "border-[var(--hairline)] bg-[var(--surface-1)] font-medium text-[var(--ink)]"
+          : "border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]"
+      } ${item.disabled ? "cursor-not-allowed opacity-45" : "cursor-pointer"}`}
     >
       <Icon
         className={`h-3.5 w-3.5 shrink-0 ${
-          active ? 'text-[var(--primary)]' : 'text-[var(--ink-tertiary)]'
+          active ? "text-[var(--primary)]" : "text-[var(--ink-tertiary)]"
         }`}
       />
       <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -126,6 +229,10 @@ function SidebarNavigationButton({
 
 export function ProjectSidebar({
   shellOptions,
+  projects = [],
+  selectedProjectId,
+  projectsLoading = false,
+  projectsError = null,
   sessions,
   activeSessionId,
   activePage,
@@ -135,12 +242,69 @@ export function ProjectSidebar({
   onSessionSelect,
   onPrimaryAction,
   onProjectAction,
+  onProjectSelect,
+  onCreateProject,
+  onUpdateProject,
+  onDeleteProject,
+  teamPresets = [],
 }: ProjectSidebarProps) {
+  const projectSwitcherTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const projectSwitcherMenuRef = useRef<HTMLDivElement | null>(null);
+  const projectActionMenuRef = useRef<HTMLDivElement | null>(null);
   const [buildStatsVisible, setBuildStatsVisible] = useState(true);
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  const [projectSwitcherOpen, setProjectSwitcherOpen] = useState(false);
+  const [projectSwitcherPosition, setProjectSwitcherPosition] = useState({
+    left: 0,
+    top: 0,
+    width: 280,
+  });
+  const [projectActionMenu, setProjectActionMenu] = useState<{
+    projectId: string;
+    left: number;
+    top: number;
+  } | null>(null);
+  const [createFormOpen, setCreateFormOpen] = useState(false);
+  const [editingProject, setEditingProject] =
+    useState<EditableProjectDraft | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [projectWorkspacePath, setProjectWorkspacePath] = useState("");
+  const [selectedTeamId, setSelectedTeamId] = useState("");
+  const [workspaceBrowserOpen, setWorkspaceBrowserOpen] = useState(false);
+  const [workspaceEntries, setWorkspaceEntries] = useState<DirectoryEntry[]>(
+    [],
+  );
+  const [workspaceCurrentPath, setWorkspaceCurrentPath] = useState("");
+  const [workspaceBrowserLoading, setWorkspaceBrowserLoading] = useState(false);
+  const [workspaceBrowserError, setWorkspaceBrowserError] = useState<
+    string | null
+  >(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const displayedProjects = useMemo(
+    () =>
+      projects.length > 0
+        ? projects.map((project) =>
+            projectDisplayFromApi(project, selectedProjectId),
+          )
+        : (shellOptions?.projects ?? []),
+    [projects, selectedProjectId, shellOptions],
+  );
   const activeProject = useMemo(
-    () => shellOptions?.projects.find((project) => project.active),
-    [shellOptions],
+    () =>
+      displayedProjects.find((project) =>
+        selectedProjectId ? project.id === selectedProjectId : project.active,
+      ) ?? displayedProjects[0],
+    [displayedProjects, selectedProjectId],
+  );
+  const actionMenuProject = useMemo(
+    () =>
+      projectActionMenu
+        ? displayedProjects.find(
+            (project) => project.id === projectActionMenu.projectId,
+          )
+        : undefined,
+    [displayedProjects, projectActionMenu],
   );
   const buildStats = shellOptions?.buildStats;
   const hasOverflowSessions = sessions.length > visibleSessionLimit;
@@ -148,6 +312,18 @@ export function ProjectSidebar({
     ? sessions
     : sessions.slice(0, visibleSessionLimit);
   const hiddenSessionCount = Math.max(sessions.length - visibleSessionLimit, 0);
+  const teamOptions = useMemo<DropdownSelectOption[]>(() => {
+    const enabledTeamPresets = teamPresets.filter(
+      (preset) => preset.enabled !== false,
+    );
+    if (enabledTeamPresets.length === 0) return fallbackTeamOptions;
+    return enabledTeamPresets.map((preset) => ({
+      id: preset.id,
+      label: preset.name,
+      description: preset.description,
+      hint: `${preset.member_ids.length}`,
+    }));
+  }, [teamPresets]);
 
   const translate = (
     key: string,
@@ -159,30 +335,284 @@ export function ProjectSidebar({
   };
 
   const sessionToggleLabel = sessionsExpanded
-    ? translate('sidebar.less', 'Less')
-    : translate('sidebar.more', 'More');
+    ? translate("sidebar.less", "Less")
+    : translate("sidebar.more", "More");
   const sessionToggleAriaLabel = sessionsExpanded
-    ? translate('sidebar.collapseSessions', 'Collapse sessions')
-    : translate('sidebar.showMoreSessions', `Show ${hiddenSessionCount} more sessions`, {
-        count: hiddenSessionCount,
-      });
+    ? translate("sidebar.collapseSessions", "Collapse sessions")
+    : translate(
+        "sidebar.showMoreSessions",
+        `Show ${hiddenSessionCount} more sessions`,
+        {
+          count: hiddenSessionCount,
+        },
+      );
 
   const statValue = (statId: string, value: string) => {
-    if (statId === 'weekly-spend') return `$${weeklyCost.toFixed(2)}`;
+    if (statId === "weekly-spend") return `$${weeklyCost.toFixed(2)}`;
     return value;
+  };
+
+  const loadWorkspaceDirectory = useCallback(async (path?: string) => {
+    setWorkspaceBrowserLoading(true);
+    setWorkspaceBrowserError(null);
+    try {
+      const response = await filesystemApi.listDirectory(
+        path?.trim() || undefined,
+      );
+      const sortedEntries = [...response.entries].sort((a, b) => {
+        if (a.is_directory !== b.is_directory) {
+          return a.is_directory ? -1 : 1;
+        }
+        return a.name.localeCompare(b.name);
+      });
+      setWorkspaceEntries(sortedEntries);
+      setWorkspaceCurrentPath(response.current_path);
+      setProjectWorkspacePath(response.current_path);
+    } catch (err) {
+      setWorkspaceBrowserError(
+        err instanceof Error
+          ? err.message
+          : translate(
+              "sidebar.workspaceReadFailed",
+              "Workspace directory could not be read",
+            ),
+      );
+    } finally {
+      setWorkspaceBrowserLoading(false);
+    }
+  }, []);
+
+  const loadWorkspaceRoots = useCallback(async () => {
+    setWorkspaceBrowserLoading(true);
+    setWorkspaceBrowserError(null);
+    try {
+      const roots = await filesystemApi.listRoots();
+      setWorkspaceEntries(roots);
+      setWorkspaceCurrentPath("");
+    } catch (err) {
+      setWorkspaceBrowserError(
+        err instanceof Error
+          ? err.message
+          : translate(
+              "sidebar.workspaceReadFailed",
+              "Workspace roots could not be read",
+            ),
+      );
+    } finally {
+      setWorkspaceBrowserLoading(false);
+    }
+  }, []);
+
+  const updateProjectSwitcherPosition = useCallback(() => {
+    const trigger = projectSwitcherTriggerRef.current;
+    if (!trigger) return;
+
+    const rect = trigger.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const menuWidth = Math.min(240, Math.max(200, viewportWidth - 24));
+    const left = Math.min(
+      Math.max(12, rect.left),
+      Math.max(12, viewportWidth - menuWidth - 12),
+    );
+
+    setProjectSwitcherPosition({
+      left,
+      top: rect.bottom + 4,
+      width: menuWidth,
+    });
+  }, []);
+
+  const toggleProjectSwitcher = () => {
+    setProjectSwitcherOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen) updateProjectSwitcherPosition();
+      if (!nextOpen) setProjectActionMenu(null);
+      return nextOpen;
+    });
+  };
+
+  const draftFromProject = (
+    project: SidebarProjectDisplay,
+  ): EditableProjectDraft => {
+    const apiProject = projects.find((item) => item.id === project.id);
+    return {
+      id: project.id,
+      name: apiProject ? projectDisplayName(apiProject) : project.label,
+      description: apiProject?.description ?? null,
+      status: apiProject?.status ?? "active",
+      defaultWorkspacePath:
+        apiProject?.default_workspace_path ?? project.repository ?? null,
+      activeRepoId: apiProject?.active_repo_id ?? null,
+    };
+  };
+
+  const openProjectActionMenu = (
+    project: SidebarProjectDisplay,
+    trigger: HTMLElement,
+  ) => {
+    const rect = trigger.getBoundingClientRect();
+    setProjectActionMenu({
+      projectId: project.id,
+      left: rect.right + 6,
+      top: rect.top,
+    });
+  };
+
+  const closeProjectMenus = () => {
+    setProjectSwitcherOpen(false);
+    setProjectActionMenu(null);
+  };
+
+  const startEditProject = (project: SidebarProjectDisplay) => {
+    const draft = draftFromProject(project);
+    setEditingProject(draft);
+    setProjectName(draft.name);
+    setProjectWorkspacePath(draft.defaultWorkspacePath ?? "");
+    setCreateError(null);
+    setWorkspaceBrowserOpen(false);
+    setCreateFormOpen(true);
+    closeProjectMenus();
+  };
+
+  const resetProjectForm = () => {
+    setProjectName("");
+    setProjectWorkspacePath("");
+    setEditingProject(null);
+  };
+
+  useLayoutEffect(() => {
+    if (projectSwitcherOpen) updateProjectSwitcherPosition();
+  }, [projectSwitcherOpen, updateProjectSwitcherPosition]);
+
+  useEffect(() => {
+    if (!projectSwitcherOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (
+        projectSwitcherMenuRef.current?.contains(target) ||
+        projectActionMenuRef.current?.contains(target) ||
+        projectSwitcherTriggerRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setProjectSwitcherOpen(false);
+      setProjectActionMenu(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeProjectMenus();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", updateProjectSwitcherPosition);
+    window.addEventListener("scroll", updateProjectSwitcherPosition, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", updateProjectSwitcherPosition);
+      window.removeEventListener("scroll", updateProjectSwitcherPosition, true);
+    };
+  }, [projectSwitcherOpen, updateProjectSwitcherPosition]);
+
+  useEffect(() => {
+    if (!createFormOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setCreateFormOpen(false);
+        setCreateError(null);
+        setWorkspaceBrowserOpen(false);
+        setEditingProject(null);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [createFormOpen]);
+
+  useEffect(() => {
+    if (!createFormOpen || teamOptions.length === 0) return;
+    if (!teamOptions.some((option) => option.id === selectedTeamId)) {
+      setSelectedTeamId(teamOptions[0].id);
+    }
+  }, [createFormOpen, selectedTeamId, teamOptions]);
+
+  useEffect(() => {
+    if (
+      !createFormOpen ||
+      !workspaceBrowserOpen ||
+      workspaceEntries.length > 0
+    ) {
+      return;
+    }
+    void loadWorkspaceRoots();
+  }, [
+    createFormOpen,
+    loadWorkspaceRoots,
+    workspaceBrowserOpen,
+    workspaceEntries.length,
+  ]);
+
+  const handleCreateProject = async (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    const name = projectName.trim();
+    if (!name || (!editingProject && !onCreateProject)) return;
+
+    setCreatingProject(true);
+    setCreateError(null);
+    try {
+      if (editingProject) {
+        if (!onUpdateProject) return;
+        await onUpdateProject(editingProject.id, {
+          name,
+          description: editingProject.description,
+          status: editingProject.status ?? "active",
+          default_workspace_path: projectWorkspacePath.trim() || null,
+          active_repo_id: editingProject.activeRepoId,
+        });
+      } else {
+        if (!onCreateProject) return;
+        await onCreateProject({
+          name,
+          repositories: [],
+          description: null,
+          status: "active",
+          default_workspace_path: projectWorkspacePath.trim() || null,
+          active_repo_id: null,
+        });
+      }
+      resetProjectForm();
+      setCreateFormOpen(false);
+      closeProjectMenus();
+      setWorkspaceBrowserOpen(false);
+    } catch (err) {
+      setCreateError(
+        err instanceof Error
+          ? err.message
+          : translate("sidebar.projectCreateFailed", "Project creation failed"),
+      );
+    } finally {
+      setCreatingProject(false);
+    }
   };
 
   return (
     <nav
       className="flex h-full min-h-0 w-full max-w-full flex-col bg-[var(--canvas)] text-[var(--ink)] select-none"
-      aria-label={translate('sidebar.aria.projectNavigation', 'Project navigation')}
+      aria-label={translate(
+        "sidebar.aria.projectNavigation",
+        "Project navigation",
+      )}
     >
       <div className="flex h-10 shrink-0 items-center px-2.5">
         <button
           type="button"
           className={topControlClass}
-          onClick={() => onProjectAction('history')}
-          aria-label={translate('sidebar.aria.openHistory', 'Open history')}
+          onClick={() => onProjectAction("history")}
+          aria-label={translate("sidebar.aria.openHistory", "Open history")}
         >
           <History className="h-3.5 w-3.5" />
         </button>
@@ -190,24 +620,441 @@ export function ProjectSidebar({
 
       <div className="px-3 py-1.5">
         <button
+          ref={projectSwitcherTriggerRef}
           type="button"
-          className="flex w-full items-center gap-2 rounded-md border border-transparent px-1 py-0.5 text-left transition hover:border-[var(--hairline)] hover:bg-[var(--surface-1)]"
-          onClick={() => onProjectAction('project-switcher')}
-          aria-label={translate('sidebar.aria.openProjectSwitcher', 'Open project switcher')}
+          className="flex w-full items-center gap-[6px] rounded-sm border border-transparent px-[6px] py-[5px] text-left transition hover:border-[var(--hairline)] hover:bg-[var(--surface-1)]"
+          onClick={toggleProjectSwitcher}
+          aria-expanded={projectSwitcherOpen}
+          aria-label={translate(
+            "sidebar.aria.openProjectSwitcher",
+            "Open project switcher",
+          )}
         >
-          <span className="flex h-4.5 min-w-5.5 shrink-0 items-center justify-center rounded-xl bg-[var(--primary)] px-1 font-mono text-[8px] font-semibold text-white">
-            {activeProject?.monogram ?? '--'}
+          <span className="flex h-[20px] min-w-[20px] shrink-0 items-center justify-center rounded-full bg-[var(--primary)] px-1 font-mono text-[9px] font-medium text-white">
+            {activeProject?.monogram ?? "--"}
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-semibold text-[var(--ink)]">
-              {activeProject?.label ?? translate('sidebar.projectFallback', 'Project')}
+            <span className="block truncate text-[13px] font-medium text-[var(--ink)]">
+              {activeProject?.label ??
+                translate("sidebar.projectFallback", "Project")}
             </span>
           </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
         </button>
+        {projectSwitcherOpen &&
+          createPortal(
+            <div
+              ref={projectSwitcherMenuRef}
+              className="animate-fade-in-down fixed z-[1000] max-h-[min(440px,calc(100vh-72px))] overflow-y-auto rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-3)] p-1.5 ot-scroll-area-styled"
+              style={{
+                left: projectSwitcherPosition.left,
+                top: projectSwitcherPosition.top,
+                width: projectSwitcherPosition.width,
+              }}
+            >
+              <div className="space-y-0.5" data-sidebar-project-list="true">
+                {projectsLoading && (
+                  <div className="px-2 py-1 text-[12px] text-[var(--ink-tertiary)]">
+                    {translate(
+                      "sidebar.projectsLoading",
+                      "Loading projects...",
+                    )}
+                  </div>
+                )}
+                {projectsError && (
+                  <div className="rounded-sm bg-[var(--surface-1)] px-2 py-1 text-[12px] text-red-400">
+                    {projectsError}
+                  </div>
+                )}
+                {!projectsLoading && displayedProjects.length === 0 && (
+                  <div className="px-2 py-1 text-[12px] text-[var(--ink-tertiary)]">
+                    {translate("sidebar.noProjects", "No projects yet")}
+                  </div>
+                )}
+                {displayedProjects.map((project) => (
+                  <button
+                    key={project.id}
+                    type="button"
+                    className={`${sidebarItemClass} cursor-pointer ${
+                      project.id === activeProject?.id
+                        ? "border-[var(--hairline)] bg-[var(--surface-1)] font-medium text-[var(--ink)]"
+                        : "border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]"
+                    }`}
+                    title={project.description || project.label}
+                    onClick={(event) =>
+                      openProjectActionMenu(project, event.currentTarget)
+                    }
+                  >
+                    <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-[var(--mono-bg)] font-mono text-[8px] font-medium text-[var(--ink-muted)] border border-[var(--mono-border)]">
+                      {project.monogram}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{project.label}</span>
+                      {project.description && (
+                        <span className="block truncate text-[11px] text-[var(--ink-tertiary)]">
+                          {project.description}
+                        </span>
+                      )}
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+                  </button>
+                ))}
+              </div>
+              {onCreateProject && (
+                <div className="border-t border-[var(--hairline)] mt-1.5 pt-1.5">
+                  <button
+                    type="button"
+                    className={`${sidebarItemClass} cursor-pointer border-none bg-transparent font-medium text-[var(--ink)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]`}
+                    onClick={() => {
+                      resetProjectForm();
+                      setCreateFormOpen(true);
+                      closeProjectMenus();
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {translate("sidebar.createProject", "Create project")}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>,
+            document.body,
+          )}
+        {projectSwitcherOpen &&
+          projectActionMenu &&
+          actionMenuProject &&
+          createPortal(
+            <div
+              ref={projectActionMenuRef}
+              className="fixed z-[1001] w-[180px] rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-3)] p-1"
+              style={{
+                left: projectActionMenu.left,
+                top: projectActionMenu.top,
+              }}
+            >
+              <div className="px-2 py-2 border-b border-[var(--hairline)] mb-0.5">
+                <div className="truncate text-[13px] font-medium text-[var(--ink)]">
+                  {translate("sidebar.projectPath", "Project path")}
+                </div>
+                <div
+                  className="mt-1 truncate font-mono text-[12px] text-[var(--ink-tertiary)]"
+                  title={
+                    actionMenuProject.repository ||
+                    translate("sidebar.projectPathEmpty", "No path set")
+                  }
+                >
+                  {actionMenuProject.repository ||
+                    translate("sidebar.projectPathEmpty", "No path set")}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13px] text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)] transition"
+                onClick={() => {
+                  onProjectSelect?.(actionMenuProject.id);
+                  closeProjectMenus();
+                }}
+              >
+                <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-tertiary)]" />
+                {translate("sidebar.switchProject", "Switch project")}
+              </button>
+              <button
+                type="button"
+                className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13px] text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)] transition"
+                onClick={() => startEditProject(actionMenuProject)}
+              >
+                <Settings2 className="h-3 w-3 shrink-0 text-[var(--ink-tertiary)]" />
+                {translate("sidebar.editProject", "Edit project")}
+              </button>
+              <div className="my-0.5 border-t border-[var(--hairline)]" />
+              <button
+                type="button"
+                className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition"
+                onClick={async () => {
+                  if (!onDeleteProject) return;
+                  await onDeleteProject(actionMenuProject.id);
+                  closeProjectMenus();
+                }}
+              >
+                <X className="h-3 w-3 shrink-0" />
+                {translate("sidebar.deleteProject", "Delete project")}
+              </button>
+            </div>,
+            document.body,
+          )}
       </div>
 
-      <div className="flex-1 space-y-5.5 overflow-y-auto px-3 py-2">
+      {createFormOpen &&
+        onCreateProject &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[1001] flex items-center justify-center p-4"
+            role="presentation"
+          >
+            <div
+              className="absolute inset-0 bg-[#000000]"
+              onClick={() => {
+                setCreateFormOpen(false);
+                setCreateError(null);
+                setWorkspaceBrowserOpen(false);
+                setEditingProject(null);
+              }}
+            />
+            <button
+              type="button"
+              className="sr-only"
+              onClick={() => {
+                setCreateFormOpen(false);
+                setCreateError(null);
+                setWorkspaceBrowserOpen(false);
+                setEditingProject(null);
+              }}
+            >
+              {translate("sidebar.cancel", "Cancel")}
+            </button>
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-project-modal-title"
+              className="relative w-full max-w-[480px] rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-2)]"
+            >
+              <header className="flex items-center justify-between border-b border-[var(--hairline)] px-6 py-4">
+                <h2
+                  id="create-project-modal-title"
+                  className="text-[14px] font-semibold tracking-tight text-[var(--ink)]"
+                >
+                  {editingProject
+                    ? translate("sidebar.editProject", "Edit project")
+                    : translate("sidebar.createProject", "Create project")}
+                </h2>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+                  onClick={() => {
+                    setCreateFormOpen(false);
+                    setCreateError(null);
+                    setWorkspaceBrowserOpen(false);
+                    setEditingProject(null);
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </header>
+              <form className="space-y-4 p-6" onSubmit={handleCreateProject}>
+                <div>
+                  <label className="mb-1.5 block text-[13px] font-medium tracking-[0.4px] text-[var(--ink-tertiary)]">
+                    {translate("sidebar.projectName", "Project name")}
+                  </label>
+                  <input
+                    className="w-full rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2 text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    placeholder={translate(
+                      "sidebar.projectName",
+                      "Project name",
+                    )}
+                    required
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-[13px] font-medium tracking-[0.4px] text-[var(--ink-tertiary)]">
+                    {translate("sidebar.assignTeam", "Assign team")}
+                  </label>
+                  <DropdownSelect
+                    selectionMode="single"
+                    value={selectedTeamId}
+                    onChange={(value) => setSelectedTeamId(value)}
+                    options={teamOptions}
+                    placeholder={translate(
+                      "sidebar.assignTeamPlaceholder",
+                      "Select a team preset",
+                    )}
+                    searchPlaceholder={translate(
+                      "sidebar.searchTeams",
+                      "Search teams...",
+                    )}
+                    emptyLabel={translate(
+                      "sidebar.noTeamMatch",
+                      "No team presets match this search.",
+                    )}
+                    triggerIcon={
+                      <Users className="h-3.5 w-3.5 text-[var(--ink-tertiary)]" />
+                    }
+                    panelClassName="z-[1010] max-w-none"
+                    maxPanelHeightClassName="max-h-[240px]"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="mb-1.5 block text-[13px] font-medium tracking-[0.4px] text-[var(--ink-tertiary)]">
+                    {translate(
+                      "sidebar.workspaceSettings",
+                      "Workspace settings",
+                    )}
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      className="min-w-0 flex-1 rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2 font-mono text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
+                      value={projectWorkspacePath}
+                      onChange={(event) =>
+                        setProjectWorkspacePath(event.target.value)
+                      }
+                      placeholder={translate(
+                        "sidebar.projectWorkspacePath",
+                        "Default workspace path",
+                      )}
+                    />
+                    <button
+                      type="button"
+                      className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-[var(--hairline-strong)] bg-[var(--surface-3)] px-3 py-2 text-[14px] font-medium text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)]"
+                      onClick={() => {
+                        setWorkspaceBrowserOpen((open) => !open);
+                      }}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                      {translate("sidebar.browseWorkspace", "Browse")}
+                    </button>
+                  </div>
+
+                  {workspaceBrowserOpen && (
+                    <div className="overflow-hidden rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)]">
+                      <div className="flex items-center gap-2 border-b border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2">
+                        <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--ink-tertiary)]">
+                          {workspaceCurrentPath ||
+                            translate("sidebar.workspaceRoots", "Local roots")}
+                        </span>
+                        <button
+                          type="button"
+                          className="rounded-sm border border-[var(--hairline)] bg-[var(--surface-3)] px-2 py-1 text-[12px] text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)]"
+                          onClick={() => void loadWorkspaceRoots()}
+                        >
+                          {translate("sidebar.roots", "Roots")}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!workspaceCurrentPath}
+                          className="rounded-sm border border-[var(--hairline)] bg-[var(--surface-3)] px-2 py-1 text-[12px] text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
+                          onClick={() => {
+                            const parent = getParentPath(workspaceCurrentPath);
+                            if (parent) void loadWorkspaceDirectory(parent);
+                          }}
+                        >
+                          {translate("sidebar.up", "Up")}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-sm bg-[var(--primary)] px-2 py-1 text-[12px] font-medium text-white transition hover:bg-[var(--primary-hover)]"
+                          onClick={() =>
+                            void loadWorkspaceDirectory(projectWorkspacePath)
+                          }
+                        >
+                          {translate("sidebar.readWorkspace", "Read")}
+                        </button>
+                      </div>
+                      {workspaceBrowserError && (
+                        <div className="border-b border-[var(--hairline)] px-3 py-2 text-[13px] text-red-400">
+                          {workspaceBrowserError}
+                        </div>
+                      )}
+                      <div className="max-h-[180px] overflow-y-auto py-1 ot-scroll-area-styled">
+                        {workspaceBrowserLoading ? (
+                          <div className="px-3 py-2 text-[13px] text-[var(--ink-tertiary)]">
+                            {translate(
+                              "sidebar.workspaceLoading",
+                              "Reading local files...",
+                            )}
+                          </div>
+                        ) : workspaceEntries.length === 0 ? (
+                          <div className="px-3 py-2 text-[13px] text-[var(--ink-tertiary)]">
+                            {translate(
+                              "sidebar.workspaceEmpty",
+                              "No files were found here.",
+                            )}
+                          </div>
+                        ) : (
+                          workspaceEntries.map((entry) => {
+                            const Icon = entry.is_directory ? Folder : FileText;
+                            return (
+                              <button
+                                key={`${entry.path}-${directoryEntryTime(entry)}`}
+                                type="button"
+                                disabled={!entry.is_directory}
+                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-[var(--ink-subtle)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50 transition"
+                                onClick={() => {
+                                  if (entry.is_directory) {
+                                    void loadWorkspaceDirectory(entry.path);
+                                  }
+                                }}
+                              >
+                                <Icon
+                                  className={`h-3.5 w-3.5 shrink-0 ${
+                                    entry.is_git_repo
+                                      ? "text-[var(--primary)]"
+                                      : "text-[var(--ink-tertiary)]"
+                                  }`}
+                                />
+                                <span className="min-w-0 flex-1 truncate font-mono text-[13px]">
+                                  {entry.name}
+                                </span>
+                                {entry.is_git_repo && (
+                                  <span className="rounded-xs bg-[var(--primary-tint)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--primary)]">
+                                    git
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {createError && (
+                  <div className="text-[13px] text-red-400">{createError}</div>
+                )}
+                <div className="flex items-center justify-between border-t border-[var(--hairline)] bg-[var(--surface-1)] -mx-6 -mb-6 mt-2 rounded-b-lg px-6 py-3">
+                  <span className="rounded-xs border border-[var(--hairline)] bg-[var(--surface-3)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--ink-muted)]">
+                    {translate("escToCancel", "Esc to cancel")}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-md border border-[var(--hairline-strong)] bg-[var(--surface-3)] px-3 py-1.5 text-[14px] font-medium text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)]"
+                      onClick={() => {
+                        setCreateFormOpen(false);
+                        setCreateError(null);
+                        setWorkspaceBrowserOpen(false);
+                        setEditingProject(null);
+                      }}
+                    >
+                      {translate("sidebar.cancel", "Cancel")}
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={creatingProject || !projectName.trim()}
+                      className="cursor-pointer rounded-md bg-[var(--primary)] px-3.5 py-1.5 text-[14px] font-medium text-white transition hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {creatingProject
+                        ? translate("sidebar.creatingProject", "Creating...")
+                        : editingProject
+                          ? translate("sidebar.saveProject", "Save project")
+                          : translate(
+                              "sidebar.createProject",
+                              "Create project",
+                            )}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>,
+          document.body,
+        )}
+
+      <div className="flex-1 space-y-5 overflow-y-auto px-2.5 py-2 ot-scroll-area-styled">
         <section className="space-y-1" data-section="Primary actions">
           {(shellOptions?.primaryActions ?? []).map((action) => {
             const Icon = primaryActionIcons[action.icon] ?? CircleDot;
@@ -217,7 +1064,10 @@ export function ProjectSidebar({
                 type="button"
                 className={`${sidebarItemClass} cursor-pointer border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]`}
                 onClick={() => onPrimaryAction(action)}
-                title={translate(`sidebar.primary.${action.id}.helper`, action.helper)}
+                title={translate(
+                  `sidebar.primary.${action.id}.helper`,
+                  action.helper,
+                )}
               >
                 <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
                 <span className="min-w-0 flex-1 truncate">
@@ -240,17 +1090,20 @@ export function ProjectSidebar({
             aria-controls="project-sidebar-build-stats"
           >
             <Activity className="h-3.5 w-3.5 shrink-0 text-[var(--primary)]" />
-            <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-[var(--ink)]">
-              {translate('sidebar.buildStats.title', buildStats?.title ?? 'Build stats')}
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--ink)]">
+              {translate(
+                "sidebar.buildStats.title",
+                buildStats?.title ?? "Build stats",
+              )}
             </span>
             <span className="font-mono text-[10px] text-[var(--ink-tertiary)]">
               {buildStatsVisible
-                ? translate('sidebar.hide', 'Hide')
-                : translate('sidebar.show', 'Show')}
+                ? translate("sidebar.hide", "Hide")
+                : translate("sidebar.show", "Show")}
             </span>
             <ChevronRight
               className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)] transition ${
-                buildStatsVisible ? 'rotate-90' : ''
+                buildStatsVisible ? "rotate-90" : ""
               }`}
             />
           </button>
@@ -259,10 +1112,11 @@ export function ProjectSidebar({
               id="project-sidebar-build-stats"
               className="space-y-2 border-t border-[var(--hairline)] px-2.5 py-2"
             >
-              <p className="text-[11px] leading-4 text-[var(--ink-tertiary)]">
+              <p className="text-[12px] leading-[1.4] text-[var(--ink-tertiary)]">
                 {translate(
-                  'sidebar.buildStats.summary',
-                  buildStats?.summary ?? 'Local UI placeholder for project activity.',
+                  "sidebar.buildStats.summary",
+                  buildStats?.summary ??
+                    "Local UI placeholder for project activity.",
                 )}
               </p>
               <div className="space-y-1">
@@ -276,13 +1130,16 @@ export function ProjectSidebar({
                     </span>
                     <span
                       className={`shrink-0 font-mono font-medium ${
-                        stat.tone === 'accent'
-                          ? 'text-[var(--primary)]'
-                          : stat.tone === 'success'
-                            ? 'text-[var(--success)]'
-                            : 'text-[var(--ink)]'
+                        stat.tone === "accent"
+                          ? "text-[var(--primary)]"
+                          : stat.tone === "success"
+                            ? "text-[var(--success)]"
+                            : "text-[var(--ink)]"
                       }`}
-                      title={translate(`sidebar.stats.${stat.id}.helper`, stat.helper)}
+                      title={translate(
+                        `sidebar.stats.${stat.id}.helper`,
+                        stat.helper,
+                      )}
                     >
                       {statValue(stat.id, stat.value)}
                     </span>
@@ -293,18 +1150,19 @@ export function ProjectSidebar({
           )}
         </section>
 
-        <SidebarSection title={translate('sidebar.sessions', 'Sessions')}>
+        <SidebarSection title={translate("sidebar.sessions", "Sessions")}>
           {sessions.length > 0 ? (
             <>
               <div
                 className={`space-y-1 pr-1 ${
-                  sessionsExpanded ? 'h-52 overflow-y-auto' : 'overflow-visible'
+                  sessionsExpanded ? "h-52 overflow-y-auto" : "overflow-visible"
                 }`}
                 data-sidebar-session-list="true"
               >
                 {visibleSessions.map((session) => {
                   const active =
-                    activePage === 'workspace' && session.id === activeSessionId;
+                    activePage === "workspace" &&
+                    session.id === activeSessionId;
                   return (
                     <button
                       key={session.id}
@@ -312,18 +1170,20 @@ export function ProjectSidebar({
                       onClick={() => onSessionSelect(session.id)}
                       className={`${sidebarItemClass} cursor-pointer ${
                         active
-                          ? 'border-[var(--hairline)] bg-[var(--surface-1)] font-medium text-[var(--ink)]'
-                          : 'border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]'
+                          ? "border-[var(--hairline)] bg-[var(--surface-1)] font-medium text-[var(--ink)]"
+                          : "border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]"
                       }`}
                     >
                       <Network
                         className={`h-3.5 w-3.5 shrink-0 ${
                           active
-                            ? 'text-[var(--primary)]'
-                            : 'text-[var(--ink-tertiary)]'
+                            ? "text-[var(--primary)]"
+                            : "text-[var(--ink-tertiary)]"
                         }`}
                       />
-                      <span className="min-w-0 flex-1 truncate">{session.title}</span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {session.title}
+                      </span>
                     </button>
                   );
                 })}
@@ -331,7 +1191,7 @@ export function ProjectSidebar({
               {hasOverflowSessions && (
                 <button
                   type="button"
-                  className="flex min-h-6 w-full cursor-pointer items-center justify-between rounded-md border border-transparent px-2 py-[3px] text-left text-[14px] font-semibold text-[var(--ink-subtle)] transition hover:bg-[var(--surface-1)] hover:text-[var(--ink)]"
+                  className="flex w-full cursor-pointer items-center justify-between rounded-sm border border-transparent px-[7px] py-[4px] text-left text-[12px] font-medium text-[var(--ink-subtle)] transition hover:bg-[var(--surface-1)] hover:text-[var(--ink)]"
                   data-sidebar-more="true"
                   aria-expanded={sessionsExpanded}
                   aria-label={sessionToggleAriaLabel}
@@ -346,7 +1206,7 @@ export function ProjectSidebar({
                     <span className="truncate">{sessionToggleLabel}</span>
                   </span>
                   {!sessionsExpanded && (
-                    <span className="shrink-0 font-mono text-[11px] font-semibold text-[var(--ink-tertiary)]">
+                    <span className="shrink-0 font-mono text-[10px] font-medium text-[var(--ink-tertiary)]">
                       +{hiddenSessionCount}
                     </span>
                   )}
@@ -354,16 +1214,21 @@ export function ProjectSidebar({
               )}
             </>
           ) : (
-            <div className="rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-2 py-2 text-[12px] text-[var(--ink-tertiary)]">
-              {translate('sidebar.noSessions', 'No sessions yet')}
+            <div className="rounded-sm border border-[var(--hairline)] bg-[var(--surface-1)] px-2 py-2 text-[12px] text-[var(--ink-tertiary)]">
+              {translate("sidebar.noSessions", "No sessions yet")}
             </div>
           )}
         </SidebarSection>
 
-        <SidebarSection title={translate('sidebar.projectManagement', 'Project management')}>
+        <SidebarSection
+          title={translate("sidebar.projectManagement", "Project management")}
+        >
           {(shellOptions?.projectManagementItems ?? []).map((item) => {
             const label = translate(`sidebar.nav.${item.id}`, item.label);
-            const title = translate(`sidebar.nav.${item.id}.helper`, item.helper);
+            const title = translate(
+              `sidebar.nav.${item.id}.helper`,
+              item.helper,
+            );
             const badge = item.badge
               ? translate(`sidebar.nav.${item.id}.badge`, item.badge)
               : undefined;
@@ -387,10 +1252,13 @@ export function ProjectSidebar({
           })}
         </SidebarSection>
 
-        <SidebarSection title={translate('sidebar.system', 'System')}>
+        <SidebarSection title={translate("sidebar.system", "System")}>
           {(shellOptions?.systemItems ?? []).map((item) => {
             const label = translate(`sidebar.nav.${item.id}`, item.label);
-            const title = translate(`sidebar.nav.${item.id}.helper`, item.helper);
+            const title = translate(
+              `sidebar.nav.${item.id}.helper`,
+              item.helper,
+            );
             const badge = item.badge
               ? translate(`sidebar.nav.${item.id}.badge`, item.badge)
               : undefined;

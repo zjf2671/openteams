@@ -555,6 +555,7 @@ mod tests {
             &CreateChatSession {
                 title: Some("test".to_string()),
                 workspace_path: None,
+                project_id: None,
             },
             Uuid::new_v4(),
         )

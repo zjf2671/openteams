@@ -234,7 +234,8 @@ export function CreateAgentSessionModal({
                 searchPlaceholder={translate(t, 'agentSearchPlaceholder', 'Filter agents...')}
                 emptyLabel={translate(t, 'createSession.noMembers', 'No members available')}
                 disabled={memberOptions.length === 0}
-                className="w-[140px] max-w-full shrink-0"
+                className="w-[168px] max-w-full shrink-0 [&>button]:py-1"
+                maxPanelHeightClassName="max-h-[144px]"
                 panelClassName="absolute left-0 top-full max-w-none"
                 onChange={(memberId) => setSelectedMemberId(memberId)}
               />

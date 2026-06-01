@@ -157,6 +157,7 @@ export interface BackendChatSession {
   team_protocol_enabled: boolean;
   default_workspace_path: string | null;
   chat_input_mode: string | null;
+  project_id: string | null;
   created_at: string;
   updated_at: string;
   archived_at: string | null;

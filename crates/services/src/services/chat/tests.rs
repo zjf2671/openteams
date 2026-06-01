@@ -6,15 +6,20 @@ mod tests {
         chat_message::{ChatMessage, ChatSenderType},
         chat_session::{ChatSession, CreateChatSession},
         chat_session_agent::{ChatSessionAgent, ChatSessionAgentState},
+        project::CreateProject,
+        project_member::{ProjectMember, ProjectMemberType},
     };
     use sqlx::SqlitePool;
     use uuid::Uuid;
 
+    use crate::services::{project::ProjectService, repo::RepoService};
+
     use super::{
         CompressionType, SimplifiedMessage, all_agents_running, build_message_analytics_metrics,
-        compress_messages_if_needed, create_message, is_protocol_notice_history_message,
-        is_workflow_chat_input_mode, limit_summary_input_messages, parse_agent_send_mentions,
-        parse_mentions, prioritize_summary_agents, select_messages_to_compress_by_token,
+        compress_messages_if_needed, create_message, create_session_with_project_members,
+        is_protocol_notice_history_message, is_workflow_chat_input_mode,
+        limit_summary_input_messages, parse_agent_send_mentions, parse_mentions,
+        prioritize_summary_agents, select_messages_to_compress_by_token,
         should_include_message_in_history,
     };
 
@@ -127,6 +132,20 @@ mod tests {
         for statement in [
             "PRAGMA foreign_keys = ON",
             r#"
+            CREATE TABLE projects (
+                id BLOB PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_agent_working_dir TEXT,
+                remote_project_id BLOB,
+                description TEXT,
+                status TEXT,
+                default_workspace_path TEXT,
+                active_repo_id BLOB,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+            r#"
             CREATE TABLE chat_sessions (
                 id BLOB PRIMARY KEY,
                 title TEXT,
@@ -139,6 +158,7 @@ mod tests {
                 team_protocol_enabled INTEGER DEFAULT 0,
                 default_workspace_path TEXT,
                 chat_input_mode TEXT,
+                project_id BLOB,
                 lead_agent_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
@@ -187,6 +207,7 @@ mod tests {
             &CreateChatSession {
                 title: None,
                 workspace_path: None,
+                project_id: None,
             },
             Uuid::new_v4(),
         )
@@ -210,6 +231,101 @@ mod tests {
         .expect("create chat agent")
     }
 
+    async fn setup_project_session_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+
+        for statement in [
+            "PRAGMA foreign_keys = ON",
+            r#"
+            CREATE TABLE projects (
+                id BLOB PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_agent_working_dir TEXT,
+                remote_project_id BLOB,
+                description TEXT,
+                status TEXT,
+                default_workspace_path TEXT,
+                active_repo_id BLOB,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+            r#"
+            CREATE TABLE chat_sessions (
+                id BLOB PRIMARY KEY,
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','archived')),
+                lead_agent_id BLOB,
+                summary_text TEXT,
+                archive_ref TEXT,
+                last_seen_diff_key TEXT,
+                team_protocol TEXT DEFAULT '',
+                team_protocol_enabled INTEGER DEFAULT 0,
+                default_workspace_path TEXT,
+                chat_input_mode TEXT,
+                project_id BLOB,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                archived_at TEXT
+            )
+            "#,
+            r#"
+            CREATE TABLE chat_agents (
+                id BLOB PRIMARY KEY,
+                name TEXT NOT NULL,
+                runner_type TEXT NOT NULL,
+                system_prompt TEXT NOT NULL DEFAULT '',
+                tools_enabled TEXT NOT NULL DEFAULT '{}',
+                model_name TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+            r#"
+            CREATE TABLE project_members (
+                id BLOB PRIMARY KEY,
+                project_id BLOB,
+                member_type TEXT CHECK (member_type IN ('human', 'agent')),
+                user_id TEXT,
+                agent_id BLOB,
+                role TEXT,
+                display_order INTEGER DEFAULT 0,
+                default_workspace_path TEXT,
+                allowed_skill_ids TEXT,
+                is_default BOOLEAN DEFAULT false,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+            r#"
+            CREATE TABLE chat_session_agents (
+                id BLOB PRIMARY KEY,
+                session_id BLOB NOT NULL,
+                agent_id BLOB NOT NULL,
+                state TEXT NOT NULL DEFAULT 'idle'
+                    CHECK (state IN ('idle','running','stopping','waitingapproval','dead')),
+                workspace_path TEXT,
+                pty_session_key TEXT,
+                agent_session_id TEXT,
+                agent_message_id TEXT,
+                allowed_skill_ids TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("create minimal project session schema");
+        }
+
+        pool
+    }
+
     #[tokio::test]
     async fn create_message_keeps_user_mentions_from_plain_at_tokens() {
         let pool = setup_chat_message_pool().await;
@@ -227,6 +343,101 @@ mod tests {
         .expect("create user message");
 
         assert_eq!(message.mentions.0, vec!["backend"]);
+    }
+
+    #[tokio::test]
+    async fn create_project_session_snapshots_default_agent_members() {
+        let pool = setup_project_session_pool().await;
+        let project_id = Uuid::new_v4();
+        let agent = create_agent_member(&pool, "coder").await;
+
+        ProjectMember::create(
+            &pool,
+            project_id,
+            ProjectMemberType::Agent,
+            None,
+            Some(agent.id),
+            Some("developer".to_string()),
+            0,
+            Some("E:/workspace".to_string()),
+            vec!["skill-a".to_string()],
+            true,
+        )
+        .await
+        .expect("create project member");
+
+        let session = create_session_with_project_members(
+            &pool,
+            &CreateChatSession {
+                title: Some("project session".to_string()),
+                workspace_path: Some("E:/root".to_string()),
+                project_id: Some(project_id),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create project session");
+
+        let session_agents = ChatSessionAgent::find_all_for_session(&pool, session.id)
+            .await
+            .expect("load session agents");
+
+        assert_eq!(session.project_id, Some(project_id));
+        assert_eq!(session_agents.len(), 1);
+        assert_eq!(session_agents[0].agent_id, agent.id);
+        assert_eq!(
+            session_agents[0].workspace_path.as_deref(),
+            Some("E:/workspace")
+        );
+        assert_eq!(session_agents[0].allowed_skill_ids.0, vec!["skill-a"]);
+    }
+
+    #[tokio::test]
+    async fn create_project_session_snapshots_agents_initialized_from_global_agents() {
+        let pool = setup_project_session_pool().await;
+        let agent = create_agent_member(&pool, "coder").await;
+
+        let project = ProjectService::new()
+            .create_project(
+                &pool,
+                &RepoService::new(),
+                CreateProject {
+                    name: "project".to_string(),
+                    repositories: Vec::new(),
+                    description: None,
+                    status: None,
+                    default_workspace_path: None,
+                    active_repo_id: None,
+                },
+                "user-1",
+            )
+            .await
+            .expect("create project with default members");
+
+        let default_agents = ProjectMember::find_default_agents(&pool, project.id)
+            .await
+            .expect("find project default agents");
+        assert_eq!(default_agents.len(), 1);
+        assert_eq!(default_agents[0].agent_id, Some(agent.id));
+
+        let session = create_session_with_project_members(
+            &pool,
+            &CreateChatSession {
+                title: Some("project session".to_string()),
+                workspace_path: None,
+                project_id: Some(project.id),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create project session");
+
+        let session_agents = ChatSessionAgent::find_all_for_session(&pool, session.id)
+            .await
+            .expect("load session agents");
+
+        assert_eq!(session_agents.len(), 1);
+        assert_eq!(session_agents[0].agent_id, agent.id);
     }
 
     #[test]
