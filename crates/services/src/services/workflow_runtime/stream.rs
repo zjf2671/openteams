@@ -1,120 +1,38 @@
+use crate::services::agent_activity_stream::{
+    tool_activity_content, truncate_activity_line, AgentActivityStreamState,
+};
+#[cfg(test)]
+use crate::services::agent_activity_stream::{activity_line_for_entry, AgentActivityEntryLine};
+
 #[derive(Default)]
 struct WorkflowRuntimeStreamState {
-    last_content_by_index: HashMap<usize, String>,
-    assistant_buffer: String,
-    thinking_buffer: String,
-    error_buffer: String,
+    inner: AgentActivityStreamState,
 }
 
 impl WorkflowRuntimeStreamState {
     fn drain_patch_lines(&mut self, patch: &Patch) -> Vec<(ChatStreamDeltaType, String)> {
-        let Some((index, entry)) = extract_normalized_entry_from_patch(patch) else {
-            return Vec::new();
-        };
-
-        let Some(line) = workflow_runtime_line_for_entry(&entry) else {
-            return Vec::new();
-        };
-
-        let previous = self
-            .last_content_by_index
-            .insert(index, line.content.clone())
-            .unwrap_or_default();
-        if previous == line.content {
-            return Vec::new();
-        }
-
-        if line.immediate {
-            return vec![(line.stream_type, line.content)];
-        }
-
-        let chunk = if line.content.starts_with(&previous) {
-            line.content[previous.len()..].to_string()
-        } else if previous == line.content {
-            String::new()
-        } else {
-            line.content
-        };
-
-        self.drain_chunk_lines(line.stream_type, &chunk)
-    }
-
-    fn drain_chunk_lines(
-        &mut self,
-        stream_type: ChatStreamDeltaType,
-        chunk: &str,
-    ) -> Vec<(ChatStreamDeltaType, String)> {
-        if chunk.is_empty() {
-            return Vec::new();
-        }
-
-        let normalized = chunk.replace("\r\n", "\n").replace('\r', "\n");
-        let buffer = match stream_type {
-            ChatStreamDeltaType::Assistant => &mut self.assistant_buffer,
-            ChatStreamDeltaType::Thinking => &mut self.thinking_buffer,
-            ChatStreamDeltaType::Error => &mut self.error_buffer,
-        };
-        buffer.push_str(&normalized);
-
-        let mut emitted = Vec::new();
-        while let Some(newline_index) = buffer.find('\n') {
-            let line = buffer[..newline_index].trim();
-            if !line.is_empty() {
-                emitted.push((stream_type.clone(), line.to_string()));
-            }
-            buffer.drain(..=newline_index);
-        }
-
-        emitted
+        self.inner
+            .drain_patch_lines(patch, false)
+            .into_iter()
+            .map(|line| (line.stream_type, line.content))
+            .collect()
     }
 
     fn flush_pending_lines(&mut self) -> Vec<(ChatStreamDeltaType, String)> {
-        let mut emitted = Vec::new();
-
-        for (stream_type, buffer) in [
-            (ChatStreamDeltaType::Assistant, &mut self.assistant_buffer),
-            (ChatStreamDeltaType::Thinking, &mut self.thinking_buffer),
-            (ChatStreamDeltaType::Error, &mut self.error_buffer),
-        ] {
-            let line = buffer.trim();
-            if !line.is_empty() {
-                emitted.push((stream_type, line.to_string()));
-            }
-            buffer.clear();
-        }
-
-        emitted
+        self.inner
+            .flush_pending_lines()
+            .into_iter()
+            .map(|line| (line.stream_type, line.content))
+            .collect()
     }
 }
 
-fn workflow_runtime_line_for_entry(entry: &NormalizedEntry) -> Option<WorkflowRuntimeEntryLine> {
-    match &entry.entry_type {
-        NormalizedEntryType::Thinking => Some(WorkflowRuntimeEntryLine {
-            stream_type: ChatStreamDeltaType::Thinking,
-            content: entry.content.clone(),
-            immediate: false,
-        }),
-        NormalizedEntryType::ToolUse {
-            tool_name,
-            action_type,
-            status,
-        } => workflow_tool_activity_content(tool_name, action_type, status, &entry.content).map(
-            |content| WorkflowRuntimeEntryLine {
-                stream_type: ChatStreamDeltaType::Thinking,
-                content,
-                immediate: true,
-            },
-        ),
-        // AssistantMessage remains reserved for the final workflow protocol
-        // payload, so streaming it into transcript would duplicate or expose
-        // the final_result JSON before the orchestrator handles it.
-        NormalizedEntryType::ErrorMessage { .. } => Some(WorkflowRuntimeEntryLine {
-            stream_type: ChatStreamDeltaType::Error,
-            content: entry.content.clone(),
-            immediate: true,
-        }),
-        _ => None,
-    }
+// AssistantMessage remains reserved for the final workflow protocol payload, so
+// workflow runtime streaming uses the shared activity mapper with assistant
+// lines disabled.
+#[cfg(test)]
+fn workflow_runtime_line_for_entry(entry: &NormalizedEntry) -> Option<AgentActivityEntryLine> {
+    activity_line_for_entry(entry, false)
 }
 
 fn workflow_tool_activity_content(
@@ -123,177 +41,11 @@ fn workflow_tool_activity_content(
     status: &ToolStatus,
     fallback_content: &str,
 ) -> Option<String> {
-    let status_label = workflow_tool_status_label(status);
-
-    let content = match action_type {
-        ActionType::FileEdit { path, changes } => {
-            let change_summary = workflow_file_change_summary(changes);
-            format!("{status_label} file edit: {path}{change_summary}")
-        }
-        ActionType::CommandRun { command, .. } => {
-            format!(
-                "{status_label} command: {}",
-                truncate_workflow_runtime_line(command)
-            )
-        }
-        ActionType::Tool {
-            tool_name: inner_tool_name,
-            result,
-            ..
-        } => {
-            let display_tool_name = if inner_tool_name.trim().is_empty() {
-                tool_name
-            } else {
-                inner_tool_name
-            };
-            let prefix = if tool_name.starts_with("mcp:") || display_tool_name.starts_with("mcp:") {
-                "MCP tool"
-            } else {
-                "Tool"
-            };
-            let mut line = format!("{status_label} {prefix}: {display_tool_name}");
-            if let Some(preview) = workflow_tool_result_preview(result) {
-                line.push_str(": ");
-                line.push_str(&preview);
-            }
-            line
-        }
-        ActionType::TaskCreate {
-            description,
-            subagent_type,
-            result,
-        } => {
-            let mut line = format!(
-                "{status_label} task: {}",
-                truncate_workflow_runtime_line(description)
-            );
-            if let Some(subagent_type) = subagent_type
-                && !subagent_type.trim().is_empty()
-            {
-                line.push_str(" (");
-                line.push_str(subagent_type.trim());
-                line.push(')');
-            }
-            if let Some(preview) = workflow_tool_result_preview(result) {
-                line.push_str(": ");
-                line.push_str(&preview);
-            }
-            line
-        }
-        ActionType::FileRead { path } => format!("{status_label} file read: {path}"),
-        ActionType::Search { query } => {
-            format!(
-                "{status_label} search: {}",
-                truncate_workflow_runtime_line(query)
-            )
-        }
-        ActionType::WebFetch { url } => format!("{status_label} web fetch: {url}"),
-        ActionType::TodoManagement { todos, operation } => {
-            format!("{status_label} plan {operation}: {} item(s)", todos.len())
-        }
-        ActionType::PlanPresentation { plan } => {
-            format!(
-                "{status_label} plan: {}",
-                truncate_workflow_runtime_line(plan)
-            )
-        }
-        ActionType::Other { description } => {
-            format!(
-                "{status_label} activity: {}",
-                truncate_workflow_runtime_line(description)
-            )
-        }
-    };
-
-    let content = content.trim();
-    if !content.is_empty() {
-        return Some(content.to_string());
-    }
-
-    let fallback = fallback_content.trim();
-    (!fallback.is_empty()).then(|| {
-        format!(
-            "{status_label} activity: {}",
-            truncate_workflow_runtime_line(fallback)
-        )
-    })
-}
-
-fn workflow_tool_status_label(status: &ToolStatus) -> &'static str {
-    match status {
-        ToolStatus::Created => "Started",
-        ToolStatus::Success => "Completed",
-        ToolStatus::Failed => "Failed",
-        ToolStatus::Denied { .. } => "Denied",
-        ToolStatus::PendingApproval { .. } => "Waiting approval for",
-        ToolStatus::TimedOut => "Timed out",
-    }
-}
-
-fn workflow_file_change_summary(changes: &[FileChange]) -> String {
-    if changes.is_empty() {
-        return String::new();
-    }
-
-    let mut write_count = 0;
-    let mut edit_count = 0;
-    let mut delete_count = 0;
-    let mut rename_count = 0;
-
-    for change in changes {
-        match change {
-            FileChange::Write { .. } => write_count += 1,
-            FileChange::Edit { .. } => edit_count += 1,
-            FileChange::Delete => delete_count += 1,
-            FileChange::Rename { .. } => rename_count += 1,
-        }
-    }
-
-    let mut parts = Vec::new();
-    if write_count > 0 {
-        parts.push(format!("{write_count} write"));
-    }
-    if edit_count > 0 {
-        parts.push(format!("{edit_count} edit"));
-    }
-    if delete_count > 0 {
-        parts.push(format!("{delete_count} delete"));
-    }
-    if rename_count > 0 {
-        parts.push(format!("{rename_count} rename"));
-    }
-
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", parts.join(", "))
-    }
-}
-
-fn workflow_tool_result_preview(result: &Option<ToolResult>) -> Option<String> {
-    let result = result.as_ref()?;
-    let preview = match &result.value {
-        serde_json::Value::String(value) => value.clone(),
-        value => value.to_string(),
-    };
-    let preview = preview
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    Some(truncate_workflow_runtime_line(preview))
+    tool_activity_content(tool_name, action_type, status, fallback_content)
 }
 
 fn truncate_workflow_runtime_line(value: &str) -> String {
-    const MAX_LEN: usize = 220;
-
-    let trimmed = value.trim();
-    let mut chars = trimmed.chars();
-    let truncated = chars.by_ref().take(MAX_LEN).collect::<String>();
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
+    truncate_activity_line(value)
 }
 
 async fn finish_workflow_runtime_stream(
@@ -419,7 +171,7 @@ fn spawn_workflow_runtime_stream(
     msg_store: Arc<MsgStore>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut state = WorkflowRuntimeStreamState::default();
+        let mut state = AgentActivityStreamState::default();
         let mut stream = msg_store.history_plus_stream();
 
         while let Some(item) = stream.next().await {
@@ -427,14 +179,14 @@ fn spawn_workflow_runtime_stream(
                 continue;
             };
 
-            for (stream_type, line) in state.drain_patch_lines(&patch) {
+            for activity_line in state.drain_patch_lines(&patch, false) {
                 let created_at = Utc::now().to_rfc3339();
                 match persist_workflow_runtime_transcript_line(
                     &pool,
                     execution_id,
                     workflow_agent_session_id,
                     step_id,
-                    &line,
+                    &activity_line.content,
                 )
                 .await
                 {
@@ -446,8 +198,8 @@ fn spawn_workflow_runtime_stream(
                         step_key.clone(),
                         agent_id,
                         agent_name.clone(),
-                        stream_type,
-                        line,
+                        activity_line.stream_type,
+                        activity_line.content,
                         created_at,
                     ),
                     Err(error) => tracing::warn!(
@@ -461,14 +213,14 @@ fn spawn_workflow_runtime_stream(
             }
         }
 
-        for (stream_type, line) in state.flush_pending_lines() {
+        for activity_line in state.flush_pending_lines() {
             let created_at = Utc::now().to_rfc3339();
             match persist_workflow_runtime_transcript_line(
                 &pool,
                 execution_id,
                 workflow_agent_session_id,
                 step_id,
-                &line,
+                &activity_line.content,
             )
             .await
             {
@@ -480,8 +232,8 @@ fn spawn_workflow_runtime_stream(
                     step_key.clone(),
                     agent_id,
                     agent_name.clone(),
-                    stream_type,
-                    line,
+                    activity_line.stream_type,
+                    activity_line.content,
                     created_at,
                 ),
                 Err(error) => tracing::warn!(

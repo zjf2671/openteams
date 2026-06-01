@@ -19,6 +19,8 @@ import type {
   BackendChatSessionAgent,
   BackendChatSkill,
   ChatAgentSkillAssignment,
+  ChatRunActivityResponse,
+  ChatRunRetentionListResponse,
   ChatSessionStatus,
   Config,
   CreateChatAgent,
@@ -306,6 +308,41 @@ export const chatMessagesApi = {
       })}`,
     );
     return handleApiResponse<WorkflowCardProjection>(r);
+  },
+};
+
+// -----------------------------------------------------------------------------
+// Chat runs
+// -----------------------------------------------------------------------------
+
+export const chatRunsApi = {
+  listSessionRetention: async (
+    sessionId: string,
+    opts?: { runIds?: string[]; limit?: number },
+  ): Promise<ChatRunRetentionListResponse> => {
+    const runIds =
+      opts?.runIds && opts.runIds.length > 0
+        ? opts.runIds.join(",")
+        : undefined;
+    const r = await makeRequest(
+      `/api/chat/sessions/${encodeURIComponent(sessionId)}/runs/retention${qs({
+        run_ids: runIds,
+        limit: opts?.limit,
+      })}`,
+    );
+    return handleApiResponse<ChatRunRetentionListResponse>(r);
+  },
+  getActivity: async (
+    runId: string,
+    opts?: { offset?: number; limit?: number },
+  ): Promise<ChatRunActivityResponse> => {
+    const r = await makeRequest(
+      `/api/chat/runs/${encodeURIComponent(runId)}/activity${qs({
+        offset: opts?.offset,
+        limit: opts?.limit,
+      })}`,
+    );
+    return handleApiResponse<ChatRunActivityResponse>(r);
   },
 };
 
@@ -876,6 +913,7 @@ export const api = {
   filesystem: filesystemApi,
   chatSessions: chatSessionsApi,
   chatMessages: chatMessagesApi,
+  chatRuns: chatRunsApi,
   chatAgents: chatAgentsApi,
   sessionAgents: sessionAgentsApi,
   skills: skillsApi,

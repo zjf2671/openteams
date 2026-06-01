@@ -8,7 +8,6 @@ import React, {
 import { useWorkspace } from "@/context/WorkspaceContext";
 import {
   Plus,
-  Loader2,
   ArrowUp,
   Mic,
   AtSign,
@@ -18,6 +17,7 @@ import {
 } from "lucide-react";
 import { ResourceStateNotice } from "@/components/ResourceState";
 import { ScrollArea } from "@/components/ScrollArea";
+import { AgentMessageContent } from "@/components/AgentMessageContent";
 import { mockFrontendApi } from "@/lib/mockFrontendApi";
 import { mockSessionWorkspaceChanges } from "@/mockSessionWorkspaceChanges";
 
@@ -73,8 +73,7 @@ const getSessionFileChanges = (sessionId: string): RelatedFileChange[] => {
   ];
 };
 
-const hasLineStat = (value?: number) =>
-  typeof value === "number" && value > 0;
+const hasLineStat = (value?: number) => typeof value === "number" && value > 0;
 
 interface TruncatedFileNameProps {
   path: string;
@@ -118,16 +117,21 @@ const TruncatedFileName: React.FC<TruncatedFileNameProps> = ({ path }) => {
   );
 };
 
-const RELATED_FILES_DEFAULT_WIDTH = 280;
-const RELATED_FILES_MIN_WIDTH = 256;
-const RELATED_FILES_MAX_WIDTH = 420;
+const RELATED_FILES_DEFAULT_WIDTH = 240;
+const RELATED_FILES_MIN_WIDTH = 200;
+const RELATED_FILES_MAX_WIDTH = 360;
+const RELATED_FILES_MIN_CENTER_WIDTH = 540;
+const RELATED_FILES_SEPARATOR_WIDTH = 6;
 const SIDEBAR_MEMBER_AVATAR_WIDTH = 28;
 const SIDEBAR_MEMBER_GAP = 6;
 const SIDEBAR_MEMBER_OVERFLOW_CONTROLS_WIDTH =
   SIDEBAR_MEMBER_AVATAR_WIDTH * 2 + SIDEBAR_MEMBER_GAP;
 const SIDEBAR_MEMBER_COLLAPSED_MIN_VISIBLE = 5;
 
-const getVisibleSidebarMemberCount = (memberCount: number, railWidth: number) => {
+const getVisibleSidebarMemberCount = (
+  memberCount: number,
+  railWidth: number,
+) => {
   if (memberCount === 0) return 0;
 
   const fullWidth =
@@ -172,16 +176,21 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     membersAsync,
     refreshMembers,
     workflowCardAsync,
+    chatMessageFontSize,
   } = useWorkspace();
 
   const [inputText, setInputText] = useState("");
   const [isMemberPickerOpen, setIsMemberPickerOpen] = useState(false);
   const [isRelatedFilesOpen, setIsRelatedFilesOpen] = useState(true);
+  const [wasRelatedFilesAutoCollapsed, setWasRelatedFilesAutoCollapsed] =
+    useState(false);
   const [isMemberRailExpanded, setIsMemberRailExpanded] = useState(false);
   const [memberRailWidth, setMemberRailWidth] = useState(0);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [relatedFilesWidth, setRelatedFilesWidth] = useState(
     RELATED_FILES_DEFAULT_WIDTH,
   );
+  const workspaceGridRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const memberRailRef = useRef<HTMLDivElement>(null);
@@ -199,6 +208,98 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   const displayedSidebarMembers = isMemberRailExpanded
     ? sidebarMembers
     : sidebarMembers.slice(0, visibleSidebarMemberCount);
+  const canFitRelatedFiles =
+    workspaceWidth === 0 ||
+    workspaceWidth >=
+      RELATED_FILES_MIN_CENTER_WIDTH +
+        RELATED_FILES_SEPARATOR_WIDTH +
+        RELATED_FILES_MIN_WIDTH;
+  const relatedFilesMaxAvailableWidth =
+    workspaceWidth > 0
+      ? Math.min(
+          RELATED_FILES_MAX_WIDTH,
+          Math.max(
+            RELATED_FILES_MIN_WIDTH,
+            workspaceWidth -
+              RELATED_FILES_SEPARATOR_WIDTH -
+              RELATED_FILES_MIN_CENTER_WIDTH,
+          ),
+        )
+      : RELATED_FILES_DEFAULT_WIDTH;
+  const effectiveRelatedFilesWidth = Math.min(
+    relatedFilesWidth,
+    relatedFilesMaxAvailableWidth,
+  );
+
+  const openRelatedFiles = () => {
+    setWasRelatedFilesAutoCollapsed(false);
+    setIsRelatedFilesOpen(true);
+  };
+
+  const closeRelatedFiles = () => {
+    setWasRelatedFilesAutoCollapsed(false);
+    setIsRelatedFilesOpen(false);
+  };
+
+  useLayoutEffect(() => {
+    const element = workspaceGridRef.current;
+    if (!element) return;
+
+    const updateWorkspaceWidth = () => setWorkspaceWidth(element.clientWidth);
+    updateWorkspaceWidth();
+    const frameId =
+      typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame(updateWorkspaceWidth)
+        : undefined;
+
+    const cancelMeasureFrame = () => {
+      if (
+        frameId !== undefined &&
+        typeof window.cancelAnimationFrame === "function"
+      ) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateWorkspaceWidth);
+      return () => {
+        cancelMeasureFrame();
+        window.removeEventListener("resize", updateWorkspaceWidth);
+      };
+    }
+
+    const observer = new ResizeObserver(updateWorkspaceWidth);
+    observer.observe(element);
+    return () => {
+      cancelMeasureFrame();
+      observer.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (workspaceWidth === 0) return;
+
+    if (!canFitRelatedFiles) {
+      if (isRelatedFilesOpen) {
+        setIsRelatedFilesOpen(false);
+      }
+      setWasRelatedFilesAutoCollapsed(true);
+      return;
+    }
+
+    if (wasRelatedFilesAutoCollapsed) {
+      if (!isRelatedFilesOpen) {
+        setIsRelatedFilesOpen(true);
+      }
+      setWasRelatedFilesAutoCollapsed(false);
+    }
+  }, [
+    canFitRelatedFiles,
+    isRelatedFilesOpen,
+    wasRelatedFilesAutoCollapsed,
+    workspaceWidth,
+  ]);
 
   useLayoutEffect(() => {
     if (!isRelatedFilesOpen) return;
@@ -291,7 +392,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     event.preventDefault();
 
     const startX = event.clientX;
-    const startWidth = relatedFilesWidth;
+    const startWidth = effectiveRelatedFilesWidth;
     const originalCursor = document.body.style.cursor;
     const originalUserSelect = document.body.style.userSelect;
 
@@ -301,7 +402,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const delta = startX - moveEvent.clientX;
       const nextWidth = Math.min(
-        RELATED_FILES_MAX_WIDTH,
+        relatedFilesMaxAvailableWidth,
         Math.max(RELATED_FILES_MIN_WIDTH, startWidth + delta),
       );
       setRelatedFilesWidth(nextWidth);
@@ -353,7 +454,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
         return (
           <code
             key={idx}
-            className="bg-[var(--mono-bg)] border border-[var(--mono-border)] px-1.5 py-0.5 rounded text-[11px] font-mono font-medium text-[var(--ink)] mx-1 select-all"
+            className="bg-[var(--mono-bg)] border border-[var(--mono-border)] px-1.5 py-0.5 rounded text-[0.95em] font-mono font-medium text-[var(--ink)] mx-1 select-all"
           >
             {el.substring(1, el.length - 1)}
           </code>
@@ -385,15 +486,16 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
         style={
           isRelatedFilesOpen
             ? ({
-                "--related-files-width": `${relatedFilesWidth}px`,
+                "--related-files-width": `${effectiveRelatedFilesWidth}px`,
               } as React.CSSProperties)
             : undefined
         }
+        ref={workspaceGridRef}
         className={
           isRelatedFilesOpen
             ? embedded
-              ? "grid h-full w-full min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_16rem] gap-3 xl:grid-cols-[minmax(0,1fr)_6px_var(--related-files-width)] xl:grid-rows-1 xl:gap-0"
-              : "grid min-h-[500px] w-full grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_6px_var(--related-files-width)] xl:gap-0"
+              ? "grid h-full w-full min-h-0 grid-cols-[minmax(0,1fr)_6px_var(--related-files-width)] grid-rows-1 gap-0"
+              : "grid min-h-[500px] w-full grid-cols-[minmax(0,1fr)_6px_var(--related-files-width)] gap-0"
             : embedded
               ? "grid h-full w-full min-h-0 grid-cols-1"
               : "grid min-h-[500px] w-full grid-cols-1"
@@ -402,13 +504,13 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
         {/* Center Panel (Conversation) */}
         <main
           className={`relative flex h-full min-h-0 w-full min-w-0 flex-col p-4 ${
-            embedded ? 'bg-transparent' : 'bg-[var(--canvas)]'
+            embedded ? "bg-transparent" : "bg-[var(--canvas)]"
           }`}
         >
           {!isRelatedFilesOpen && (
             <button
               type="button"
-              onClick={() => setIsRelatedFilesOpen(true)}
+              onClick={openRelatedFiles}
               className="absolute top-1 right-1 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--ink-subtle)] shadow-sm transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
               title={t("relatedFiles.show")}
               aria-label={t("relatedFiles.show")}
@@ -416,7 +518,9 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
               <PanelRightOpen className="h-4 w-4" />
             </button>
           )}
-          <div className={`mb-3 space-y-2 ${!isRelatedFilesOpen ? "pr-10" : ""}`}>
+          <div
+            className={`mb-3 space-y-2 ${!isRelatedFilesOpen ? "pr-10" : ""}`}
+          >
             <ResourceStateNotice
               resource={sessionsAsync}
               labels={{
@@ -445,7 +549,11 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
             {messages.map((msg) => (
               <div
                 key={msg.id}
-                className="flex gap-3 items-start animate-fade-in-up"
+                className={`flex gap-3 items-start rounded-md ${
+                  msg.isUser
+                    ? "border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2.5"
+                    : "px-1 py-2"
+                }`}
               >
                 {msg.isUser ? (
                   <span className="h-7 w-7 rounded-full bg-[var(--primary)] text-white font-bold flex items-center justify-center text-[9px] font-mono border border-[var(--primary)] flex-shrink-0">
@@ -472,17 +580,19 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                     </span>
                   </div>
 
-                  {msg.isThinking ? (
-                    <div className="inline-flex items-center gap-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-1.5 text-xs text-[var(--primary)]">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span className="font-mono text-[10px]">
-                        {t("writingChanges")}
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="text-[13px] leading-relaxed text-[var(--ink-muted)] select-text">
+                  {msg.isUser ? (
+                    <div
+                      className="leading-relaxed text-[var(--ink)] select-text"
+                      style={{ fontSize: `${chatMessageFontSize}px` }}
+                    >
                       {formatMsgText(msg.text)}
                     </div>
+                  ) : (
+                    <AgentMessageContent
+                      message={msg}
+                      t={t}
+                      messageFontSize={chatMessageFontSize}
+                    />
                   )}
 
                   {msg.cost && (
@@ -500,13 +610,13 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
           <div className="shrink-0 pt-4 pb-0">
             <div
               onClick={() => inputRef.current?.focus()}
-              className="relative rounded-3xl border border-[var(--hairline-strong)] bg-[var(--surface-1)] focus-within:border-[var(--primary)] focus-within:ring-1 focus-within:ring-[var(--primary)] p-3.5 transition-all flex flex-col gap-3 min-h-[95px] shadow-sm"
+              className="relative rounded-md border border-[var(--hairline-strong)] bg-[var(--surface-1)] focus-within:border-[var(--primary)] p-3.5 transition-all flex flex-col gap-3 min-h-[95px]"
             >
               {/* Text Area */}
               <textarea
                 ref={inputRef}
                 rows={1}
-                className="w-full bg-transparent resize-none border-none text-[11px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text flex-1 min-h-[30px]"
+                className="w-full bg-transparent resize-none border-none text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text flex-1 min-h-[30px]"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -521,11 +631,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                   {/* Plus symbol */}
                   <button
                     type="button"
-                    onClick={() =>
-                      showToast(
-                        t("toast.attachmentReady"),
-                      )
-                    }
+                    onClick={() => showToast(t("toast.attachmentReady"))}
                     className="p-1 rounded-full hover:bg-[var(--surface-3)] text-[var(--ink-subtle)] hover:text-[var(--ink)] transition-colors cursor-pointer"
                     title={t("uploadFile")}
                   >
@@ -535,7 +641,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                   <button
                     type="button"
                     onClick={handleTurnIntoWorkflow}
-                    className="flex items-center gap-1 bg-[var(--surface-2)] border border-[var(--hairline)] hover:bg-[var(--surface-3)] px-2.5 py-1.5 rounded-full text-[10px] text-[var(--ink-muted)] font-medium transition cursor-pointer animate-pulse"
+                    className="flex items-center gap-1 bg-[var(--surface-2)] border border-[var(--hairline)] hover:bg-[var(--surface-3)] px-2.5 py-1.5 rounded-md text-[11px] text-[var(--ink-muted)] font-medium transition cursor-pointer"
                     title={t("generateWorkflowFromChat")}
                   >
                     <span>{t("updatePlan")}</span>
@@ -551,7 +657,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                         e.stopPropagation();
                         setIsMemberPickerOpen((prev) => !prev);
                       }}
-                      className="flex items-center gap-1.5 bg-[var(--surface-2)] border border-[var(--hairline)] px-2 py-1 rounded-full text-[10px] text-[var(--ink-muted)] font-mono hover:bg-[var(--surface-3)] cursor-pointer"
+                      className="flex items-center gap-1.5 bg-[var(--surface-2)] border border-[var(--hairline)] px-2 py-1 rounded-md text-[11px] text-[var(--ink-muted)] font-mono hover:bg-[var(--surface-3)] cursor-pointer"
                       title={t("inThisSession")}
                     >
                       <AtSign className="h-3.5 w-3.5 text-[var(--ink-tertiary)]" />
@@ -568,7 +674,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                     </button>
 
                     {isMemberPickerOpen && (
-                      <div className="absolute bottom-full right-0 mb-2 w-56 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-1)] p-1 shadow-xs animate-fade-in-down z-20">
+                      <div className="absolute bottom-full right-0 mb-2 w-56 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-3)] p-1 z-20">
                         <div className="px-2 py-1.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--ink-tertiary)]">
                           {t("inThisSession")}
                         </div>
@@ -620,9 +726,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
 
                   <button
                     type="button"
-                    onClick={() =>
-                      showToast(t("toast.voiceReady"))
-                    }
+                    onClick={() => showToast(t("toast.voiceReady"))}
                     className="p-1 rounded-full hover:bg-[var(--surface-2)] text-[var(--ink-subtle)] hover:text-[var(--ink)] transition-colors cursor-pointer"
                     title={t("voiceInput")}
                   >
@@ -650,7 +754,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
 
         {isRelatedFilesOpen && (
           <div
-            className="group hidden cursor-col-resize items-stretch justify-center xl:flex"
+            className="group flex cursor-col-resize items-stretch justify-center"
             role="separator"
             aria-orientation="vertical"
             aria-label={t("relatedFiles.resize")}
@@ -663,13 +767,13 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
 
         {isRelatedFilesOpen && (
           <aside
-            className={`relative flex min-h-0 flex-col overflow-hidden border-t border-[var(--hairline)] xl:border-t-0 ${
-              embedded ? 'bg-transparent' : 'bg-[var(--canvas)]'
+            className={`relative flex min-h-0 flex-col overflow-hidden border-l border-[var(--hairline)] ${
+              embedded ? "bg-transparent" : "bg-[var(--canvas)]"
             }`}
           >
             <button
               type="button"
-              onClick={() => setIsRelatedFilesOpen(false)}
+              onClick={closeRelatedFiles}
               className="absolute right-1 top-0 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
               title={t("relatedFiles.hide")}
               aria-label={t("relatedFiles.hide")}
@@ -769,7 +873,9 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                       key={`${file.status}-${file.path}`}
                       onClick={() => handleRelatedFileClick(file.path)}
                       className="flex h-8 w-full min-w-0 items-center gap-2 rounded-md bg-[var(--surface-1)] px-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-3)]"
-                      aria-label={t("relatedFiles.openDiff", { path: file.path })}
+                      aria-label={t("relatedFiles.openDiff", {
+                        path: file.path,
+                      })}
                     >
                       <TruncatedFileName path={file.path} />
                       {hasLineStat(file.additions) && (

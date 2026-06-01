@@ -189,6 +189,10 @@
   "sidebar.switchProject": "切换项目",
   "sidebar.editProject": "编辑项目",
   "sidebar.deleteProject": "删除项目",
+  "sidebar.deleteProjectConfirmTitle": "确认删除项目？",
+  "sidebar.deleteProjectConfirmDesc": "\u201c{name}\u201d 将被永久删除，此操作无法撤销。",
+  "sidebar.deleteProjectFailed": "删除项目失败",
+  "sidebar.deleting": "删除中...",
   "sidebar.projectPath": "项目路径",
   "sidebar.projectPathEmpty": "未设置路径",
   "sidebar.projectCreateFailed": "项目创建失败",
@@ -281,6 +285,9 @@
   "settings.appearance.theme": "主题",
   "settings.appearance.darkThemeDefault": "深色主题（默认）",
   "settings.appearance.lightThemeInverted": "浅色主题（反转）",
+  "settings.appearance.chatMessageFontSize": "消息正文字号",
+  "settings.appearance.chatMessageFontSizeDesc": "同时调整用户消息正文和 Agent 回复正文的字号。",
+  "settings.appearance.chatMessageFontSizeOption": "{size}px",
   "settings.account.title": "账户设置",
   "settings.account.desc": "管理开发者资料配置。",
   "settings.account.emailEndpoint": "邮箱端点",
@@ -342,5 +349,11 @@
   "settings.notifications.sound.softChime": "柔和提示音",
   "settings.notifications.sound.brightPing": "清脆提示音",
   "settings.notifications.sound.lowBell": "低音铃声",
-  "settings.notifications.sound.none": "无"
+  "settings.notifications.sound.none": "无",
+  "agentActivity.running": "Agent努力执行任务中",
+  "agentActivity.toggle": "思考过程",
+  "agentActivity.loading": "正在加载思考过程...",
+  "agentActivity.cleaned": "思考过程已清理，仅保留最终回复。",
+  "agentActivity.error": "思考过程加载失败。",
+  "agentActivity.empty": "暂无思考过程。"
 }

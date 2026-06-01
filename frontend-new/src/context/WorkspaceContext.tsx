@@ -13,6 +13,11 @@ import {
   Member,
   Session,
   Message,
+  BackendChatAgent,
+  BackendChatMessage,
+  BackendChatSessionAgent,
+  ChatRunActivityLine,
+  ChatRunRetentionInfo,
   Provider,
   Strategy,
   BackendChatSkill,
@@ -26,6 +31,7 @@ import type { WorkspaceBootstrapMock } from '@/mockApiData';
 import {
   chatAgentsApi,
   chatMessagesApi,
+  chatRunsApi,
   chatSessionsApi,
   cliConfigApi,
   projectApi,
@@ -36,7 +42,9 @@ import {
 } from '@/lib/api';
 import type { CreateProjectRequest, Project } from '../../../shared/types';
 import {
+  mapMessage,
   mapMessages,
+  monogramFromName,
   mapProviders,
   mapSessionAgentsToMembers,
   mapSessions,
@@ -51,11 +59,205 @@ import {
 
 type ListUpdater<T> = T[] | ((prev: T[]) => T[]);
 
+type ChatStreamEvent =
+  | {
+      type: 'agent_run_started';
+      session_id: string;
+      session_agent_id: string;
+      agent_id: string;
+      agent_name: string;
+      run_id: string;
+      started_at: string | null;
+    }
+  | {
+      type: 'agent_activity_line';
+      line: ChatRunActivityLine;
+    }
+  | {
+      type: 'message_new' | 'message_updated';
+      message: BackendChatMessage;
+    }
+  | {
+      type: 'agent_state';
+      session_agent_id: string;
+      agent_id: string;
+      state: string;
+      started_at: string | null;
+    };
+
+const chatStreamWebSocketUrl = (path: string): string => {
+  const base =
+    typeof window === 'undefined' ? 'http://localhost' : window.location.href;
+  const url = new URL(path, base);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+};
+
+const PENDING_AGENT_MESSAGE_PREFIX = 'pending-agent-';
+const CHAT_MESSAGE_FONT_SIZE_STORAGE_KEY = 'openteams-chat-message-font-size';
+const LEGACY_AGENT_MARKDOWN_FONT_SIZE_STORAGE_KEY =
+  'openteams-agent-markdown-font-size';
+const CHAT_MESSAGE_FONT_SIZE_DEFAULT = 14;
+export const CHAT_MESSAGE_FONT_SIZE_OPTIONS = [13, 14, 15, 16] as const;
+
+const normalizeChatMessageFontSize = (value: number | string | null): number => {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return CHAT_MESSAGE_FONT_SIZE_DEFAULT;
+
+  const rounded = Math.round(numeric);
+  return (
+    CHAT_MESSAGE_FONT_SIZE_OPTIONS.find((option) => option === rounded) ??
+    CHAT_MESSAGE_FONT_SIZE_DEFAULT
+  );
+};
+
+const isPendingAgentPlaceholder = (message: Message): boolean =>
+  Boolean(
+    message.isAgentRunning &&
+    !message.runId &&
+    message.id.startsWith(PENDING_AGENT_MESSAGE_PREFIX),
+  );
+
+const extractAgentMentions = (text: string): string[] =>
+  Array.from(text.matchAll(/@([a-zA-Z0-9_-]+)/g), (match) =>
+    match[1].toLowerCase(),
+  );
+
+const asAgentHandle = (name: string): string =>
+  name.startsWith('@') ? name : `@${name}`;
+
+const makePendingAgentPlaceholder = (
+  text: string,
+  userMsgId: string,
+  members: Member[],
+): Message => {
+  const mentions = extractAgentMentions(text);
+  const mentionedMember = members.find((member) =>
+    mentions.includes(member.name.replace(/^@/, '').toLowerCase()),
+  );
+  const fallbackMember =
+    mentionedMember ??
+    members.find((member) => member.status === 'run') ??
+    members[0];
+  const fallbackName = mentions[0] ? asAgentHandle(mentions[0]) : '@agent';
+  const sender = asAgentHandle(fallbackMember?.name ?? fallbackName);
+
+  return {
+    id: `${PENDING_AGENT_MESSAGE_PREFIX}${userMsgId}`,
+    avatar: fallbackMember?.avatar ?? monogramFromName(sender),
+    sender,
+    model: fallbackMember?.modelName,
+    time: 'just now',
+    text: '',
+    isThinking: true,
+    isAgentRunning: true,
+    activityLines: [],
+    activityLoadState: 'loaded',
+  };
+};
+
+const mergePersistedWithRunningPlaceholders = (
+  persisted: Message[],
+  current: Message[],
+): Message[] => {
+  const persistedIds = new Set(persisted.map((message) => message.id));
+  const persistedRunIds = new Set(
+    persisted
+      .map((message) => message.runId)
+      .filter((runId): runId is string => Boolean(runId)),
+  );
+  const placeholdersByKey = new Map<string, Message>();
+  for (const message of current) {
+    if (!message.isAgentRunning || persistedIds.has(message.id)) continue;
+    if (message.runId && persistedRunIds.has(message.runId)) continue;
+    const key = message.runId ?? message.id;
+    const existing = placeholdersByKey.get(key);
+    const existingLineCount = existing?.activityLines?.length ?? 0;
+    const nextLineCount = message.activityLines?.length ?? 0;
+    if (!existing || nextLineCount > existingLineCount) {
+      placeholdersByKey.set(key, message);
+    }
+  }
+  const placeholders = [...placeholdersByKey.values()];
+
+  return placeholders.length > 0 ? [...persisted, ...placeholders] : persisted;
+};
+
+const sortActivityLines = (
+  lines: ChatRunActivityLine[],
+): ChatRunActivityLine[] =>
+  [...lines].sort((a, b) => {
+    if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+    return a.line_id.localeCompare(b.line_id);
+  });
+
+const latestRunsBySessionAgent = (
+  runs: ChatRunRetentionInfo[],
+): Map<string, ChatRunRetentionInfo> => {
+  const latest = new Map<string, ChatRunRetentionInfo>();
+  for (const run of runs) {
+    const existing = latest.get(run.session_agent_id);
+    if (
+      !existing ||
+      Date.parse(run.created_at) > Date.parse(existing.created_at)
+    ) {
+      latest.set(run.session_agent_id, run);
+    }
+  }
+  return latest;
+};
+
+const hydrateRunningAgentPlaceholders = async (
+  sessionAgents: BackendChatSessionAgent[],
+  agents: BackendChatAgent[],
+  runs: ChatRunRetentionInfo[],
+): Promise<Message[]> => {
+  const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+  const latestRunBySessionAgentId = latestRunsBySessionAgent(runs);
+  const runningSessionAgents = sessionAgents.filter((sessionAgent) =>
+    ['running', 'stopping'].includes(sessionAgent.state),
+  );
+
+  const placeholders: Array<Message | null> = await Promise.all(
+    runningSessionAgents.map(async (sessionAgent): Promise<Message | null> => {
+      const run = latestRunBySessionAgentId.get(sessionAgent.id);
+      if (!run) return null;
+
+      const agent = agentById.get(sessionAgent.agent_id);
+      const agentName = agent?.name ?? sessionAgent.agent_id;
+      const activityLines = await chatRunsApi
+        .getActivity(run.run_id, { offset: 0, limit: 1000 })
+        .then((response) => sortActivityLines(response.lines))
+        .catch(() => []);
+
+      return {
+        id: `run-${run.run_id}`,
+        avatar: monogramFromName(agentName),
+        sender: asAgentHandle(agentName),
+        model: agent?.model_name ?? undefined,
+        time: 'just now',
+        text: '',
+        isThinking: true,
+        isAgentRunning: true,
+        runId: run.run_id,
+        activityLines,
+        activityLoadState: 'idle',
+      };
+    }),
+  );
+
+  return placeholders.filter(
+    (placeholder): placeholder is Message => placeholder !== null,
+  );
+};
+
 interface WorkspaceContextProps {
   theme: Theme;
   setTheme: (t: Theme) => void;
   locale: Locale;
   setLocale: (l: Locale) => void;
+  chatMessageFontSize: number;
+  setChatMessageFontSize: (size: number) => void;
   tasks: TaskNode[];
   setTasks: (t: ListUpdater<TaskNode>) => void;
   members: Member[];
@@ -148,13 +350,17 @@ interface WorkspaceContextProps {
   refreshAll: () => Promise<void>;
 }
 
-const WorkspaceContext = createContext<WorkspaceContextProps | undefined>(undefined);
+const WorkspaceContext = createContext<WorkspaceContextProps | undefined>(
+  undefined,
+);
 
-export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [theme, setThemeState] = useState<Theme>(() => {
     try {
       const saved = localStorage.getItem('openteams-design-mode');
-      return (saved === 'light' || saved === 'dark') ? (saved as Theme) : 'dark';
+      return saved === 'light' || saved === 'dark' ? (saved as Theme) : 'dark';
     } catch {
       return 'dark';
     }
@@ -170,6 +376,17 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return 'zh';
     }
   });
+  const [chatMessageFontSize, setChatMessageFontSizeState] =
+    useState<number>(() => {
+      try {
+        return normalizeChatMessageFontSize(
+          localStorage.getItem(CHAT_MESSAGE_FONT_SIZE_STORAGE_KEY) ??
+            localStorage.getItem(LEGACY_AGENT_MARKDOWN_FONT_SIZE_STORAGE_KEY),
+        );
+      } catch {
+        return CHAT_MESSAGE_FONT_SIZE_DEFAULT;
+      }
+    });
   const [tasks, setTasks] = useState<TaskNode[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>('');
   const mockBootstrapRef = useRef<WorkspaceBootstrapMock | null>(null);
@@ -178,39 +395,44 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Async-backed primary resources. Each is seeded with the existing mock so
   // the UI renders before the first API response arrives (or if the backend
   // is unreachable / has a contract gap).
-  const [sessionsAsync, setSessionsAsync] =
-    useState<AsyncResourceState<Session[]>>(() => initialAsync([]));
-  const [projectsAsync, setProjectsAsync] =
-    useState<AsyncResourceState<Project[]>>(() => initialAsync([]));
+  const [sessionsAsync, setSessionsAsync] = useState<
+    AsyncResourceState<Session[]>
+  >(() => initialAsync([]));
+  const [projectsAsync, setProjectsAsync] = useState<
+    AsyncResourceState<Project[]>
+  >(() => initialAsync([]));
   const [selectedProjectId, setSelectedProjectIdState] = useState<string>('');
-  const [allMessages, setAllMessages] =
-    useState<Record<string, Message[]>>({});
-  const [messagesAsync, setMessagesAsync] =
-    useState<AsyncResourceState<Message[]>>(() =>
-      initialAsync([]),
-    );
-  const [membersAsync, setMembersAsync] =
-    useState<AsyncResourceState<Member[]>>(() => initialAsync([]));
-  const [providersAsync, setProvidersAsync] =
-    useState<AsyncResourceState<Provider[]>>(() => initialAsync([]));
-  const [skillsAsync, setSkillsAsync] =
-    useState<AsyncResourceState<BackendChatSkill[]>>(() => initialAsync([]));
-  const [configAsync, setConfigAsync] =
-    useState<AsyncResourceState<Config | null>>(() => initialAsync(null));
-  const [workflowCardAsync, setWorkflowCardAsync] =
-    useState<AsyncResourceState<WorkflowCardProjection | null>>(() =>
-      initialAsync(null),
-    );
-  const [workspaceChangesAsync, setWorkspaceChangesAsync] =
-    useState<AsyncResourceState<WorkspaceChangesResponse | null>>(() =>
-      initialAsync(null),
-    );
+  const [allMessages, setAllMessages] = useState<Record<string, Message[]>>({});
+  const [messagesAsync, setMessagesAsync] = useState<
+    AsyncResourceState<Message[]>
+  >(() => initialAsync([]));
+  const [membersAsync, setMembersAsync] = useState<
+    AsyncResourceState<Member[]>
+  >(() => initialAsync([]));
+  const [providersAsync, setProvidersAsync] = useState<
+    AsyncResourceState<Provider[]>
+  >(() => initialAsync([]));
+  const [skillsAsync, setSkillsAsync] = useState<
+    AsyncResourceState<BackendChatSkill[]>
+  >(() => initialAsync([]));
+  const [configAsync, setConfigAsync] = useState<
+    AsyncResourceState<Config | null>
+  >(() => initialAsync(null));
+  const [workflowCardAsync, setWorkflowCardAsync] = useState<
+    AsyncResourceState<WorkflowCardProjection | null>
+  >(() => initialAsync(null));
+  const [workspaceChangesAsync, setWorkspaceChangesAsync] = useState<
+    AsyncResourceState<WorkspaceChangesResponse | null>
+  >(() => initialAsync(null));
 
   const [strategies, setStrategies] = useState<Strategy[]>([]);
-  const [mockAgentRepliesByMention, setMockAgentRepliesByMention] =
-    useState<Record<string, string[]>>({ default: ['Working on it.'] });
+  const [mockAgentRepliesByMention, setMockAgentRepliesByMention] = useState<
+    Record<string, string[]>
+  >({ default: ['Working on it.'] });
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>('');
-  const [selectedOnboardType, setSelectedOnboardType] = useState<'saas' | 'cli' | 'game' | 'ai'>('saas');
+  const [selectedOnboardType, setSelectedOnboardType] = useState<
+    'saas' | 'cli' | 'game' | 'ai'
+  >('saas');
 
   // Global Settings Switches
   const [smartRouting, setSmartRouting] = useState<boolean>(true);
@@ -224,13 +446,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [earlyBirdLeft, setEarlyBirdLeft] = useState<number>(0);
 
   // Settings view controller
-  const [activeSettingsTab, setActiveSettingsTab] = useState<string>('providers');
+  const [activeSettingsTab, setActiveSettingsTab] =
+    useState<string>('providers');
 
   // Modal Switches
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState<boolean>(false);
   const [isRetryModalOpen, setIsRetryModalOpen] = useState<boolean>(false);
-  const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState<boolean>(false);
-  const [isAddProviderModalOpen, setIsAddProviderModalOpen] = useState<boolean>(false);
+  const [isAddMemberModalOpen, setIsAddMemberModalOpen] =
+    useState<boolean>(false);
+  const [isAddProviderModalOpen, setIsAddProviderModalOpen] =
+    useState<boolean>(false);
 
   // Toast
   const [toast, setToast] = useState<string | null>(null);
@@ -238,6 +463,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Cache the latest activeSessionId so async callbacks see the live value.
   const activeSessionIdRef = useRef(activeSessionId);
   const selectedProjectIdRef = useRef(selectedProjectId);
+  const agentNamesByIdRef = useRef<Record<string, string>>({});
+  const agentModelsByIdRef = useRef<Record<string, string | null>>({});
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
@@ -266,6 +493,17 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } catch {}
   };
 
+  const setChatMessageFontSize = (size: number) => {
+    const normalized = normalizeChatMessageFontSize(size);
+    setChatMessageFontSizeState(normalized);
+    try {
+      localStorage.setItem(
+        CHAT_MESSAGE_FONT_SIZE_STORAGE_KEY,
+        String(normalized),
+      );
+    } catch {}
+  };
+
   useEffect(() => {
     document.body.setAttribute('data-mode', theme);
   }, [theme]);
@@ -284,43 +522,62 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     };
 
-  const setSessions = useCallback(makeListSetter<Session>(setSessionsAsync), []);
+  const setSessions = useCallback(
+    makeListSetter<Session>(setSessionsAsync),
+    [],
+  );
   const setMembers = useCallback(makeListSetter<Member>(setMembersAsync), []);
-  const setProviders = useCallback(makeListSetter<Provider>(setProvidersAsync), []);
+  const setProviders = useCallback(
+    makeListSetter<Provider>(setProvidersAsync),
+    [],
+  );
 
-  const setSelectedProjectId = useCallback((id: string) => {
-    selectedProjectIdRef.current = id;
-    setSelectedProjectIdState(id);
+  const clearSessionScopedState = useCallback(() => {
+    activeSessionIdRef.current = '';
+    setActiveSessionId('');
+    setMessagesAsync(succeed([]));
+    setMembersAsync(succeed([]));
   }, []);
 
-  const applyMockBootstrap = useCallback((bootstrap: WorkspaceBootstrapMock) => {
-    mockBootstrapRef.current = bootstrap;
-    toastDurationMsRef.current = bootstrap.defaults.toastDurationMs;
-    setTasks(bootstrap.tasks);
-    setSessionsAsync(initialAsync(bootstrap.sessions));
-    setAllMessages(bootstrap.messagesBySession);
-    const nextActiveSessionId =
-      bootstrap.defaults.activeSessionId || bootstrap.sessions[0]?.id || '';
-    setActiveSessionId(nextActiveSessionId);
-    activeSessionIdRef.current = nextActiveSessionId;
-    setMessagesAsync(
-      initialAsync(bootstrap.messagesBySession[nextActiveSessionId] ?? []),
-    );
-    setMembersAsync(initialAsync(bootstrap.members));
-    setProvidersAsync(initialAsync(bootstrap.providers));
-    setStrategies(bootstrap.strategies);
-    setMockAgentRepliesByMention(bootstrap.agentRepliesByMention);
-    setSelectedStrategyId(bootstrap.defaults.selectedStrategyId);
-    setSelectedOnboardType(bootstrap.defaults.selectedOnboardType);
-    setSmartRouting(bootstrap.defaults.smartRouting);
-    setShowCost(bootstrap.defaults.showCost);
-    setShowExplanation(bootstrap.defaults.showExplanation);
-    setWarnOverDollar(bootstrap.defaults.warnOverDollar);
-    setWeeklyCost(bootstrap.defaults.weeklyCost);
-    setWeeklySaved(bootstrap.defaults.weeklySaved);
-    setEarlyBirdLeft(bootstrap.defaults.earlyBirdLeft);
-    setActiveSettingsTab(bootstrap.defaults.activeSettingsTab);
-  }, []);
+  const setSelectedProjectId = useCallback(
+    (id: string) => {
+      const previousProjectId = selectedProjectIdRef.current;
+      selectedProjectIdRef.current = id;
+      setSelectedProjectIdState(id);
+
+      if (previousProjectId !== id) {
+        setSessionsAsync(succeed([]));
+        clearSessionScopedState();
+      }
+    },
+    [clearSessionScopedState],
+  );
+
+  const applyMockBootstrap = useCallback(
+    (bootstrap: WorkspaceBootstrapMock) => {
+      mockBootstrapRef.current = bootstrap;
+      toastDurationMsRef.current = bootstrap.defaults.toastDurationMs;
+      setTasks(bootstrap.tasks);
+      setSessionsAsync(initialAsync([]));
+      setAllMessages(bootstrap.messagesBySession);
+      clearSessionScopedState();
+      setMembersAsync(initialAsync(bootstrap.members));
+      setProvidersAsync(initialAsync(bootstrap.providers));
+      setStrategies(bootstrap.strategies);
+      setMockAgentRepliesByMention(bootstrap.agentRepliesByMention);
+      setSelectedStrategyId(bootstrap.defaults.selectedStrategyId);
+      setSelectedOnboardType(bootstrap.defaults.selectedOnboardType);
+      setSmartRouting(bootstrap.defaults.smartRouting);
+      setShowCost(bootstrap.defaults.showCost);
+      setShowExplanation(bootstrap.defaults.showExplanation);
+      setWarnOverDollar(bootstrap.defaults.warnOverDollar);
+      setWeeklyCost(bootstrap.defaults.weeklyCost);
+      setWeeklySaved(bootstrap.defaults.weeklySaved);
+      setEarlyBirdLeft(bootstrap.defaults.earlyBirdLeft);
+      setActiveSettingsTab(bootstrap.defaults.activeSettingsTab);
+    },
+    [clearSessionScopedState],
+  );
 
   const refreshProjects = useCallback(async (): Promise<void> => {
     setProjectsAsync(beginLoad);
@@ -333,6 +590,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         !projects.some((project) => project.id === currentProjectId)
       ) {
         setSelectedProjectId(projects[0].id);
+      } else if (projects.length === 0 && currentProjectId) {
+        setSelectedProjectId('');
       }
     } catch (err) {
       setProjectsAsync((prev) => fail(prev, err, []));
@@ -343,7 +602,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     async (data: CreateProjectRequest): Promise<Project> => {
       const project = await projectApi.createProject(data);
       setProjectsAsync((prev) =>
-        succeed([project, ...prev.data.filter((item) => item.id !== project.id)]),
+        succeed([
+          project,
+          ...prev.data.filter((item) => item.id !== project.id),
+        ]),
       );
       setSelectedProjectId(project.id);
       return project;
@@ -352,48 +614,83 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const refreshSessions = useCallback(async (): Promise<void> => {
+    const projectId = selectedProjectIdRef.current;
+    if (!projectId) {
+      setSessionsAsync(succeed([]));
+      clearSessionScopedState();
+      return;
+    }
+
     setSessionsAsync(beginLoad);
     try {
-      const projectId = selectedProjectIdRef.current || undefined;
-      const backend = await chatSessionsApi.list(undefined, projectId);
-      const mapped = mapSessions(backend, activeSessionIdRef.current);
+      const backend = await projectApi.listSessions(projectId);
+      if (selectedProjectIdRef.current !== projectId) return;
+
+      const currentActiveSessionId = activeSessionIdRef.current;
+      const nextActiveSessionId = backend.some(
+        (session) => session.id === currentActiveSessionId,
+      )
+        ? currentActiveSessionId
+        : (backend[0]?.id ?? '');
+      const mapped = mapSessions(backend, nextActiveSessionId);
       setSessionsAsync(succeed(mapped));
-      // If the previously active session id no longer exists, fall back to the
-      // first available session so the UI is never stuck on a stale id.
-      if (
-        mapped.length > 0 &&
-        !mapped.some((s) => s.id === activeSessionIdRef.current)
-      ) {
-        setActiveSessionId(mapped[0].id);
-      } else if (mapped.length === 0 && activeSessionIdRef.current) {
-        activeSessionIdRef.current = '';
-        setActiveSessionId('');
+
+      if (nextActiveSessionId !== currentActiveSessionId) {
+        activeSessionIdRef.current = nextActiveSessionId;
+        setActiveSessionId(nextActiveSessionId);
+      }
+
+      if (!nextActiveSessionId) {
+        clearSessionScopedState();
       }
     } catch (err) {
       setSessionsAsync((prev) => fail(prev, err));
     }
-  }, []);
+  }, [clearSessionScopedState]);
 
   const refreshMessages = useCallback(async (): Promise<void> => {
     const sid = activeSessionIdRef.current;
+    if (!sid) {
+      setMessagesAsync(succeed([]));
+      return;
+    }
+
     setMessagesAsync(beginLoad);
     try {
-      const [backendMsgs, backendAgents] = await Promise.all([
-        chatMessagesApi.list(sid),
-        chatAgentsApi.list().catch(() => []),
-      ]);
+      const [backendMsgs, backendAgents, sessionAgents, retention] =
+        await Promise.all([
+          chatMessagesApi.list(sid),
+          chatAgentsApi.list().catch(() => []),
+          sessionAgentsApi.list(sid).catch(() => []),
+          chatRunsApi.listSessionRetention(sid, { limit: 100 }).catch(() => ({
+            runs: [],
+          })),
+        ]);
       const agentNamesById: Record<string, string> = {};
       const agentModelsById: Record<string, string | null> = {};
       for (const a of backendAgents) {
         agentNamesById[a.id] = a.name;
         agentModelsById[a.id] = a.model_name;
       }
+      agentNamesByIdRef.current = agentNamesById;
+      agentModelsByIdRef.current = agentModelsById;
       const mapped = mapMessages(backendMsgs, {
         agentNamesById,
         agentModelsById,
       });
-      setMessagesAsync(succeed(mapped));
-      setAllMessages((prev) => ({ ...prev, [sid]: mapped }));
+      const runningPlaceholders = await hydrateRunningAgentPlaceholders(
+        sessionAgents,
+        backendAgents,
+        retention.runs,
+      );
+      setAllMessages((prev) => {
+        const next = mergePersistedWithRunningPlaceholders(mapped, [
+          ...(prev[sid] ?? []),
+          ...runningPlaceholders,
+        ]);
+        setMessagesAsync(succeed(next));
+        return { ...prev, [sid]: next };
+      });
     } catch (err) {
       const mock = mockBootstrapRef.current?.messagesBySession[sid] ?? [];
       setMessagesAsync((prev) => fail(prev, err, mock));
@@ -402,12 +699,23 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const refreshMembers = useCallback(async (): Promise<void> => {
     const sid = activeSessionIdRef.current;
+    if (!sid) {
+      setMembersAsync(succeed([]));
+      return;
+    }
+
     setMembersAsync(beginLoad);
     try {
       const [agents, sessionAgents] = await Promise.all([
         chatAgentsApi.list(),
         sessionAgentsApi.list(sid).catch(() => []),
       ]);
+      agentNamesByIdRef.current = Object.fromEntries(
+        agents.map((agent) => [agent.id, agent.name]),
+      );
+      agentModelsByIdRef.current = Object.fromEntries(
+        agents.map((agent) => [agent.id, agent.model_name]),
+      );
       const mapped = mapSessionAgentsToMembers(sessionAgents, agents);
       setMembersAsync(succeed(mapped));
     } catch (err) {
@@ -488,8 +796,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const refreshAll = useCallback(async (): Promise<void> => {
+    await refreshProjects();
     await Promise.all([
-      refreshProjects(),
       refreshSessions(),
       refreshProviders(),
       refreshSkills(),
@@ -518,6 +826,162 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const mapBackendChatMessage = useCallback(
+    (message: BackendChatMessage): Message =>
+      mapMessage(message, {
+        agentNamesById: agentNamesByIdRef.current,
+        agentModelsById: agentModelsByIdRef.current,
+      }),
+    [],
+  );
+
+  const upsertStreamedMessage = useCallback(
+    (sid: string, incoming: Message) => {
+      setAllMessages((prev) => {
+        const current = prev[sid] || [];
+        let carriedLines: ChatRunActivityLine[] | undefined;
+        let carriedState = incoming.activityLoadState;
+        const hasMatchingRun = Boolean(
+          incoming.runId &&
+          current.some(
+            (message) =>
+              message.runId === incoming.runId && message.isAgentRunning,
+          ),
+        );
+        let removedPendingPlaceholder = false;
+        const withoutPlaceholder = current.filter((message) => {
+          const isMatchingRun =
+            incoming.runId &&
+            message.runId === incoming.runId &&
+            message.isAgentRunning;
+          const isPendingRun =
+            !incoming.isUser &&
+            !hasMatchingRun &&
+            !removedPendingPlaceholder &&
+            isPendingAgentPlaceholder(message);
+          if (isMatchingRun || isPendingRun) {
+            carriedLines = message.activityLines;
+            carriedState = message.activityLoadState ?? 'loaded';
+            removedPendingPlaceholder =
+              removedPendingPlaceholder || isPendingRun;
+            return false;
+          }
+          return true;
+        });
+        const nextMessage: Message = {
+          ...incoming,
+          activityLines: carriedLines ?? incoming.activityLines,
+          activityLoadState: carriedState,
+          isAgentRunning: undefined,
+          isThinking: undefined,
+        };
+        const existingIndex = withoutPlaceholder.findIndex(
+          (message) => message.id === nextMessage.id,
+        );
+        const next =
+          existingIndex >= 0
+            ? withoutPlaceholder.map((message, index) =>
+                index === existingIndex ? nextMessage : message,
+              )
+            : [...withoutPlaceholder, nextMessage];
+        return { ...prev, [sid]: next };
+      });
+    },
+    [],
+  );
+
+  const appendStreamActivityLine = useCallback((line: ChatRunActivityLine) => {
+    setAllMessages((prev) => {
+      const current = prev[line.session_id] || [];
+      const existingIndex = current.findIndex(
+        (message) => message.runId === line.run_id,
+      );
+      const mergeLine = (message: Message): Message => {
+        const lines = message.activityLines ?? [];
+        if (lines.some((item) => item.line_id === line.line_id)) {
+          return message;
+        }
+        const nextLines = [...lines, line].sort((a, b) => {
+          if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+          return a.line_id.localeCompare(b.line_id);
+        });
+        return {
+          ...message,
+          activityLines: nextLines,
+          activityLoadState: 'idle',
+        };
+      };
+
+      if (existingIndex >= 0) {
+        const next = current.map((message, index) =>
+          index === existingIndex ? mergeLine(message) : message,
+        );
+        return { ...prev, [line.session_id]: next };
+      }
+
+      const agentName = line.agent_name.startsWith('@')
+        ? line.agent_name
+        : `@${line.agent_name}`;
+      const placeholder: Message = {
+        id: `run-${line.run_id}`,
+        avatar: monogramFromName(line.agent_name),
+        sender: agentName,
+        model: agentModelsByIdRef.current[line.agent_id] ?? undefined,
+        time: 'just now',
+        text: '',
+        isThinking: true,
+        isAgentRunning: true,
+        runId: line.run_id,
+        activityLines: [line],
+        activityLoadState: 'idle',
+      };
+      const pendingIndex = current.findIndex(isPendingAgentPlaceholder);
+      if (pendingIndex >= 0) {
+        const next = current.map((message, index) =>
+          index === pendingIndex ? placeholder : message,
+        );
+        return { ...prev, [line.session_id]: next };
+      }
+      return { ...prev, [line.session_id]: [...current, placeholder] };
+    });
+  }, []);
+
+  const insertRunningPlaceholder = useCallback(
+    (event: Extract<ChatStreamEvent, { type: 'agent_run_started' }>) => {
+      setAllMessages((prev) => {
+        const current = prev[event.session_id] || [];
+        if (current.some((message) => message.runId === event.run_id)) {
+          return prev;
+        }
+        const agentName = event.agent_name.startsWith('@')
+          ? event.agent_name
+          : `@${event.agent_name}`;
+        const placeholder: Message = {
+          id: `run-${event.run_id}`,
+          avatar: monogramFromName(event.agent_name),
+          sender: agentName,
+          model: agentModelsByIdRef.current[event.agent_id] ?? undefined,
+          time: 'just now',
+          text: '',
+          isThinking: true,
+          isAgentRunning: true,
+          runId: event.run_id,
+          activityLines: [],
+          activityLoadState: 'idle',
+        };
+        const pendingIndex = current.findIndex(isPendingAgentPlaceholder);
+        if (pendingIndex >= 0) {
+          const next = current.map((message, index) =>
+            index === pendingIndex ? placeholder : message,
+          );
+          return { ...prev, [event.session_id]: next };
+        }
+        return { ...prev, [event.session_id]: [...current, placeholder] };
+      });
+    },
+    [],
+  );
+
   // When the active session changes, re-fetch its scoped data.
   useEffect(() => {
     if (!activeSessionId) return;
@@ -527,6 +991,65 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [activeSessionId]);
 
   useEffect(() => {
+    if (!activeSessionId || sessionsAsync.source !== 'api') return;
+
+    const sid = activeSessionId;
+    const socket = new WebSocket(
+      chatStreamWebSocketUrl(chatSessionsApi.streamUrl(sid)),
+    );
+
+    socket.onmessage = (event) => {
+      let parsed: ChatStreamEvent;
+      try {
+        parsed = JSON.parse(event.data) as ChatStreamEvent;
+      } catch {
+        return;
+      }
+
+      if (parsed.type === 'agent_run_started' && parsed.session_id === sid) {
+        insertRunningPlaceholder(parsed);
+        return;
+      }
+
+      if (
+        parsed.type === 'agent_activity_line' &&
+        parsed.line.session_id === sid
+      ) {
+        appendStreamActivityLine(parsed.line);
+        return;
+      }
+
+      if (
+        (parsed.type === 'message_new' || parsed.type === 'message_updated') &&
+        parsed.message.session_id === sid
+      ) {
+        upsertStreamedMessage(sid, mapBackendChatMessage(parsed.message));
+        return;
+      }
+
+      if (parsed.type === 'agent_state') {
+        void refreshMembers();
+      }
+    };
+
+    socket.onerror = () => {
+      socket.close();
+    };
+
+    return () => {
+      socket.close();
+    };
+  }, [
+    activeSessionId,
+    appendStreamActivityLine,
+    insertRunningPlaceholder,
+    mapBackendChatMessage,
+    refreshMembers,
+    sessionsAsync.source,
+    upsertStreamedMessage,
+  ]);
+
+  useEffect(() => {
     void refreshSessions();
   }, [refreshSessions, selectedProjectId]);
 
@@ -534,7 +1057,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // i18n
   // ---------------------------------------------------------------------------
 
-  const t = (key: string, replacements?: Record<string, string | number>): string => {
+  const t = (
+    key: string,
+    replacements?: Record<string, string | number>,
+  ): string => {
     const dict = i18nDict[locale] || i18nDict['en'];
     let val = dict[key] || i18nDict['en'][key] || key;
     if (replacements) {
@@ -660,9 +1186,18 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       text,
       isUser: true,
     };
+    const pendingAgentMsg =
+      sessionsAsync.source === 'api'
+        ? makePendingAgentPlaceholder(text, userMsgId, membersAsync.data)
+        : null;
     setAllMessages((prev) => {
       const cur = prev[sid] || [];
-      return { ...prev, [sid]: [...cur, userMsg] };
+      return {
+        ...prev,
+        [sid]: pendingAgentMsg
+          ? [...cur, userMsg, pendingAgentMsg]
+          : [...cur, userMsg],
+      };
     });
 
     // Mock-only session (e.g., backend offline): use the local cascade.
@@ -671,8 +1206,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return;
     }
 
-    // Real backend: persist the user message; rely on subsequent message
-    // refresh (or a future stream subscription) to surface agent replies.
+    // Real backend: keep the local running placeholder visible while the
+    // persisted message list and websocket stream catch up.
     const mentions = text
       .split(/\s+/)
       .filter((w) => w.startsWith('@'))
@@ -688,6 +1223,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         void refreshMessages();
       })
       .catch((err) => {
+        if (pendingAgentMsg) {
+          setAllMessages((prev) => {
+            const cur = prev[sid] || [];
+            return {
+              ...prev,
+              [sid]: cur.filter((message) => message.id !== pendingAgentMsg.id),
+            };
+          });
+        }
         // Roll forward with mock cascade so the UI is never stuck silent.
         showToast(
           err instanceof Error
@@ -699,7 +1243,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   // Add new workflow task representing Prototype 4 action into Prototype 1 List
-  const addNewTask = (title: string, _details: string, chosenMembers: string[]) => {
+  const addNewTask = (
+    title: string,
+    _details: string,
+    chosenMembers: string[],
+  ) => {
     const mainMembersMap: Record<string, string> = {
       Lead: 'CL',
       Backend: 'CO',
@@ -742,7 +1290,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setTasks((prev) =>
       prev.map((task, idx) => {
         if (idx < 2) return { ...task, status: 'done' as const };
-        if (idx === 2) return { ...task, status: 'run' as const, cost: '$0.41' };
+        if (idx === 2)
+          return { ...task, status: 'run' as const, cost: '$0.41' };
         return { ...task, status: 'wait' as const, cost: '—' };
       }),
     );
@@ -751,7 +1300,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setTasks((prev) =>
         prev.map((task, idx) => {
           if (idx <= 2) return { ...task, status: 'done' as const };
-          if (idx === 3) return { ...task, status: 'run' as const, cost: '$0.28' };
+          if (idx === 3)
+            return { ...task, status: 'run' as const, cost: '$0.28' };
           return task;
         }),
       );
@@ -760,16 +1310,21 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setTasks((prev) =>
           prev.map((task, idx) => {
             if (idx <= 3) return { ...task, status: 'done' as const };
-            if (idx === 4) return { ...task, status: 'run' as const, cost: '$0.12' };
+            if (idx === 4)
+              return { ...task, status: 'run' as const, cost: '$0.12' };
             return task;
           }),
         );
         showToast('Step 4 done. Initializing deployment pipeline...');
         setTimeout(() => {
-          setTasks((prev) => prev.map((task) => ({ ...task, status: 'done' as const })));
-          showToast('Deployment completed successfully! Product live on Cloud Run!');
+          setTasks((prev) =>
+            prev.map((task) => ({ ...task, status: 'done' as const })),
+          );
+          showToast(
+            'Deployment completed successfully! Product live on Cloud Run!',
+          );
           setWeeklyCost((prev) => parseFloat((prev + 0.42).toFixed(2)));
-          setWeeklySaved((prev) => parseFloat((prev + 1.20).toFixed(2)));
+          setWeeklySaved((prev) => parseFloat((prev + 1.2).toFixed(2)));
         }, 2000);
       }, 2500);
     }, 3000);
@@ -814,6 +1369,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setTheme,
         locale,
         setLocale,
+        chatMessageFontSize,
+        setChatMessageFontSize,
         tasks,
         setTasks,
         members,

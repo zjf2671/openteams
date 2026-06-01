@@ -1063,6 +1063,74 @@ impl ChatRunner {
     }
 
     #[allow(clippy::too_many_arguments)]
+    async fn persist_and_emit_activity_line(
+        activity_path: &Path,
+        sender: &broadcast::Sender<ChatStreamEvent>,
+        session_id: Uuid,
+        session_agent_id: Uuid,
+        agent_id: Uuid,
+        agent_name: &str,
+        run_id: Uuid,
+        sequence: &mut u64,
+        activity_line: AgentActivityEntryLine,
+    ) {
+        let line = ChatRunActivityLine {
+            line_id: Uuid::new_v4(),
+            run_id,
+            session_id,
+            session_agent_id,
+            agent_id,
+            agent_name: agent_name.to_string(),
+            sequence: *sequence,
+            line_type: activity_line.line_type,
+            stream_type: activity_line.stream_type,
+            content: activity_line.content,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        *sequence = (*sequence).saturating_add(1);
+
+        if let Err(err) = Self::append_jsonl_line(activity_path, &line).await {
+            tracing::warn!(
+                session_id = %session_id,
+                run_id = %run_id,
+                activity_path = %activity_path.display(),
+                error = %err,
+                "failed to append chat run activity line"
+            );
+        }
+
+        let _ = sender.send(ChatStreamEvent::AgentActivityLine { line });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_and_emit_activity_lines(
+        activity_path: &Path,
+        sender: &broadcast::Sender<ChatStreamEvent>,
+        session_id: Uuid,
+        session_agent_id: Uuid,
+        agent_id: Uuid,
+        agent_name: &str,
+        run_id: Uuid,
+        sequence: &mut u64,
+        activity_lines: Vec<AgentActivityEntryLine>,
+    ) {
+        for activity_line in activity_lines {
+            Self::persist_and_emit_activity_line(
+                activity_path,
+                sender,
+                session_id,
+                session_agent_id,
+                agent_id,
+                agent_name,
+                run_id,
+                sequence,
+                activity_line,
+            )
+            .await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_stream_bridge(
         &self,
         msg_store: Arc<MsgStore>,
@@ -1095,6 +1163,7 @@ impl ChatRunner {
     ) {
         let db = self.db.clone();
         let sender = self.sender_for(session_id);
+        let activity_path = run_dir.join(RUN_ACTIVITY_FILE_NAME);
         let stream_filter = StreamPatchFilter {
             suppress_codex_tool_runtime_details,
             suppress_error_streaming: true,
@@ -1123,6 +1192,8 @@ impl ChatRunner {
             let mut error_content = String::new();
             let mut error_update_count = 0_u64;
             let mut error_type: Option<NormalizedEntryError> = None;
+            let mut activity_state = AgentActivityStreamState::default();
+            let mut activity_sequence = 0_u64;
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -1156,6 +1227,19 @@ impl ChatRunner {
                         );
                     }
                     Ok(LogMsg::JsonPatch(patch)) => {
+                        let activity_lines = activity_state.drain_patch_lines(&patch, true);
+                        Self::persist_and_emit_activity_lines(
+                            &activity_path,
+                            &sender,
+                            session_id,
+                            session_agent_id,
+                            agent_id,
+                            &agent_name,
+                            run_id,
+                            &mut activity_sequence,
+                            activity_lines,
+                        )
+                        .await;
                         Self::process_stream_patch(
                             patch,
                             session_id,
@@ -1238,6 +1322,20 @@ impl ChatRunner {
                                     );
                                 }
                                 Ok(LogMsg::JsonPatch(patch)) => {
+                                    let activity_lines =
+                                        activity_state.drain_patch_lines(&patch, true);
+                                    Self::persist_and_emit_activity_lines(
+                                        &activity_path,
+                                        &sender,
+                                        session_id,
+                                        session_agent_id,
+                                        agent_id,
+                                        &agent_name,
+                                        run_id,
+                                        &mut activity_sequence,
+                                        activity_lines,
+                                    )
+                                    .await;
                                     Self::process_stream_patch(
                                         patch,
                                         session_id,
@@ -1263,6 +1361,18 @@ impl ChatRunner {
                             &mut stdout_line_buffer,
                             &mut last_token_usage,
                         );
+                        Self::persist_and_emit_activity_lines(
+                            &activity_path,
+                            &sender,
+                            session_id,
+                            session_agent_id,
+                            agent_id,
+                            &agent_name,
+                            run_id,
+                            &mut activity_sequence,
+                            activity_state.flush_pending_lines(),
+                        )
+                        .await;
 
                         let mut reconciled_state = RunStreamStateSnapshot {
                             agent_session_id: agent_session_id.clone(),
@@ -2261,6 +2371,13 @@ impl ChatRunner {
 
     pub async fn run_startup_retention_janitor(&self) -> Result<(), ChatRunnerError> {
         let runs = ChatRun::list_all(&self.db.pool).await?;
+        let pruned_activity_files = Self::prune_activity_files_for_runs(&runs, Utc::now()).await?;
+        if pruned_activity_files > 0 {
+            tracing::debug!(
+                pruned_activity_files,
+                "Pruned expired chat run activity files during startup retention"
+            );
+        }
         let mut workspaces = HashSet::new();
         for run in runs {
             if let Some(path) = Path::new(&run.run_dir).ancestors().nth(5) {
@@ -2280,6 +2397,50 @@ impl ChatRunner {
         }
 
         Ok(())
+    }
+
+    pub async fn run_activity_retention_janitor(&self) -> Result<u64, ChatRunnerError> {
+        let runs = ChatRun::list_all(&self.db.pool).await?;
+        let pruned = Self::prune_activity_files_for_runs(&runs, Utc::now()).await?;
+        if pruned > 0 {
+            tracing::debug!(
+                pruned_activity_files = pruned,
+                "Pruned expired chat run activity files"
+            );
+        }
+        Ok(pruned)
+    }
+
+    async fn prune_activity_files_for_runs(
+        runs: &[ChatRun],
+        now: chrono::DateTime<Utc>,
+    ) -> Result<u64, ChatRunnerError> {
+        let cutoff = now - chrono::Duration::hours(RUN_ACTIVITY_RETENTION_HOURS);
+        let mut pruned = 0_u64;
+
+        for run in runs {
+            if run.created_at >= cutoff {
+                continue;
+            }
+
+            let activity_path = Path::new(&run.run_dir).join(RUN_ACTIVITY_FILE_NAME);
+            match fs::remove_file(&activity_path).await {
+                Ok(()) => {
+                    pruned = pruned.saturating_add(1);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    tracing::warn!(
+                        run_id = %run.id,
+                        activity_path = %activity_path.display(),
+                        error = %err,
+                        "failed to prune expired chat run activity file"
+                    );
+                }
+            }
+        }
+
+        Ok(pruned)
     }
 
     pub async fn run_retention_janitor_for_workspace(
@@ -2962,6 +3123,58 @@ mod tests {
 
         assert_eq!(persisted.log_state, ChatRunLogState::Tail);
         assert_eq!(content, format!("{TAIL_PARTIAL_LINE_NOTICE}kept line 2\n"));
+    }
+
+    fn test_run_for_activity(run_dir: &Path, created_at: chrono::DateTime<Utc>) -> ChatRun {
+        ChatRun {
+            id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            session_agent_id: Uuid::new_v4(),
+            workspace_path: None,
+            run_index: 1,
+            run_dir: run_dir.to_string_lossy().to_string(),
+            input_path: None,
+            output_path: None,
+            raw_log_path: None,
+            meta_path: None,
+            log_state: ChatRunLogState::Tail,
+            artifact_state: ChatRunArtifactState::Full,
+            log_truncated: false,
+            log_capture_degraded: false,
+            pruned_at: None,
+            prune_reason: None,
+            retention_summary_json: None,
+            created_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_retention_prunes_only_expired_files() {
+        let temp = tempdir().expect("tempdir");
+        let old_run_dir = temp.path().join("old");
+        let fresh_run_dir = temp.path().join("fresh");
+        fs::create_dir_all(&old_run_dir).await.expect("old dir");
+        fs::create_dir_all(&fresh_run_dir).await.expect("fresh dir");
+        let old_activity = old_run_dir.join(RUN_ACTIVITY_FILE_NAME);
+        let fresh_activity = fresh_run_dir.join(RUN_ACTIVITY_FILE_NAME);
+        fs::write(&old_activity, "{}\n").await.expect("old activity");
+        fs::write(&fresh_activity, "{}\n")
+            .await
+            .expect("fresh activity");
+
+        let now = Utc::now();
+        let runs = vec![
+            test_run_for_activity(&old_run_dir, now - chrono::Duration::hours(25)),
+            test_run_for_activity(&fresh_run_dir, now - chrono::Duration::hours(23)),
+        ];
+
+        let pruned = ChatRunner::prune_activity_files_for_runs(&runs, now)
+            .await
+            .expect("prune activity");
+
+        assert_eq!(pruned, 1);
+        assert!(fs::metadata(&old_activity).await.is_err());
+        assert!(fs::metadata(&fresh_activity).await.is_ok());
     }
 
     #[test]

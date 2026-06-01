@@ -65,6 +65,32 @@ pub enum MentionStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ChatRunActivityLineType {
+    Thinking,
+    Tool,
+    Assistant,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChatRunActivityLine {
+    pub line_id: Uuid,
+    pub run_id: Uuid,
+    pub session_id: Uuid,
+    pub session_agent_id: Uuid,
+    pub agent_id: Uuid,
+    pub agent_name: String,
+    pub sequence: u64,
+    pub line_type: ChatRunActivityLineType,
+    pub stream_type: ChatStreamDeltaType,
+    pub content: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
@@ -87,6 +113,17 @@ pub enum ChatStreamEvent {
         content: String,
         delta: bool,
         is_final: bool,
+    },
+    AgentRunStarted {
+        session_id: Uuid,
+        session_agent_id: Uuid,
+        agent_id: Uuid,
+        agent_name: String,
+        run_id: Uuid,
+        started_at: Option<chrono::DateTime<Utc>>,
+    },
+    AgentActivityLine {
+        line: ChatRunActivityLine,
     },
     AgentState {
         session_agent_id: Uuid,
@@ -161,7 +198,7 @@ pub enum ChatStreamEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum ChatStreamDeltaType {

@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { useWorkspace } from '@/context/WorkspaceContext';
+import {
+  CHAT_MESSAGE_FONT_SIZE_OPTIONS,
+  useWorkspace,
+} from '@/context/WorkspaceContext';
 import { 
   User, CreditCard, Bell, Cpu, Route, Users, Github, Key, SlidersHorizontal, Keyboard, FlaskConical, Edit, Trash, Plus
 } from 'lucide-react';
@@ -80,6 +83,8 @@ export const SettingsWorkspace: React.FC = () => {
     showToast,
     activeSettingsTab,
     setActiveSettingsTab,
+    chatMessageFontSize,
+    setChatMessageFontSize,
     providersAsync,
     refreshProviders,
     configAsync,
@@ -95,6 +100,11 @@ export const SettingsWorkspace: React.FC = () => {
     soundEnabled: true,
   });
   const [notificationSound, setNotificationSound] = useState('soft-chime');
+  const chatMessageFontSizeOptions: DropdownSelectOption[] =
+    CHAT_MESSAGE_FONT_SIZE_OPTIONS.map((size) => ({
+      id: String(size),
+      label: t('settings.appearance.chatMessageFontSizeOption', { size }),
+    }));
 
   useEffect(() => {
     void mockFrontendApi.getSettingsOptions().then(setSettingsOptions);
@@ -208,6 +218,22 @@ export const SettingsWorkspace: React.FC = () => {
                   <span>{t('settings.appearance.lightThemeInverted')}</span>
                 </div>
               </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold text-[var(--ink)]">{t('settings.appearance.chatMessageFontSize')}</h4>
+              <div className="flex flex-col gap-3 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm leading-snug text-[var(--ink-subtle)]">{t('settings.appearance.chatMessageFontSizeDesc')}</p>
+                <DropdownSelect
+                  value={String(chatMessageFontSize)}
+                  options={chatMessageFontSizeOptions}
+                  showSearch={false}
+                  placeholder={t('settings.appearance.chatMessageFontSize')}
+                  onChange={(value) => setChatMessageFontSize(Number(value))}
+                  className="w-full shrink-0 sm:w-[160px]"
+                  maxPanelHeightClassName="max-h-[180px]"
+                />
               </div>
             </div>
           </div>

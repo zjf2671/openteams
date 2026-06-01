@@ -189,6 +189,10 @@
   "sidebar.switchProject": "Switch project",
   "sidebar.editProject": "Edit project",
   "sidebar.deleteProject": "Delete project",
+  "sidebar.deleteProjectConfirmTitle": "Delete project?",
+  "sidebar.deleteProjectConfirmDesc": "\"{name}\" will be permanently deleted. This action cannot be undone.",
+  "sidebar.deleteProjectFailed": "Failed to delete project",
+  "sidebar.deleting": "Deleting...",
   "sidebar.projectPath": "Project path",
   "sidebar.projectPathEmpty": "No path set",
   "sidebar.projectCreateFailed": "Project creation failed",
@@ -281,6 +285,9 @@
   "settings.appearance.theme": "Theme",
   "settings.appearance.darkThemeDefault": "Dark theme (Default)",
   "settings.appearance.lightThemeInverted": "Light theme (Inverted)",
+  "settings.appearance.chatMessageFontSize": "Message font size",
+  "settings.appearance.chatMessageFontSizeDesc": "Controls user message text and Agent reply body size.",
+  "settings.appearance.chatMessageFontSizeOption": "{size}px",
   "settings.account.title": "Account settings",
   "settings.account.desc": "Manage developer profiling configurations.",
   "settings.account.emailEndpoint": "Email endpoint",
@@ -342,5 +349,11 @@
   "settings.notifications.sound.softChime": "Soft chime",
   "settings.notifications.sound.brightPing": "Bright ping",
   "settings.notifications.sound.lowBell": "Low bell",
-  "settings.notifications.sound.none": "None"
+  "settings.notifications.sound.none": "None",
+  "agentActivity.running": "Agent is working on the task",
+  "agentActivity.toggle": "Thinking details",
+  "agentActivity.loading": "Loading thinking details...",
+  "agentActivity.cleaned": "Thinking details were cleaned up. The final reply is still available.",
+  "agentActivity.error": "Thinking details could not be loaded.",
+  "agentActivity.empty": "No thinking details yet."
 }

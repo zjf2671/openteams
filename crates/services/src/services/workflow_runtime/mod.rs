@@ -42,7 +42,7 @@ use executors::{
         SpawnedChild, StandardCodingAgentExecutor,
     },
     logs::{
-        ActionType, FileChange, NormalizedEntry, NormalizedEntryType, ToolResult, ToolStatus,
+        ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus,
         utils::patch::extract_normalized_entry_from_patch,
     },
     model_sync::with_model,

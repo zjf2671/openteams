@@ -16,6 +16,7 @@ import type {
   BackendChatSession,
   BackendChatSessionAgent,
   ChatSessionAgentState,
+  JsonValue,
   Member,
   Message,
   Provider,
@@ -84,6 +85,21 @@ const formatRelativeTime = (iso: string, now: Date = new Date()): string => {
   return `${day}d ago`;
 };
 
+const jsonObject = (
+  value: JsonValue | undefined,
+): Record<string, JsonValue> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value;
+};
+
+const runIdFromMeta = (meta: JsonValue | undefined): string | undefined => {
+  const obj = jsonObject(meta);
+  const runId = obj?.run_id;
+  return typeof runId === 'string' ? runId : undefined;
+};
+
 interface MapMessageOptions {
   /** Lookup table of agent_id -> agent name (for sender label/avatar). */
   agentNamesById?: Record<string, string>;
@@ -119,8 +135,7 @@ export const mapMessage = (
       'agent';
     sender = agentName.startsWith('@') ? agentName : `@${agentName}`;
     avatar = monogramFromName(agentName);
-    const m =
-      backend.sender_id && opts.agentModelsById?.[backend.sender_id];
+    const m = backend.sender_id && opts.agentModelsById?.[backend.sender_id];
     model = m ?? undefined;
   }
 
@@ -132,6 +147,7 @@ export const mapMessage = (
     text: backend.content,
     isUser: isUser || undefined,
     model,
+    runId: runIdFromMeta(backend.meta),
   };
 };
 

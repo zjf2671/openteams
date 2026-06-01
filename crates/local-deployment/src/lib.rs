@@ -152,6 +152,17 @@ impl Deployment for LocalDeployment {
             .run_startup_retention_janitor()
             .await
             .map_err(|err| DeploymentError::Other(err.into()))?;
+        {
+            let chat_runner = chat_runner.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
+                    if let Err(err) = chat_runner.run_activity_retention_janitor().await {
+                        tracing::warn!(?err, "Chat run activity retention janitor failed");
+                    }
+                }
+            });
+        }
 
         if let Err(err) =
             services::services::workflow_runtime::run_workflow_retention_janitor(&db.pool).await

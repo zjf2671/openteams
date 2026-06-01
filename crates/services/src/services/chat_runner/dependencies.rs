@@ -3,6 +3,7 @@ use crate::services::config::preset_loader::PresetLoader;
 use crate::services::{
     analytics::AnalyticsService,
     analytics_events::{AnalyticsProjector, DomainEvent},
+    agent_activity_stream::{AgentActivityEntryLine, AgentActivityStreamState},
     chat::{self, ChatServiceError, is_workflow_chat_input_mode},
     config::{self, UiLanguage},
     native_skills::{
@@ -22,6 +23,8 @@ const RUN_RECORDS_DIR_NAME: &str = "run_records";
 const SHARED_PROTOCOL_DIR_NAME: &str = "protocol";
 const SHARED_BLACKBOARD_FILE_NAME: &str = "shared_blackboard.jsonl";
 const WORK_RECORDS_FILE_NAME: &str = "work_records.jsonl";
+const RUN_ACTIVITY_FILE_NAME: &str = "activity.jsonl";
+const RUN_ACTIVITY_RETENTION_HOURS: i64 = 24;
 const RESERVED_USER_HANDLE: &str = "you";
 const PROTOCOL_SEND_INTENT_VALUES: &[&str] = &["request", "reply", "notify", "blocker", "confirm"];
 const EXECUTOR_PROFILE_VARIANT_KEY: &str = "executor_profile_variant";

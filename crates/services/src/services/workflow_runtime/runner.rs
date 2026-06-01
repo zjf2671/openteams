@@ -19,12 +19,6 @@ fn clear_running_step(step_id: Uuid) {
     STEP_CANCEL_REQUESTS.remove(&step_id);
 }
 
-struct WorkflowRuntimeEntryLine {
-    stream_type: ChatStreamDeltaType,
-    content: String,
-    immediate: bool,
-}
-
 pub async fn run_workflow_agent_prompt(
     db: &DBService,
     session: &ChatSession,

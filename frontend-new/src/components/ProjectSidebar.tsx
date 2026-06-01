@@ -9,8 +9,11 @@ import React, {
 import { createPortal } from "react-dom";
 import {
   Activity,
+  AlertTriangle,
+  ArrowRightLeft,
   BookOpen,
   Bot,
+  Check,
   ChevronDown,
   ChevronRight,
   CircleDot,
@@ -23,9 +26,11 @@ import {
   Inbox,
   Network,
   MoreHorizontal,
+  Pencil,
   Plus,
   PlusCircle,
   Settings2,
+  Trash2,
   Users,
   X,
   type LucideIcon,
@@ -281,6 +286,10 @@ export function ProjectSidebar({
   >(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [deletingProjectDraft, setDeletingProjectDraft] =
+    useState<SidebarProjectDisplay | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteInFlight, setDeleteInFlight] = useState(false);
   const displayedProjects = useMemo(
     () =>
       projects.length > 0
@@ -472,6 +481,39 @@ export function ProjectSidebar({
     setWorkspaceBrowserOpen(false);
     setCreateFormOpen(true);
     closeProjectMenus();
+  };
+
+  const startDeleteProject = (project: SidebarProjectDisplay) => {
+    setDeletingProjectDraft(project);
+    setDeleteError(null);
+    closeProjectMenus();
+  };
+
+  const closeDeleteDialog = () => {
+    if (deleteInFlight) return;
+    setDeletingProjectDraft(null);
+    setDeleteError(null);
+  };
+
+  const confirmDeleteProject = async () => {
+    if (!onDeleteProject || !deletingProjectDraft) return;
+    setDeleteInFlight(true);
+    setDeleteError(null);
+    try {
+      await onDeleteProject(deletingProjectDraft.id);
+      setDeletingProjectDraft(null);
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error
+          ? error.message
+          : translate(
+              "sidebar.deleteProjectFailed",
+              "Failed to delete project",
+            ),
+      );
+    } finally {
+      setDeleteInFlight(false);
+    }
   };
 
   const resetProjectForm = () => {
@@ -696,7 +738,11 @@ export function ProjectSidebar({
                         </span>
                       )}
                     </span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+                    {project.id === activeProject?.id ? (
+                      <Check className="h-3.5 w-3.5 shrink-0 text-[var(--success)]" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+                    )}
                   </button>
                 ))}
               </div>
@@ -727,18 +773,23 @@ export function ProjectSidebar({
           createPortal(
             <div
               ref={projectActionMenuRef}
-              className="fixed z-[1001] w-[180px] rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-3)] p-1"
+              className="fixed z-[1001] w-[200px] overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--surface-3)] shadow-none"
               style={{
                 left: projectActionMenu.left,
                 top: projectActionMenu.top,
               }}
             >
-              <div className="px-2 py-2 border-b border-[var(--hairline)] mb-0.5">
-                <div className="truncate text-[13px] font-medium text-[var(--ink)]">
-                  {translate("sidebar.projectPath", "Project path")}
+              <div className="border-b border-[var(--hairline)] px-3 py-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--mono-border)] bg-[var(--mono-bg)] font-mono text-[8px] font-medium text-[var(--ink-muted)]">
+                    {actionMenuProject.monogram}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]">
+                    {actionMenuProject.label}
+                  </span>
                 </div>
                 <div
-                  className="mt-1 truncate font-mono text-[12px] text-[var(--ink-tertiary)]"
+                  className="mt-1.5 truncate font-mono text-[11px] text-[var(--ink-tertiary)]"
                   title={
                     actionMenuProject.repository ||
                     translate("sidebar.projectPathEmpty", "No path set")
@@ -748,38 +799,39 @@ export function ProjectSidebar({
                     translate("sidebar.projectPathEmpty", "No path set")}
                 </div>
               </div>
-              <button
-                type="button"
-                className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13px] text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)] transition"
-                onClick={() => {
-                  onProjectSelect?.(actionMenuProject.id);
-                  closeProjectMenus();
-                }}
-              >
-                <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-tertiary)]" />
-                {translate("sidebar.switchProject", "Switch project")}
-              </button>
-              <button
-                type="button"
-                className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13px] text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)] transition"
-                onClick={() => startEditProject(actionMenuProject)}
-              >
-                <Settings2 className="h-3 w-3 shrink-0 text-[var(--ink-tertiary)]" />
-                {translate("sidebar.editProject", "Edit project")}
-              </button>
-              <div className="my-0.5 border-t border-[var(--hairline)]" />
-              <button
-                type="button"
-                className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[13px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition"
-                onClick={async () => {
-                  if (!onDeleteProject) return;
-                  await onDeleteProject(actionMenuProject.id);
-                  closeProjectMenus();
-                }}
-              >
-                <X className="h-3 w-3 shrink-0" />
-                {translate("sidebar.deleteProject", "Delete project")}
-              </button>
+              <div className="p-1">
+                {actionMenuProject.id !== activeProject?.id && (
+                  <button
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-[var(--ink-muted)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)] transition"
+                    onClick={() => {
+                      onProjectSelect?.(actionMenuProject.id);
+                      closeProjectMenus();
+                    }}
+                  >
+                    <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+                    {translate("sidebar.switchProject", "Switch project")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-[var(--ink-muted)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)] transition"
+                  onClick={() => startEditProject(actionMenuProject)}
+                >
+                  <Pencil className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+                  {translate("sidebar.editProject", "Edit project")}
+                </button>
+              </div>
+              <div className="border-t border-[var(--hairline)] p-1">
+                <button
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-red-400 hover:bg-red-500/10 hover:text-red-300 transition"
+                  onClick={() => startDeleteProject(actionMenuProject)}
+                >
+                  <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                  {translate("sidebar.deleteProject", "Delete project")}
+                </button>
+              </div>
             </div>,
             document.body,
           )}
@@ -1050,6 +1102,84 @@ export function ProjectSidebar({
                 </div>
               </form>
             </section>
+          </div>,
+          document.body,
+        )}
+
+      {deletingProjectDraft &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[1002] flex items-center justify-center p-4"
+            role="presentation"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeDeleteDialog();
+            }}
+          >
+            <div
+              className="absolute inset-0 bg-black/60 backdrop-blur-xs"
+              onClick={closeDeleteDialog}
+            />
+            <div
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="delete-project-dialog-title"
+              aria-describedby="delete-project-dialog-desc"
+              className="relative w-full max-w-md overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--canvas)] select-none"
+            >
+              <div className="p-5">
+                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-red-500/15">
+                  <AlertTriangle className="h-5 w-5 text-red-400" />
+                </div>
+                <p
+                  id="delete-project-dialog-title"
+                  className="text-base font-semibold text-[var(--ink)] tracking-tight"
+                >
+                  {translate(
+                    "sidebar.deleteProjectConfirmTitle",
+                    "Delete project?",
+                  )}
+                </p>
+                <p
+                  id="delete-project-dialog-desc"
+                  className="mt-1 text-xs leading-relaxed text-[var(--ink-subtle)]"
+                >
+                  {translate(
+                    "sidebar.deleteProjectConfirmDesc",
+                    `"${deletingProjectDraft.label}" will be permanently deleted. This action cannot be undone.`,
+                    { name: deletingProjectDraft.label },
+                  )}
+                </p>
+                {deleteError && (
+                  <p className="mt-2 text-xs text-red-400">{deleteError}</p>
+                )}
+              </div>
+              <div className="flex items-center justify-between border-t border-[var(--hairline)] bg-[var(--surface-1)] px-5 py-3">
+                <span className="font-mono text-[10px] text-[var(--ink-tertiary)]">
+                  {translate("escToCancel", "Esc to cancel")}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-md border border-[var(--hairline-strong)] px-3 py-1.5 text-xs font-medium text-[var(--ink-muted)] hover:bg-[var(--surface-3)] transition"
+                    onClick={closeDeleteDialog}
+                    disabled={deleteInFlight}
+                  >
+                    {translate("cancel", "Cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex cursor-pointer items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 transition disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => void confirmDeleteProject()}
+                    disabled={deleteInFlight}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {deleteInFlight
+                      ? translate("sidebar.deleting", "Deleting...")
+                      : translate("sidebar.deleteProject", "Delete project")}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>,
           document.body,
         )}

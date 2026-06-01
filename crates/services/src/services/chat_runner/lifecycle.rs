@@ -919,6 +919,17 @@ impl ChatRunner {
                 started_at: Some(session_agent.updated_at),
             },
         );
+        self.emit(
+            session_id,
+            ChatStreamEvent::AgentRunStarted {
+                session_id,
+                session_agent_id,
+                agent_id,
+                agent_name: agent.name.clone(),
+                run_id,
+                started_at: Some(session_agent.updated_at),
+            },
+        );
 
         workflow_analytics::track_agent_state_changed(
             self.analytics_service(),

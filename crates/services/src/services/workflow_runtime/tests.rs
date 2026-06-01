@@ -12,6 +12,7 @@ mod tests {
             to_workflow_wire_value,
         },
     };
+    use executors::logs::{FileChange, ToolResult};
     use sqlx::types::Json;
 
     use super::*;

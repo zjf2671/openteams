@@ -117,6 +117,7 @@ const agentMsg: BackendChatMessage = {
   sender_type: 'agent',
   sender_id: 'agent-1',
   content: 'reply',
+  meta: { run_id: 'run-1' },
   created_at: '2025-12-31T23:59:30Z',
 };
 const a = mapMessage(agentMsg, {
@@ -128,6 +129,7 @@ eq('agent sender prefixed', a.sender, '@frontend');
 eq('agent avatar derived', a.avatar, 'FR');
 eq('agent model carried through', a.model, 'Claude 3.5 Sonnet');
 eq('agent not isUser', a.isUser, undefined);
+eq('agent run id mapped from meta', a.runId, 'run-1');
 eq('relative time 30s', a.time, '30s ago');
 
 eq(

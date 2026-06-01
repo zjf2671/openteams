@@ -45,6 +45,56 @@ export interface Message {
   model?: string;
   isUser?: boolean;
   isThinking?: boolean;
+  isAgentRunning?: boolean;
+  runId?: string;
+  activityLines?: ChatRunActivityLine[];
+  activityLoadState?: ActivityLoadState;
+}
+
+export type ActivityLoadState =
+  | 'idle'
+  | 'loading'
+  | 'loaded'
+  | 'error'
+  | 'pruned';
+
+export type ChatRunActivityLineType =
+  | 'thinking'
+  | 'tool'
+  | 'assistant'
+  | 'error';
+
+export type ChatStreamDeltaType = 'assistant' | 'thinking' | 'error';
+
+export interface ChatRunActivityLine {
+  line_id: string;
+  run_id: string;
+  session_id: string;
+  session_agent_id: string;
+  agent_id: string;
+  agent_name: string;
+  sequence: number;
+  line_type: ChatRunActivityLineType;
+  stream_type: ChatStreamDeltaType;
+  content: string;
+  created_at: string;
+}
+
+export interface ChatRunActivityResponse {
+  run_id: string;
+  lines: ChatRunActivityLine[];
+  next_offset: number | null;
+  is_pruned: boolean;
+}
+
+export interface ChatRunRetentionInfo {
+  run_id: string;
+  session_agent_id: string;
+  created_at: string;
+}
+
+export interface ChatRunRetentionListResponse {
+  runs: ChatRunRetentionInfo[];
 }
 
 export interface Provider {
