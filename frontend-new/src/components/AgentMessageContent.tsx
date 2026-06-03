@@ -165,6 +165,7 @@ export const AgentMessageContent: React.FC<AgentMessageContentProps> = ({
           lines={visibleActivityLines}
           state={loadState}
           labels={panelLabels}
+          translate={t}
         />
       )}
 

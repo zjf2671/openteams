@@ -262,6 +262,10 @@ check(
 check(
   "activity panel uses compact Codex-like line rows",
   activityPanelSource.includes("labels.cleaned") &&
+    activityPanelSource.includes("formatAgentActivityLines") &&
+    activityPanelSource.includes("renderSimpleBoldMarkdown") &&
+    activityPanelSource.includes('<strong key={`bold-${partIndex}`}') &&
+    messageContentSource.includes("translate={t}") &&
     activityPanelSource.includes("data-line-type={line.line_type}") &&
     activityPanelSource.includes('line_type === "tool"') &&
     activityPanelSource.includes("text-[12px]") &&

@@ -18,6 +18,11 @@ import type {
   BackendChatSession,
   BackendChatSessionAgent,
   BackendChatSkill,
+  AgentRuntimeDiagnostics,
+  AgentRuntimeListResponse,
+  AgentRuntimeRefreshResponse,
+  AgentRuntimeStatus,
+  BaseCodingAgent,
   ChatAgentSkillAssignment,
   ChatRunActivityResponse,
   ChatRunRetentionListResponse,
@@ -37,9 +42,11 @@ import type {
   InterruptStepResponse,
   OpenInExplorerResponse,
   PauseAllResponse,
+  ProfilesContent,
   ResolveActionResponse,
   ResumeExecutionResponse,
   SessionWorkspacesResponse,
+  UpdateAgentRuntimeConfig,
   UpdateAgentSkill,
   UpdateChatAgent,
   UpdateChatSession,
@@ -97,6 +104,52 @@ export const systemApi = {
       body: JSON.stringify(config),
     });
     return handleApiResponse<Config>(r);
+  },
+};
+
+export const agentRuntimeApi = {
+  list: async (): Promise<AgentRuntimeListResponse> => {
+    const r = await makeRequest("/api/agents/runtime", { cache: "no-store" });
+    return handleApiResponse<AgentRuntimeListResponse>(r);
+  },
+  refresh: async (): Promise<AgentRuntimeRefreshResponse> => {
+    const r = await makeRequest("/api/agents/runtime/refresh", {
+      method: "POST",
+    });
+    return handleApiResponse<AgentRuntimeRefreshResponse>(r);
+  },
+  updateConfig: async (
+    runner: BaseCodingAgent,
+    data: UpdateAgentRuntimeConfig,
+  ): Promise<AgentRuntimeStatus> => {
+    const r = await makeRequest(
+      `/api/agents/runtime/${encodeURIComponent(runner)}`,
+      { method: "PATCH", body: jsonBody(data) },
+    );
+    return handleApiResponse<AgentRuntimeStatus>(r);
+  },
+  getDiagnostics: async (
+    runner: BaseCodingAgent,
+  ): Promise<AgentRuntimeDiagnostics> => {
+    const r = await makeRequest(
+      `/api/agents/runtime/${encodeURIComponent(runner)}/diagnostics`,
+      { cache: "no-store" },
+    );
+    return handleApiResponse<AgentRuntimeDiagnostics>(r);
+  },
+};
+
+export const profilesApi = {
+  load: async (): Promise<ProfilesContent> => {
+    const r = await makeRequest("/api/profiles", { cache: "no-store" });
+    return handleApiResponse<ProfilesContent>(r);
+  },
+  save: async (content: string): Promise<string> => {
+    const r = await makeRequest("/api/profiles", {
+      method: "PUT",
+      body: content,
+    });
+    return handleApiResponse<string>(r);
   },
 };
 
@@ -929,6 +982,7 @@ export const projectApi = {
 
 export const api = {
   system: systemApi,
+  agentRuntime: agentRuntimeApi,
   filesystem: filesystemApi,
   chatSessions: chatSessionsApi,
   chatMessages: chatMessagesApi,
@@ -940,4 +994,5 @@ export const api = {
   workflow: workflowApi,
   cliConfig: cliConfigApi,
   buildStats: buildStatsApi,
+  profiles: profilesApi,
 };

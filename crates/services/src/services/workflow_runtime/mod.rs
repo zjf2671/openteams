@@ -45,7 +45,6 @@ use executors::{
         ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus,
         utils::patch::extract_normalized_entry_from_patch,
     },
-    model_sync::with_model,
     profile::{ExecutorConfigs, ExecutorProfileId, canonical_variant_key},
 };
 use futures::StreamExt;
@@ -63,6 +62,7 @@ use super::{
     chat_runner::{ChatRunner, ChatStreamDeltaType},
     config::UiLanguage,
 };
+use crate::services::agent_runtime::apply_agent_runtime_config;
 
 include!("dependencies.rs");
 include!("types.rs");

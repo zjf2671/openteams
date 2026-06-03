@@ -9,10 +9,12 @@ import { RoutingPage } from "@/pages/RoutingPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { TasksPage } from "@/pages/TasksPage";
 import { BuildStatsPage } from "@/pages/BuildStatsPage";
+import { AgentsPage } from "@/pages/AgentsPage";
 import { TeamPage } from "@/pages/TeamPage";
 import {
   Activity,
   BookOpen,
+  Bot,
   Github,
   Menu,
   Network,
@@ -62,6 +64,7 @@ const pageTabConfig: Record<
   github: { label: "GitHub", icon: Github },
   providers: { label: "Settings", icon: Settings2 },
   tokens: { label: "Skill library", icon: BookOpen },
+  agents: { label: "Agents", icon: Bot },
   "build-stats": { label: "Build Statistics", icon: Activity },
 };
 
@@ -247,6 +250,8 @@ function WorkspaceLayout() {
             <DialogManager preview />
           </div>
         );
+      case "agents":
+        return <AgentsPage />;
       case "workspace":
       default:
         return (
@@ -655,7 +660,7 @@ function WorkspaceLayout() {
 
           <main
             className={`flex-1 min-h-0 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] ${
-              activeAppPage === "providers" || activeAppPage === "build-stats"
+              activeAppPage === "providers" || activeAppPage === "build-stats" || activeAppPage === "agents"
                 ? "overflow-hidden p-0"
                 : "overflow-y-auto p-4 md:p-6"
             }`}

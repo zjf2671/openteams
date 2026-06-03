@@ -1,4 +1,5 @@
 pub mod agent_activity_stream;
+pub mod agent_runtime;
 pub mod agent_skill_policy;
 pub mod analytics;
 pub mod analytics_events;

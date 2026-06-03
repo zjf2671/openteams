@@ -191,17 +191,18 @@ async fn run_workflow_agent_prompt_inner(
         ExecutorConfigs::get_cached().get_coding_agent_or_default(&executor_profile_id);
     executor.use_approvals(Arc::new(NoopExecutorApprovalService));
 
-    if let Some(model_name) = &agent.model_name
-        && let Some(executor_with_model) = with_model(&executor, model_name)
-    {
-        executor = executor_with_model;
-    }
-
     let repo_context = RepoContext::new(workspace_path.clone(), Vec::new());
     let mut env = ExecutionEnv::new(repo_context, false, String::new());
     env.insert("VK_WORKFLOW_SESSION_ID", session.id.to_string());
     env.insert("VK_WORKFLOW_AGENT_ID", agent.id.to_string());
     env.insert("VK_WORKFLOW_SESSION_AGENT_ID", session_agent.id.to_string());
+    apply_agent_runtime_config(
+        executor_profile_id.executor,
+        &mut executor,
+        agent.model_name.as_deref(),
+        &mut env,
+    )
+    .map_err(|err| WorkflowRuntimeError::Io(std::io::Error::other(err.to_string())))?;
 
     let mut spawned = match resume_session_id {
         Some(session_id) => {

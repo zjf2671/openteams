@@ -618,6 +618,13 @@ export const mockShellOptions: ShellOptionsMock = {
       targetPage: 'tokens',
     },
     {
+      id: 'agent-runtime',
+      label: 'Agents',
+      icon: 'bot',
+      helper: 'Configure local agent runtimes and diagnostics.',
+      targetPage: 'agents',
+    },
+    {
       id: 'settings',
       label: 'Settings',
       icon: 'settings',

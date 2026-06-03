@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Search } from 'lucide-react';
 
 export interface DropdownSelectOption {
@@ -47,7 +48,7 @@ const triggerClass =
   'flex w-full items-center gap-2 rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2 text-[14px] text-[var(--ink)] cursor-pointer hover:border-[var(--hairline-strong)] disabled:cursor-not-allowed disabled:opacity-60 transition';
 
 const panelClass =
-  'absolute left-0 top-full mt-1 w-full max-w-[280px] overflow-hidden rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-3)] z-30';
+  'fixed overflow-hidden rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-3)] shadow-[0_14px_40px_rgba(0,0,0,0.18)] z-[1000]';
 
 const searchClass =
   'flex items-center gap-2 border-b border-[var(--hairline)] px-3 py-2 text-[14px] text-[var(--ink-tertiary)]';
@@ -77,19 +78,52 @@ export function DropdownSelect(props: DropdownSelectProps) {
     maxPanelHeightClassName = 'max-h-[160px]',
   } = props;
   const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(defaultOpen);
   const [searchText, setSearchText] = useState('');
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({
+    left: 0,
+    top: 0,
+    width: 280,
+  });
   const isMultiple = props.selectionMode === 'multiple';
+
+  const updatePanelPosition = () => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    setPanelStyle({
+      left: rect.left,
+      top: rect.bottom + 4,
+      width: rect.width,
+    });
+  };
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        !rootRef.current?.contains(target) &&
+        !panelRef.current?.contains(target)
+      ) {
         setOpen(false);
       }
     };
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+
+    updatePanelPosition();
+    window.addEventListener('resize', updatePanelPosition);
+    window.addEventListener('scroll', updatePanelPosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePanelPosition);
+      window.removeEventListener('scroll', updatePanelPosition, true);
+    };
+  }, [open]);
 
   const selectedIds = isMultiple
     ? new Set(props.values)
@@ -143,6 +177,91 @@ export function DropdownSelect(props: DropdownSelectProps) {
     setOpen(false);
   };
 
+  const panel = (
+    <div
+      ref={panelRef}
+      className={`${panelClass} ${panelClassName ?? ''}`}
+      style={panelStyle}
+    >
+      {showSearch && (
+        <div className={searchClass}>
+          <Search className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+          <input
+            className="flex-1 border-none bg-transparent text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text"
+            placeholder={searchPlaceholder}
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+          />
+        </div>
+      )}
+
+      <div
+        role="listbox"
+        aria-multiselectable={isMultiple || undefined}
+        className={`overflow-y-auto py-1 divide-y divide-[var(--hairline)] ${maxPanelHeightClassName}`}
+      >
+        {groupedOptions.length === 0 ? (
+          <div className="px-3 py-2 text-[14px] text-[var(--ink-tertiary)]">
+            {emptyLabel}
+          </div>
+        ) : (
+          groupedOptions.map((group) => (
+            <div key={group.name || 'ungrouped'} className="py-1">
+              {group.name && (
+                <div className="px-3 py-1 text-[13px] font-medium uppercase tracking-[0.4px] text-[var(--ink-tertiary)]">
+                  {group.name}
+                </div>
+              )}
+              {group.options.map((option) => {
+                const active = selectedIds.has(option.id);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    disabled={option.disabled}
+                    onClick={() => handleOptionClick(option)}
+                    className={`${optionClass} ${
+                      active
+                        ? 'bg-[var(--surface-1)] font-medium text-[var(--ink)]'
+                        : 'text-[var(--ink)]'
+                    }`}
+                  >
+                    {option.leading}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14px] font-medium leading-tight">
+                        {option.label}
+                      </span>
+                      {option.description && (
+                        <span className="mt-0.5 block truncate font-mono text-[13px] leading-none text-[var(--ink-tertiary)]">
+                          {option.description}
+                        </span>
+                      )}
+                    </span>
+                    {active ? (
+                      <Check className="h-3.5 w-3.5 shrink-0 text-[var(--success)]" />
+                    ) : option.hint ? (
+                      <kbd className="rounded-xs bg-[var(--surface-4)] px-1 font-mono text-[12px] text-[var(--ink-tertiary)]">
+                        {option.hint}
+                      </kbd>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))
+        )}
+      </div>
+
+      {footer && (
+        <div className="flex items-center gap-3 border-t border-[var(--hairline)] bg-[var(--surface-4)] px-3 py-1.5 text-[13px] font-mono text-[var(--ink-tertiary)]">
+          {footer}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       ref={rootRef}
@@ -156,7 +275,10 @@ export function DropdownSelect(props: DropdownSelectProps) {
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (!open) updatePanelPosition();
+          setOpen((current) => !current);
+        }}
         className={`${triggerClass} ${open ? 'border-[var(--primary)] text-[var(--ink)]' : ''}`}
       >
         {triggerIcon}
@@ -164,86 +286,10 @@ export function DropdownSelect(props: DropdownSelectProps) {
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
       </button>
 
-      {open && (
-        <div className={`${panelClass} ${panelClassName ?? ''}`}>
-          {showSearch && (
-            <div className={searchClass}>
-              <Search className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
-              <input
-                className="flex-1 border-none bg-transparent text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text"
-                placeholder={searchPlaceholder}
-                value={searchText}
-                onChange={(event) => setSearchText(event.target.value)}
-              />
-            </div>
-          )}
-
-          <div
-            role="listbox"
-            aria-multiselectable={isMultiple || undefined}
-            className={`overflow-y-auto py-1 divide-y divide-[var(--hairline)] ${maxPanelHeightClassName}`}
-          >
-            {groupedOptions.length === 0 ? (
-              <div className="px-3 py-2 text-[14px] text-[var(--ink-tertiary)]">
-                {emptyLabel}
-              </div>
-            ) : (
-              groupedOptions.map((group) => (
-                <div key={group.name || 'ungrouped'} className="py-1">
-                  {group.name && (
-                    <div className="px-3 py-1 text-[13px] font-medium uppercase tracking-[0.4px] text-[var(--ink-tertiary)]">
-                      {group.name}
-                    </div>
-                  )}
-                  {group.options.map((option) => {
-                    const active = selectedIds.has(option.id);
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        role="option"
-                        aria-selected={active}
-                        disabled={option.disabled}
-                        onClick={() => handleOptionClick(option)}
-                        className={`${optionClass} ${
-                          active
-                            ? 'bg-[var(--surface-1)] font-medium text-[var(--ink)]'
-                            : 'text-[var(--ink)]'
-                        }`}
-                      >
-                        {option.leading}
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[14px] font-medium leading-tight">
-                            {option.label}
-                          </span>
-                          {option.description && (
-                            <span className="mt-0.5 block truncate font-mono text-[13px] leading-none text-[var(--ink-tertiary)]">
-                              {option.description}
-                            </span>
-                          )}
-                        </span>
-                        {active ? (
-                          <Check className="h-3.5 w-3.5 shrink-0 text-[var(--success)]" />
-                        ) : option.hint ? (
-                          <kbd className="rounded-xs bg-[var(--surface-4)] px-1 font-mono text-[12px] text-[var(--ink-tertiary)]">
-                            {option.hint}
-                          </kbd>
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              ))
-            )}
-          </div>
-
-          {footer && (
-            <div className="flex items-center gap-3 border-t border-[var(--hairline)] bg-[var(--surface-4)] px-3 py-1.5 text-[13px] font-mono text-[var(--ink-tertiary)]">
-              {footer}
-            </div>
-          )}
-        </div>
-      )}
+      {open &&
+        (typeof document === 'undefined'
+          ? panel
+          : createPortal(panel, document.body))}
     </div>
   );
 }

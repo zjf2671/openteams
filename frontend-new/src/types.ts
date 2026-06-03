@@ -146,6 +146,7 @@ export type SidebarNavigationTarget =
   | 'github'
   | 'providers'
   | 'tokens'
+  | 'agents'
   | 'build-stats';
 
 export interface SidebarProjectDisplay {
@@ -406,6 +407,100 @@ export interface InstalledNativeSkill {
 
 export interface UpdateNativeSkillRequest {
   enabled: boolean;
+}
+
+// ----- Agent runtime ---------------------------------------------------------
+
+export type BaseCodingAgent =
+  | 'CLAUDE_CODE'
+  | 'AMP'
+  | 'GEMINI'
+  | 'CODEX'
+  | 'OPENCODE'
+  | 'OPEN_TEAMS_CLI'
+  | 'CURSOR_AGENT'
+  | 'QWEN_CODE'
+  | 'COPILOT'
+  | 'DROID'
+  | 'KIMI_CODE';
+
+export type AvailabilityInfo =
+  | { type: 'LOGIN_DETECTED'; last_auth_timestamp: bigint }
+  | { type: 'INSTALLATION_FOUND' }
+  | { type: 'NOT_FOUND' };
+
+export type AgentRunMode = 'auto' | 'local' | 'disabled';
+
+export interface UpdateAgentRuntimeConfig {
+  run_mode: AgentRunMode | null;
+  env_json: Record<string, string> | null;
+  model_override: string | null;
+}
+
+export interface AgentRuntimeEnvSummary {
+  key: string;
+  value: string;
+}
+
+export interface AgentRuntimeStatus {
+  runner_type: BaseCodingAgent;
+  installed: boolean;
+  executable: boolean;
+  availability: AvailabilityInfo;
+  discovered_models: string[];
+  version: string | null;
+  last_checked_at: string | null;
+  last_error: string | null;
+  run_mode: AgentRunMode;
+  env_summary: AgentRuntimeEnvSummary[];
+  model_override: string | null;
+}
+
+export interface AgentRuntimeListResponse {
+  runners: AgentRuntimeStatus[];
+}
+
+export interface AgentRuntimeRefreshError {
+  runner_type: BaseCodingAgent;
+  message: string;
+  preserved_models: string[];
+}
+
+export interface AgentRuntimeRefreshResponse {
+  runners: AgentRuntimeStatus[];
+  errors: AgentRuntimeRefreshError[];
+}
+
+export interface AgentRuntimeDiagnostics {
+  runner_type: BaseCodingAgent;
+  installed: boolean;
+  executable: boolean;
+  availability: AvailabilityInfo;
+  config_path: string;
+  install_indicator_path: string | null;
+  discovered_models: string[];
+  version: string | null;
+  last_checked_at: string | null;
+  last_error: string | null;
+  run_mode: AgentRunMode;
+  env_summary: AgentRuntimeEnvSummary[];
+  model_override: string | null;
+}
+
+export type ExecutorVariantConfig = Record<
+  string,
+  Record<string, JsonValue | undefined> | undefined
+>;
+
+export type ExecutorConfig = Record<string, ExecutorVariantConfig | undefined>;
+
+export interface ExecutorConfigs {
+  executors: Partial<Record<BaseCodingAgent, ExecutorConfig>>;
+}
+
+export interface ProfilesContent {
+  content: string;
+  path: string;
 }
 
 // ----- Workflow --------------------------------------------------------------

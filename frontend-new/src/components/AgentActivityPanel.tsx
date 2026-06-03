@@ -1,6 +1,24 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Loader2, Terminal, ChevronRight } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  ChevronRight,
+  ClipboardList,
+  FilePenLine,
+  FileText,
+  Globe,
+  ListChecks,
+  Loader2,
+  Search,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 import { ScrollArea } from "@/components/ScrollArea";
+import {
+  formatAgentActivityLines,
+  type AgentActivityDisplayRow,
+  type AgentActivityToolKind,
+  type AgentActivityTranslator,
+} from "@/lib/agentActivityFormatter";
 import type { ActivityLoadState, ChatRunActivityLine } from "@/types";
 
 interface AgentActivityPanelLabels {
@@ -14,9 +32,78 @@ interface AgentActivityPanelProps {
   lines?: ChatRunActivityLine[];
   state?: ActivityLoadState;
   labels: AgentActivityPanelLabels;
+  translate?: AgentActivityTranslator;
 }
 
-const LineItem: React.FC<{ line: ChatRunActivityLine }> = ({ line }) => {
+const toolIconByKind: Record<
+  AgentActivityToolKind,
+  React.ComponentType<{ className?: string }>
+> = {
+  command: Terminal,
+  file_read: FileText,
+  file_edit: FilePenLine,
+  search: Search,
+  web_fetch: Globe,
+  tool: Wrench,
+  mcp_tool: Wrench,
+  task: ListChecks,
+  plan: ClipboardList,
+  activity: Activity,
+};
+
+const toolToneClass = (line: AgentActivityDisplayRow): string => {
+  switch (line.toolStatus) {
+    case "failed":
+    case "denied":
+    case "timed_out":
+      return "text-rose-500/80";
+    case "completed":
+      return "text-[var(--ink)]";
+    default:
+      return "text-[var(--ink-subtle)]";
+  }
+};
+
+const renderSimpleBoldMarkdown = (content: string): React.ReactNode => {
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let partIndex = 0;
+
+  while (cursor < content.length) {
+    const start = content.indexOf("**", cursor);
+    if (start < 0) {
+      parts.push(content.slice(cursor));
+      break;
+    }
+
+    const end = content.indexOf("**", start + 2);
+    if (end < 0) {
+      parts.push(content.slice(cursor));
+      break;
+    }
+
+    if (start > cursor) {
+      parts.push(content.slice(cursor, start));
+    }
+
+    const boldText = content.slice(start + 2, end);
+    parts.push(
+      boldText ? (
+        <strong key={`bold-${partIndex}`} className="font-semibold">
+          {boldText}
+        </strong>
+      ) : (
+        "**"
+      ),
+    );
+    partIndex += 1;
+    cursor = end + 2;
+  }
+
+  return parts.length > 0 ? parts : content;
+};
+
+const LineItem: React.FC<{ line: AgentActivityDisplayRow }> = ({ line }) => {
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const textRef = useRef<HTMLSpanElement>(null);
@@ -38,6 +125,7 @@ const LineItem: React.FC<{ line: ChatRunActivityLine }> = ({ line }) => {
   const isError = line.line_type === "error";
 
   const textColor = isError ? "text-rose-500/80" : "text-[var(--ink)]";
+  const ToolIcon = line.toolKind ? toolIconByKind[line.toolKind] : Wrench;
   const rowClass =
     "group flex w-full min-w-0 items-start gap-2 rounded-sm px-1 py-1 text-left text-[12px] leading-[1.5] transition hover:bg-[var(--surface-1)]/70";
   const collapsedClass = "line-clamp-1 break-all";
@@ -52,14 +140,19 @@ const LineItem: React.FC<{ line: ChatRunActivityLine }> = ({ line }) => {
         onClick={() => overflows && setExpanded((v) => !v)}
         aria-expanded={overflows ? expanded : undefined}
       >
-        <Terminal className="mt-[3px] h-3 w-3 shrink-0 text-[var(--ink-tertiary)]" />
+        <ToolIcon className="mt-[3px] h-3 w-3 shrink-0 text-[var(--ink-tertiary)]" />
         <span
           ref={textRef}
-          className={`min-w-0 flex-1 font-mono text-[12px] text-[var(--ink-tertiary)] ${
+          className={`min-w-0 flex-1 text-[12px] ${toolToneClass(line)} ${
             expanded ? expandedClass : collapsedClass
           }`}
         >
-          {line.content}
+          <span className="font-medium">{line.title}</span>
+          {line.detail && (
+            <span className="ml-1 font-mono text-[var(--ink-tertiary)]">
+              {line.detail}
+            </span>
+          )}
         </span>
         {overflows && (
           <ChevronRight
@@ -86,7 +179,7 @@ const LineItem: React.FC<{ line: ChatRunActivityLine }> = ({ line }) => {
           expanded ? expandedClass : collapsedClass
         }`}
       >
-        {line.content}
+        {renderSimpleBoldMarkdown(line.content)}
       </span>
       {overflows && (
         <ChevronRight
@@ -103,12 +196,17 @@ export const AgentActivityPanel: React.FC<AgentActivityPanelProps> = ({
   lines = [],
   state = "idle",
   labels,
+  translate,
 }) => {
+  const displayRows = useMemo(
+    () => formatAgentActivityLines(lines, translate),
+    [lines, translate],
+  );
   const showLoading = state === "loading";
   const showPruned = state === "pruned";
   const showError = state === "error";
   const showEmpty =
-    !showLoading && !showPruned && !showError && lines.length === 0;
+    !showLoading && !showPruned && !showError && displayRows.length === 0;
 
   if (showEmpty) return null;
 
@@ -133,8 +231,8 @@ export const AgentActivityPanel: React.FC<AgentActivityPanelProps> = ({
           scrollbar="styled"
         >
           <div className="space-y-0.5 py-0.5">
-            {lines.map((line) => (
-              <LineItem key={line.line_id} line={line} />
+            {displayRows.map((line) => (
+              <LineItem key={line.row_id} line={line} />
             ))}
           </div>
         </ScrollArea>

@@ -101,7 +101,12 @@ check('renders multi trigger summary', multiHtml.includes('2 selected'), multiHt
 check('sets listbox multi-select aria only for multiple mode', multiHtml.includes('aria-multiselectable="true"') && !singleHtml.includes('aria-multiselectable="true"'), multiHtml);
 check('custom width does not fight a default w-full class', sizedHtml.includes('relative w-[140px]') && !sizedHtml.includes('relative w-full w-[140px]'), sizedHtml);
 check('can render an open panel without search input', noSearchHtml.includes('Manual route') && !noSearchHtml.includes('placeholder="Search..."') && !noSearchHtml.includes('lucide-search'), noSearchHtml);
-check('positions the open panel as an overlay', singleHtml.includes('absolute left-0 top-full mt-2'), singleHtml);
+check(
+  'positions the open panel as a portaled overlay',
+  singleHtml.includes('position:fixed') ||
+    (source.includes('createPortal') && source.includes('fixed overflow-hidden')),
+  singleHtml,
+);
 check('keeps multi-select panel open after selection in source', source.includes("props.selectionMode === 'multiple'") && source.includes('return;'), source);
 check('supports outside click close in source', source.includes("document.addEventListener('pointerdown'"), source);
 

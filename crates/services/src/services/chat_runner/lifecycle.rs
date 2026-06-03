@@ -1089,12 +1089,6 @@ impl ChatRunner {
                 ExecutorConfigs::get_cached().get_coding_agent_or_default(&executor_profile_id);
             executor.use_approvals(Arc::new(NoopExecutorApprovalService));
 
-            if let Some(model_name) = &agent.model_name
-                && let Some(executor_with_model) = with_model(&executor, model_name)
-            {
-                executor = executor_with_model;
-            }
-
             let repo_context = RepoContext::new(PathBuf::from(&workspace_path), Vec::new());
             let mut env = ExecutionEnv::new(repo_context, false, String::new());
             env.insert("VK_CHAT_SESSION_ID", session_id.to_string());
@@ -1108,6 +1102,13 @@ impl ChatRunner {
                     .to_string_lossy()
                     .to_string(),
             );
+            apply_agent_runtime_config(
+                executor_profile_id.executor,
+                &mut executor,
+                agent.model_name.as_deref(),
+                &mut env,
+            )
+            .map_err(|err| ChatRunnerError::Io(std::io::Error::other(err.to_string())))?;
 
             let mut spawned = if session_agent.state != ChatSessionAgentState::Dead {
                 if let Some(agent_session_id) = session_agent.agent_session_id.as_deref() {
