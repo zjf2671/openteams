@@ -128,8 +128,8 @@ function AppContent() {
               }
             >
               {/* Chat routes */}
-              <Route path="/" element={<Navigate to="/chat" replace />} />
-              <Route path="/chat" element={<ChatSessions />} />
+              <Route path="/" element={<ChatSessions />} />
+              <Route path="/chat" element={<Navigate to="/" replace />} />
               <Route path="/chat/:sessionId" element={<ChatSessions />} />
             </Route>
           </SentryRoutes>

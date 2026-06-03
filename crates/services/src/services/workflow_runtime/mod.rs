@@ -3,7 +3,6 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    str::FromStr,
     sync::Arc,
     time::Duration,
 };
@@ -38,14 +37,13 @@ use executors::{
     approvals::NoopExecutorApprovalService,
     env::{ExecutionEnv, RepoContext},
     executors::{
-        BaseCodingAgent, CancellationToken, ExecutorError, ExecutorExitResult, ExecutorExitSignal,
-        SpawnedChild, StandardCodingAgentExecutor,
+        CancellationToken, ExecutorError, ExecutorExitResult, ExecutorExitSignal, SpawnedChild,
+        StandardCodingAgentExecutor,
     },
     logs::{
         ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus,
         utils::patch::extract_normalized_entry_from_patch,
     },
-    profile::{ExecutorConfigs, ExecutorProfileId, canonical_variant_key},
 };
 use futures::StreamExt;
 use json_patch::Patch;
@@ -62,7 +60,7 @@ use super::{
     chat_runner::{ChatRunner, ChatStreamDeltaType},
     config::UiLanguage,
 };
-use crate::services::agent_runtime::apply_agent_runtime_config;
+use crate::services::member_execution::build_effective_member_executor;
 
 include!("dependencies.rs");
 include!("types.rs");

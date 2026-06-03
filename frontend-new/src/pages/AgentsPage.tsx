@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   AlertTriangle,
   Bot,
@@ -14,19 +20,20 @@ import {
   DropdownSelect,
   type DropdownSelectOption,
 } from "@/components/DropdownSelect";
-import { agentRuntimeApi, profilesApi } from "@/lib/api";
+import { useWorkspace } from "@/context/WorkspaceContext";
+import { agentRuntimeApi } from "@/lib/api";
 import type {
   AgentRuntimeDiagnostics,
   AgentRuntimeStatus,
   BaseCodingAgent,
-  ExecutorConfig,
-  ExecutorConfigs,
   JsonValue,
 } from "@/types";
 import {
+  envSummaryToText,
   filterRuntimeRunners,
   getRunnerLabel,
   getRuntimeDisplayState,
+  parseEnvText,
   type AgentRuntimeFilter,
   type RuntimeDisplayState,
 } from "./agent-runtime/agentRuntimeViewModel";
@@ -42,17 +49,10 @@ import openTeamsCliSchema from "../../../shared/schemas/open_teams_cli.json";
 import opencodeSchema from "../../../shared/schemas/opencode.json";
 import qwenCodeSchema from "../../../shared/schemas/qwen_code.json";
 
-const filters: Array<{ key: AgentRuntimeFilter; label: string }> = [
-  { key: "all", label: "All" },
-  { key: "available", label: "Available" },
-  { key: "error", label: "Error" },
-  { key: "not_installed", label: "Not installed" },
-];
-
-const statusFilterOptions: DropdownSelectOption[] = filters.map((item) => ({
-  id: item.key,
-  label: item.label,
-}));
+type TranslateFn = (
+  key: string,
+  replacements?: Record<string, string | number>,
+) => string;
 
 const cx = (...classes: Array<string | false | null | undefined>) =>
   classes.filter(Boolean).join(" ");
@@ -75,21 +75,58 @@ const brandIconPaths = {
     "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z",
 } as const;
 
-const agentBrandMarks: Record<
-  BaseCodingAgent,
-  { title: string; path?: string; text?: string }
-> = {
-  AMP: { title: "Amp", path: brandIconPaths.amp },
+type AgentBrandMark = {
+  title: string;
+  path?: string;
+  text?: string;
+  logoSrc?: string;
+  logoMode?: "image" | "mask";
+  logoClassName?: string;
+};
+
+const agentBrandMarks: Record<BaseCodingAgent, AgentBrandMark> = {
+  AMP: {
+    title: "Amp",
+    path: brandIconPaths.amp,
+    logoClassName: "h-6 w-6",
+  },
   CLAUDE_CODE: { title: "Claude", path: brandIconPaths.claude },
   CODEX: { title: "OpenAI Codex", path: brandIconPaths.openai },
-  COPILOT: { title: "GitHub Copilot", path: brandIconPaths.copilot },
-  CURSOR_AGENT: { title: "Cursor", text: "C" },
-  DROID: { title: "Droid", path: brandIconPaths.android },
+  COPILOT: {
+    title: "GitHub Copilot",
+    logoSrc: "/logos/github-copilot-logo.svg",
+    logoMode: "mask",
+    logoClassName: "h-[21px] w-[21px]",
+  },
+  CURSOR_AGENT: {
+    title: "Cursor",
+    logoSrc: "/logos/cursor-logo.svg",
+    logoMode: "mask",
+    logoClassName: "h-[22px] w-[22px]",
+  },
+  DROID: {
+    title: "Droid",
+    logoSrc: "/logos/droid-light.svg",
+    logoClassName: "h-8 w-8",
+  },
   GEMINI: { title: "Google Gemini", path: brandIconPaths.gemini },
-  KIMI_CODE: { title: "Kimi", text: "K" },
-  OPENCODE: { title: "OpenCode", text: "OC" },
-  OPEN_TEAMS_CLI: { title: "OpenTeams CLI", text: "OT" },
-  QWEN_CODE: { title: "Qwen", path: brandIconPaths.alibabaCloud },
+  KIMI_CODE: { title: "Kimi", logoSrc: "/logos/kimi-logo.svg" },
+  OPENCODE: {
+    title: "OpenCode",
+    logoSrc: "/logos/opencode.svg",
+    logoMode: "mask",
+    logoClassName: "h-8 w-8",
+  },
+  OPEN_TEAMS_CLI: {
+    title: "OpenTeams CLI",
+    logoSrc: "/logos/openteams-logo.svg",
+  },
+  QWEN_CODE: {
+    title: "Qwen",
+    logoSrc: "/logos/qwen-dark.svg",
+    logoMode: "mask",
+    logoClassName: "h-8 w-8",
+  },
 };
 
 type JsonSchemaProperty = {
@@ -120,7 +157,21 @@ const agentConfigSchemas: Record<BaseCodingAgent, AgentJsonSchema> = {
   QWEN_CODE: qwenCodeSchema,
 };
 
-const hiddenConfigFields = new Set(["env", "run_mode", "mode"]);
+const hiddenConfigFields = new Set([
+  "env",
+  "run_mode",
+  "mode",
+  "model",
+  "model_provider",
+  "model_reasoning_effort",
+  "model_reasoning_summary",
+  "model_reasoning_summary_format",
+  "reasoning_effort",
+  "thinking_effort",
+  "variant",
+  "effort",
+  "profile",
+]);
 const nullOptionId = "__openteams_null__";
 
 const isHiddenConfigField = (
@@ -148,83 +199,55 @@ const toFieldLabel = (key: string, property?: JsonSchemaProperty): string =>
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 
+const translateWithFallback = (
+  t: TranslateFn,
+  key: string,
+  fallback: string,
+): string => {
+  const translated = t(key);
+  return translated === key ? fallback : translated;
+};
+
+const translateConfigFieldText = (
+  t: TranslateFn,
+  runner: BaseCodingAgent,
+  fieldKey: string,
+  kind: "label" | "description",
+  fallback: string,
+): string => {
+  const runnerKey = `agents.config.schema.${runner.toLowerCase()}.${fieldKey}.${kind}`;
+  const runnerText = t(runnerKey);
+  if (runnerText !== runnerKey) return runnerText;
+
+  return translateWithFallback(
+    t,
+    `agents.config.schema.common.${fieldKey}.${kind}`,
+    fallback,
+  );
+};
+
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 
-const getExecutorConfig = (
-  profiles: ExecutorConfigs | null,
-  runner: BaseCodingAgent,
-): ExecutorConfig | null => profiles?.executors?.[runner] ?? null;
-
-const getVariantNames = (
-  profiles: ExecutorConfigs | null,
-  runner: BaseCodingAgent,
-): string[] => {
-  const config = getExecutorConfig(profiles, runner);
-  if (!config) return [];
-  return Object.keys(config).sort((a, b) => {
-    if (a === "DEFAULT") return -1;
-    if (b === "DEFAULT") return 1;
-    return a.localeCompare(b);
-  });
-};
-
-const getVariantFormData = (
-  profiles: ExecutorConfigs | null,
-  runner: BaseCodingAgent,
-  variant: string,
+const getRuntimeExecutorOptions = (
+  runner: AgentRuntimeStatus,
 ): Record<string, JsonValue | undefined> => {
-  const config = getExecutorConfig(profiles, runner);
-  const variantConfig = config?.[variant] ?? config?.DEFAULT;
-  const raw = variantConfig?.[runner];
-  return isObjectRecord(raw) ? { ...(raw as Record<string, JsonValue>) } : {};
+  const options = runner.executor_options;
+  return isObjectRecord(options)
+    ? { ...(options as Record<string, JsonValue>) }
+    : {};
 };
 
-const updateVariantFormData = (
-  profiles: ExecutorConfigs,
-  runner: BaseCodingAgent,
-  variant: string,
-  formData: Record<string, JsonValue | undefined>,
-): ExecutorConfigs => {
-  const currentExecutorConfig = profiles.executors[runner] ?? {};
-  return {
-    ...profiles,
-    executors: {
-      ...profiles.executors,
-      [runner]: {
-        ...currentExecutorConfig,
-        [variant]: {
-          [runner]: formData,
-        },
-      },
-    },
-  };
-};
-
-const getStringFormValue = (
-  formData: Record<string, JsonValue | undefined>,
-  key: string,
-): string => {
-  const value = formData[key];
-  return typeof value === "string" ? value.trim() : "";
-};
-
-const buildModelOptions = (
-  models: string[],
-  selectedModel: string,
-): DropdownSelectOption[] => {
-  const uniqueModels = new Set<string>();
-  if (selectedModel) uniqueModels.add(selectedModel);
-  models.forEach((model) => {
-    const trimmed = model.trim();
-    if (trimmed) uniqueModels.add(trimmed);
-  });
-
-  return Array.from(uniqueModels).map((model) => ({
-    id: model,
-    label: model,
+const createStatusFilterOptions = (t: TranslateFn): DropdownSelectOption[] =>
+  [
+    { key: "all", label: t("agents.filter.all") },
+    { key: "available", label: t("agents.filter.available") },
+    { key: "error", label: t("agents.filter.error") },
+    { key: "not_installed", label: t("agents.filter.notInstalled") },
+  ].map((item) => ({
+    id: item.key,
+    label: item.label,
   }));
-};
 
 /* ---------- Status helpers ---------- */
 
@@ -234,31 +257,39 @@ function StatusDot({ state }: { state: RuntimeDisplayState }) {
       className={cx(
         "inline-block h-1.5 w-1.5 rounded-full",
         state === "available" && "bg-[var(--success)]",
-        state === "error" && "bg-red-400",
+        state === "error" && "bg-red-500",
         state === "not_installed" && "bg-[var(--ink-tertiary)]",
       )}
     />
   );
 }
 
-function StatusBadge({ runner }: { runner: AgentRuntimeStatus }) {
+function StatusBadge({
+  runner,
+  t,
+  size = "compact",
+}: {
+  runner: AgentRuntimeStatus;
+  t: TranslateFn;
+  size?: "compact" | "normal";
+}) {
   const state = getRuntimeDisplayState(runner);
   const label =
     state === "available"
-      ? "Available"
+      ? t("agents.status.available")
       : state === "error"
-        ? "Error"
-        : "Not installed";
+        ? t("agents.status.error")
+        : t("agents.status.notInstalled");
   return (
     <span
       className={cx(
-        "inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2 text-[14px] font-medium",
+        "inline-flex items-center gap-1.5 rounded-full border font-semibold uppercase tracking-wider",
+        size === "normal" ? "h-6 px-2.5 text-[14px]" : "h-5 px-2 text-[11px]",
         state === "available" &&
           "border-[var(--success)]/30 bg-[var(--success)]/10 text-[var(--success)]",
-        state === "error" &&
-          "border-red-400/30 bg-red-400/10 text-red-300",
+        state === "error" && "border-red-500/30 bg-red-500/10 text-red-400",
         state === "not_installed" &&
-          "border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--ink-muted)]",
+          "border-[var(--hairline-strong)] bg-[var(--surface-3)] text-[var(--ink-subtle)]",
       )}
     >
       <StatusDot state={state} />
@@ -267,34 +298,75 @@ function StatusBadge({ runner }: { runner: AgentRuntimeStatus }) {
   );
 }
 
-function AgentBrandAvatar({ runner }: { runner: BaseCodingAgent }) {
+function AgentBrandAvatar({
+  runner,
+  framed = true,
+}: {
+  runner: BaseCodingAgent;
+  framed?: boolean;
+}) {
   const brand = agentBrandMarks[runner];
+  const maskStyle =
+    brand.logoSrc && brand.logoMode === "mask"
+      ? ({
+          WebkitMaskImage: `url(${brand.logoSrc})`,
+          WebkitMaskPosition: "center",
+          WebkitMaskRepeat: "no-repeat",
+          WebkitMaskSize: "contain",
+          maskImage: `url(${brand.logoSrc})`,
+          maskPosition: "center",
+          maskRepeat: "no-repeat",
+          maskSize: "contain",
+        } satisfies CSSProperties)
+      : undefined;
 
   return (
     <span
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--mono-border)] bg-[var(--mono-bg)] text-[var(--ink-muted)]"
+      className={cx(
+        "flex h-8 w-8 shrink-0 items-center justify-center text-[var(--ink-muted)]",
+        framed &&
+          "rounded-full border border-[var(--mono-border)] bg-[var(--mono-bg)]",
+      )}
       title={brand.title}
       aria-label={brand.title}
     >
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 24 24"
-        className="h-[18px] w-[18px]"
-        focusable="false"
-      >
-        {brand.path ? (
-          <path fill="currentColor" d={brand.path} />
-        ) : (
-          <text
-            x="12"
-            y="15"
-            textAnchor="middle"
-            className="fill-current font-mono text-[9px] font-semibold"
-          >
-            {brand.text}
-          </text>
-        )}
-      </svg>
+      {brand.logoSrc && brand.logoMode === "mask" ? (
+        <span
+          aria-hidden="true"
+          className={cx(
+            "block shrink-0 bg-current",
+            brand.logoClassName ?? "h-5 w-5",
+          )}
+          style={maskStyle}
+        />
+      ) : brand.logoSrc ? (
+        <img
+          src={brand.logoSrc}
+          alt=""
+          aria-hidden="true"
+          className={cx("h-5 w-5 object-contain", brand.logoClassName)}
+        />
+      ) : (
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className={cx("h-[18px] w-[18px]", brand.logoClassName)}
+          focusable="false"
+        >
+          {brand.path ? (
+            <path fill="currentColor" d={brand.path} />
+          ) : (
+            <text
+              x="12"
+              y="15"
+              textAnchor="middle"
+              className="fill-current font-mono text-[9px] font-semibold"
+            >
+              {brand.text}
+            </text>
+          )}
+        </svg>
+      )}
     </span>
   );
 }
@@ -323,18 +395,20 @@ function AgentRow({
   runner,
   selected,
   onOpenConfig,
+  t,
 }: {
   runner: AgentRuntimeStatus;
   selected: boolean;
   onOpenConfig: () => void;
+  t: TranslateFn;
 }) {
   const state = getRuntimeDisplayState(runner);
   const models =
     runner.discovered_models.length > 0
       ? runner.discovered_models.join(", ")
       : state === "not_installed"
-        ? "Install to discover models"
-        : "No models reported";
+        ? t("agents.model.installToDiscover")
+        : t("agents.model.noneReported");
 
   return (
     <div
@@ -349,7 +423,8 @@ function AgentRow({
       }}
       className={cx(
         "group grid min-h-[58px] cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-[var(--hairline)] px-3 py-2.5 transition-colors last:border-b-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] md:grid-cols-[minmax(210px,1.15fr)_128px_minmax(220px,1.85fr)_72px]",
-        selected && "bg-[var(--surface-3)] ring-1 ring-inset ring-[var(--primary)]/35",
+        selected &&
+          "bg-[var(--surface-3)] ring-1 ring-inset ring-[var(--primary)]/35",
         state === "available"
           ? "hover:bg-[var(--surface-2)]"
           : state === "error"
@@ -359,7 +434,7 @@ function AgentRow({
       )}
     >
       <div className="flex min-w-0 items-center gap-3">
-        <AgentBrandAvatar runner={runner.runner_type} />
+        <AgentBrandAvatar runner={runner.runner_type} framed={false} />
         <div className="min-w-0">
           <p className="truncate text-[14px] font-medium leading-[1.3] text-[var(--ink)]">
             {getRunnerLabel(runner.runner_type)}
@@ -371,7 +446,7 @@ function AgentRow({
       </div>
 
       <div className="hidden md:block">
-        <StatusBadge runner={runner} />
+        <StatusBadge runner={runner} t={t} />
       </div>
 
       <div className="hidden min-w-0 md:block">
@@ -396,8 +471,10 @@ function AgentRow({
             onOpenConfig();
           }}
           className="flex h-7 w-7 items-center justify-center rounded-[6px] text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
-          aria-label={`Configure ${getRunnerLabel(runner.runner_type)}`}
-          title="Configure"
+          aria-label={t("agents.action.configure", {
+            agent: getRunnerLabel(runner.runner_type),
+          })}
+          title={t("agents.action.configureShort")}
         >
           <Settings className="h-3.5 w-3.5" />
         </button>
@@ -408,11 +485,11 @@ function AgentRow({
 
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="grid gap-1 border-b border-[var(--hairline)] px-3 py-2.5 last:border-b-0">
-      <p className="text-[14px] font-medium leading-tight text-[var(--ink-tertiary)]">
+    <div className="flex flex-col gap-1.5 py-1">
+      <p className="font-mono text-[14px] font-medium tracking-tight text-[var(--ink-tertiary)] uppercase">
         {label}
       </p>
-      <p className="break-all font-mono text-[14px] leading-[1.45] text-[var(--ink)]">
+      <p className="break-all font-mono text-[14px] leading-[1.5] text-[var(--ink-muted)]">
         {value}
       </p>
     </div>
@@ -420,25 +497,39 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 function ConfigSchemaField({
+  runner,
   fieldKey,
   property,
   value,
   onChange,
+  t,
 }: {
+  runner: BaseCodingAgent;
   fieldKey: string;
   property: JsonSchemaProperty;
   value: JsonValue | undefined;
   onChange: (key: string, value: JsonValue | undefined) => void;
+  t: TranslateFn;
 }) {
   const [jsonDraft, setJsonDraft] = useState(() =>
-    value === undefined || value === null
-      ? ""
-      : JSON.stringify(value, null, 2),
+    value === undefined || value === null ? "" : JSON.stringify(value, null, 2),
   );
   const [jsonError, setJsonError] = useState<string | null>(null);
   const valueType = getSchemaValueType(property);
-  const label = toFieldLabel(fieldKey, property);
-  const description = property.description;
+  const label = translateConfigFieldText(
+    t,
+    runner,
+    fieldKey,
+    "label",
+    toFieldLabel(fieldKey, property),
+  );
+  const description = translateConfigFieldText(
+    t,
+    runner,
+    fieldKey,
+    "description",
+    property.description ?? "",
+  );
 
   useEffect(() => {
     if (valueType !== "object") return;
@@ -451,23 +542,26 @@ function ConfigSchemaField({
   }, [value, valueType]);
 
   const labelNode = (
-    <div>
-      <label className="text-[14px] font-medium text-[var(--ink)]">
+    <div className="space-y-1">
+      <label className="text-[14px] font-medium leading-none text-[var(--ink)]">
         {label}
       </label>
       {description && (
-        <p className="mt-1 text-[14px] leading-[1.45] text-[var(--ink-tertiary)]">
+        <p className="text-[14px] leading-[1.5] text-[var(--ink-subtle)]">
           {description}
         </p>
       )}
     </div>
   );
 
+  const inputBaseClass =
+    "w-full rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-3)] px-3 py-2 font-mono text-[14px] text-[var(--ink)] outline-none transition-all placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)] focus:ring-1 focus:ring-[var(--primary)]/20";
+
   if (property.enum) {
     const hasNullOption = property.enum.some((item) => item === null);
     const options: DropdownSelectOption[] = [
       ...(hasNullOption
-        ? [{ id: nullOptionId, label: "Default" }]
+        ? [{ id: nullOptionId, label: t("agents.config.default") }]
         : []),
       ...property.enum
         .filter((item) => item !== null)
@@ -480,13 +574,13 @@ function ConfigSchemaField({
       value === null || value === undefined ? nullOptionId : String(value);
 
     return (
-      <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)]">
+      <div className="flex flex-col gap-2.5">
         {labelNode}
         <DropdownSelect
           value={selectedValue}
           options={options}
           showSearch={options.length > 8}
-          className="w-full [&>button]:bg-[var(--surface-2)]"
+          className="w-full [&>button]:h-9 [&>button]:bg-[var(--surface-3)] [&>button]:text-[14px] [&>button]:font-mono"
           panelClassName="max-w-none"
           onChange={(nextValue) =>
             onChange(fieldKey, nextValue === nullOptionId ? null : nextValue)
@@ -498,22 +592,24 @@ function ConfigSchemaField({
 
   if (valueType === "boolean") {
     return (
-      <label className="grid cursor-pointer gap-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="flex items-start justify-between gap-4 py-1">
         {labelNode}
-        <input
-          type="checkbox"
-          checked={value === true}
-          onChange={(event) => onChange(fieldKey, event.target.checked)}
-          className="mt-1 h-4 w-4"
-        />
-      </label>
+        <div className="flex h-5 items-center">
+          <input
+            type="checkbox"
+            checked={value === true}
+            onChange={(event) => onChange(fieldKey, event.target.checked)}
+            className="h-4 w-4 rounded-[4px] border-[var(--hairline-strong)] bg-[var(--surface-3)] text-[var(--primary)] focus:ring-[var(--primary)]/30"
+          />
+        </div>
+      </div>
     );
   }
 
   if (valueType === "array") {
     const arrayValue = Array.isArray(value) ? value : [];
     return (
-      <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)]">
+      <div className="flex flex-col gap-2.5">
         {labelNode}
         <textarea
           value={arrayValue.map(String).join("\n")}
@@ -524,10 +620,10 @@ function ConfigSchemaField({
               .filter(Boolean);
             onChange(fieldKey, items.length > 0 ? items : null);
           }}
-          rows={4}
+          rows={3}
           spellCheck={false}
-          placeholder="One value per line"
-          className="w-full resize-none rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-[10px] font-mono text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
+          placeholder={t("agents.config.placeholder.array")}
+          className={cx(inputBaseClass, "resize-none")}
         />
       </div>
     );
@@ -535,7 +631,7 @@ function ConfigSchemaField({
 
   if (valueType === "object") {
     return (
-      <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)]">
+      <div className="flex flex-col gap-2.5">
         {labelNode}
         <div>
           <textarea
@@ -554,17 +650,21 @@ function ConfigSchemaField({
                 onChange(fieldKey, parsed);
               } catch (error) {
                 setJsonError(
-                  error instanceof Error ? error.message : "Invalid JSON",
+                  error instanceof Error
+                    ? error.message
+                    : t("agents.config.invalidJson"),
                 );
               }
             }}
             rows={5}
             spellCheck={false}
-            placeholder="{ }"
-            className="w-full resize-none rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-[10px] font-mono text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
+            placeholder={t("agents.config.placeholder.object")}
+            className={cx(inputBaseClass, "resize-none")}
           />
           {jsonError && (
-            <p className="mt-1.5 text-[14px] text-amber-200">{jsonError}</p>
+            <p className="mt-1.5 font-mono text-[14px] text-amber-400">
+              {jsonError}
+            </p>
           )}
         </div>
       </div>
@@ -572,13 +672,11 @@ function ConfigSchemaField({
   }
 
   const stringValue =
-    typeof value === "string" || typeof value === "number"
-      ? String(value)
-      : "";
+    typeof value === "string" || typeof value === "number" ? String(value) : "";
   const InputElement = property.format === "textarea" ? "textarea" : "input";
 
   return (
-    <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)]">
+    <div className="flex flex-col gap-2.5">
       {labelNode}
       <InputElement
         value={stringValue}
@@ -588,7 +686,11 @@ function ConfigSchemaField({
         }}
         rows={property.format === "textarea" ? 4 : undefined}
         spellCheck={property.format === "textarea"}
-        className="w-full rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-[10px] font-mono text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
+        placeholder={t("agents.config.placeholder.value")}
+        className={cx(
+          inputBaseClass,
+          property.format === "textarea" && "resize-none",
+        )}
       />
     </div>
   );
@@ -598,75 +700,93 @@ function ConfigSchemaField({
 
 function AgentConfigSidebar({
   runner,
-  profiles,
-  profilesLoading,
-  profilesError,
   saving,
   saveError,
   onClose,
   onSave,
+  onDiagnosticsLoaded,
+  t,
 }: {
   runner: AgentRuntimeStatus;
-  profiles: ExecutorConfigs | null;
-  profilesLoading: boolean;
-  profilesError: string | null;
   saving: boolean;
   saveError: string | null;
   onClose: () => void;
   onSave: (
     runner: BaseCodingAgent,
-    variant: string,
     formData: Record<string, JsonValue | undefined>,
+    envJson: Record<string, string> | null,
   ) => Promise<void>;
+  onDiagnosticsLoaded: (diagnostics: AgentRuntimeDiagnostics) => void;
+  t: TranslateFn;
 }) {
-  const variants = useMemo(
-    () => getVariantNames(profiles, runner.runner_type),
-    [profiles, runner.runner_type],
+  const [formData, setFormData] = useState<
+    Record<string, JsonValue | undefined>
+  >(() => getRuntimeExecutorOptions(runner));
+  const [initialFormData, setInitialFormData] = useState<
+    Record<string, JsonValue | undefined>
+  >(() => getRuntimeExecutorOptions(runner));
+  const [envText, setEnvText] = useState(() =>
+    envSummaryToText(runner.env_summary),
   );
-  const [selectedVariant, setSelectedVariant] = useState("DEFAULT");
-  const [formData, setFormData] = useState<Record<
-    string,
-    JsonValue | undefined
-  >>(() => getVariantFormData(profiles, runner.runner_type, "DEFAULT"));
+  const [envDirty, setEnvDirty] = useState(false);
   const [diagnostics, setDiagnostics] =
     useState<AgentRuntimeDiagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const schema = agentConfigSchemas[runner.runner_type];
-  const supportsModelSelection = !!schema.properties?.model;
+  const diagnosticsFailedLabel = t("agents.diagnostics.failed");
   const schemaFields = Object.entries(schema.properties ?? {}).filter(
-    ([fieldKey]) =>
-      fieldKey !== "model" &&
-      !isHiddenConfigField(runner.runner_type, fieldKey),
+    ([fieldKey]) => !isHiddenConfigField(runner.runner_type, fieldKey),
   );
-  const variantOptions: DropdownSelectOption[] = variants.map((variant) => ({
-    id: variant,
-    label: variant === "DEFAULT" ? "Default" : variant,
-  }));
-  const displayedModels =
-    diagnostics?.discovered_models.length
-      ? diagnostics.discovered_models
-      : runner.discovered_models;
+  const currentDiagnostics =
+    diagnostics?.runner_type === runner.runner_type ? diagnostics : null;
+  const envSummary = currentDiagnostics?.env_summary ?? runner.env_summary;
   const configPath =
-    diagnostics?.config_path ??
-    (diagnosticsLoading ? "Loading..." : "Not reported");
+    currentDiagnostics?.config_path ??
+    (diagnosticsLoading
+      ? t("agents.details.loading")
+      : t("agents.details.notReported"));
   const cliVersion = diagnosticsLoading
-    ? "Checking..."
-    : (diagnostics?.version ?? runner.version ?? "Not reported");
-  const selectedModel = getStringFormValue(formData, "model");
-  const modelOptions = buildModelOptions(displayedModels, selectedModel);
-  const canChooseModel = supportsModelSelection && modelOptions.length > 0;
+    ? t("agents.details.checking")
+    : (currentDiagnostics?.version ??
+      runner.version ??
+      t("agents.details.notReported"));
+  const isDirty =
+    envDirty || JSON.stringify(formData) !== JSON.stringify(initialFormData);
+  const envSummaryText = useMemo(
+    () => envSummaryToText(envSummary),
+    [envSummary],
+  );
 
   useEffect(() => {
-    const nextVariant = variants.includes(selectedVariant)
-      ? selectedVariant
-      : (variants[0] ?? "DEFAULT");
-    if (nextVariant !== selectedVariant) {
-      setSelectedVariant(nextVariant);
-      return;
-    }
-    setFormData(getVariantFormData(profiles, runner.runner_type, nextVariant));
-  }, [profiles, runner.runner_type, selectedVariant, variants]);
+    const nextFormData = getRuntimeExecutorOptions(runner);
+    setFormData(nextFormData);
+    setInitialFormData(nextFormData);
+    setEnvText(envSummaryToText(runner.env_summary));
+    setEnvDirty(false);
+    setDiagnostics((current) =>
+      current?.runner_type === runner.runner_type
+        ? {
+            ...current,
+            installed: runner.installed,
+            executable: runner.executable,
+            availability: runner.availability,
+            discovered_models: runner.discovered_models,
+            version: runner.version,
+            last_checked_at: runner.last_checked_at,
+            last_error: runner.last_error,
+            run_mode: runner.run_mode,
+            env_summary: runner.env_summary,
+            executor_options: runner.executor_options,
+          }
+        : current,
+    );
+  }, [runner]);
+
+  useEffect(() => {
+    if (envDirty) return;
+    setEnvText(envSummaryText);
+  }, [envDirty, envSummaryText]);
 
   useEffect(() => {
     let active = true;
@@ -677,12 +797,15 @@ function AgentConfigSidebar({
     agentRuntimeApi
       .getDiagnostics(runner.runner_type)
       .then((result) => {
-        if (active) setDiagnostics(result);
+        if (active) {
+          setDiagnostics(result);
+          onDiagnosticsLoaded(result);
+        }
       })
       .catch((error) => {
         if (active) {
           setDiagnosticsError(
-            error instanceof Error ? error.message : "Diagnostics failed",
+            error instanceof Error ? error.message : diagnosticsFailedLabel,
           );
         }
       })
@@ -693,7 +816,7 @@ function AgentConfigSidebar({
     return () => {
       active = false;
     };
-  }, [runner.runner_type]);
+  }, [diagnosticsFailedLabel, onDiagnosticsLoaded, runner.runner_type]);
 
   const handleConfigFieldChange = (
     key: string,
@@ -701,7 +824,7 @@ function AgentConfigSidebar({
   ) => {
     setFormData((current) => {
       const next = { ...current };
-      if (value === undefined) {
+      if (value === undefined || value === null) {
         delete next[key];
       } else {
         next[key] = value;
@@ -710,220 +833,156 @@ function AgentConfigSidebar({
     });
   };
 
-  const handleModelChange = (model: string) => {
-    handleConfigFieldChange("model", model);
-  };
-
   return (
-    <aside className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--surface-1)]">
-      <header className="shrink-0 border-b border-[var(--hairline)] px-4 py-4">
+    <aside className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[var(--surface-1)]">
+      <header className="shrink-0 border-b border-[var(--hairline)] px-5 py-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
+          <div className="flex min-w-0 items-start gap-4">
             <AgentBrandAvatar runner={runner.runner_type} />
             <div className="min-w-0">
-              <h2 className="mt-1 truncate text-[18px] font-semibold leading-[1.2] tracking-[-0.2px] text-[var(--ink)]">
-                {getRunnerLabel(runner.runner_type)}
-              </h2>
-              <p className="mt-1 font-mono text-[14px] leading-[1.35] text-[var(--ink-tertiary)]">
-                {formatRunnerKey(runner.runner_type)}
+              <div className="flex items-center gap-2">
+                <h2 className="truncate text-[18px] font-semibold leading-[1.2] tracking-[-0.2px] text-[var(--ink)]">
+                  {getRunnerLabel(runner.runner_type)}
+                </h2>
+                <StatusBadge runner={runner} t={t} size="normal" />
+              </div>
+              <p className="mt-1 truncate font-mono text-[14px] leading-[1.35] text-[var(--ink-tertiary)] tracking-wider">
+                {cliVersion}
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-[8px] p-1.5 text-[var(--ink-tertiary)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
-            aria-label="Close configuration"
+            className="-mr-1 rounded-[6px] p-1.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+            aria-label={t("agents.sidebar.close")}
           >
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <StatusBadge runner={runner} />
-        </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto ot-scroll-area-styled">
-        <section className="border-b border-[var(--hairline)] px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-[14px] font-medium text-[var(--ink)]">
-              Runtime details
-            </h3>
-          </div>
-          <div className="mt-3 overflow-hidden rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)]">
-            <DetailRow label="Config file" value={configPath} />
-            <DetailRow label="CLI version" value={cliVersion} />
+      <div
+        className={cx(
+          "min-h-0 flex-1 space-y-6 overflow-y-auto p-5 ot-scroll-area-styled",
+          isDirty && "pb-28",
+        )}
+      >
+        <section>
+          <h3 className="mb-3 text-[14px] font-bold tracking-[0.05em] text-[var(--ink-subtle)] uppercase">
+            {t("agents.details.runtime")}
+          </h3>
+          <div className="grid gap-3 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-3">
+            <DetailRow
+              label={t("agents.details.configFile")}
+              value={configPath}
+            />
+            <div className="h-px bg-[var(--hairline)]" />
+            <DetailRow
+              label={t("agents.details.cliVersion")}
+              value={cliVersion}
+            />
           </div>
           {diagnosticsError && (
-            <div className="mt-3 rounded-[8px] border border-amber-400/25 bg-amber-400/10 p-3 text-[14px] text-amber-200">
+            <div className="mt-3 flex items-start gap-2 rounded-[8px] border border-amber-500/20 bg-amber-500/5 p-3 text-[14px] leading-relaxed text-amber-400">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {diagnosticsError}
             </div>
           )}
         </section>
 
-        <section className="border-b border-[var(--hairline)] px-4 py-4">
-          <h3 className="text-[14px] font-medium text-[var(--ink)]">
-            Model and profile
+        <section>
+          <h3 className="mb-3 text-[14px] font-bold tracking-[0.05em] text-[var(--ink-subtle)] uppercase">
+            {t("agents.env.title")}
           </h3>
-          <div className="mt-3 overflow-hidden rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)]">
-            <div className="grid gap-2 border-b border-[var(--hairline)] px-3 py-3 sm:grid-cols-[130px_minmax(0,1fr)] sm:items-center">
-              <div>
-                <p className="text-[14px] font-medium text-[var(--ink)]">
-                  Profile
-                </p>
-                <p className="mt-0.5 text-[14px] text-[var(--ink-tertiary)]">
-                  {profilesLoading ? "Loading..." : `${variants.length} saved`}
-                </p>
-              </div>
-              <DropdownSelect
-                value={selectedVariant}
-                options={
-                  variantOptions.length > 0
-                    ? variantOptions
-                    : [{ id: "DEFAULT", label: "Default", disabled: true }]
-                }
-                showSearch={variantOptions.length > 8}
-                disabled={profilesLoading || variantOptions.length === 0}
-                className="w-full [&>button]:bg-[var(--surface-1)]"
-                panelClassName="max-w-none"
-                onChange={(value) => {
-                  setSelectedVariant(value);
-                  setFormData(
-                    getVariantFormData(profiles, runner.runner_type, value),
-                  );
-                }}
-              />
-            </div>
-
-            <div className="grid gap-2 px-3 py-3 sm:grid-cols-[130px_minmax(0,1fr)] sm:items-center">
-              <div>
-                <p className="text-[14px] font-medium text-[var(--ink)]">
-                  Model
-                </p>
-                <p className="mt-0.5 text-[14px] text-[var(--ink-tertiary)]">
-                  {diagnosticsLoading
-                    ? "Loading..."
-                    : modelOptions.length > 0
-                      ? `${modelOptions.length} available`
-                      : "None reported"}
-                </p>
-              </div>
-              <DropdownSelect
-                value={selectedModel}
-                options={
-                  modelOptions.length > 0
-                    ? modelOptions
-                    : [
-                        {
-                          id: "__no_models__",
-                          label: "No models reported",
-                          disabled: true,
-                        },
-                      ]
-                }
-                placeholder="Select model"
-                searchPlaceholder="Search models..."
-                emptyLabel="No models match this search."
-                showSearch={modelOptions.length > 6}
-                disabled={!canChooseModel}
-                className="w-full [&>button]:bg-[var(--surface-1)]"
-                panelClassName="max-w-none"
-                maxPanelHeightClassName="max-h-[260px]"
-                onChange={handleModelChange}
-              />
-            </div>
+          <div className="overflow-hidden rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)]">
+            <textarea
+              value={envText}
+              onChange={(event) => {
+                setEnvText(event.target.value);
+                setEnvDirty(true);
+              }}
+              rows={Math.max(4, Math.min(10, envText.split(/\r?\n/u).length))}
+              spellCheck={false}
+              placeholder={t("agents.env.placeholder")}
+              className="block w-full resize-y border-0 bg-[var(--surface-2)] px-4 py-3 font-mono text-[14px] text-[var(--ink)] outline-none transition-all placeholder:text-[var(--ink-tertiary)] focus:bg-[var(--surface-3)] focus:ring-1 focus:ring-inset focus:ring-[var(--primary)]"
+            />
           </div>
         </section>
 
-        <section className="px-4 py-4">
-          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <h3 className="text-[14px] font-medium text-[var(--ink)]">
-              Configuration
-            </h3>
-            {selectedModel && (
-              <span className="min-w-0 truncate rounded-[4px] border border-[var(--mono-border)] bg-[var(--mono-bg)] px-2 py-0.5 font-mono text-[14px] text-[var(--ink-subtle)]">
-                {selectedModel}
-              </span>
+        <section>
+          <h3 className="mb-3 text-[14px] font-bold tracking-[0.05em] text-[var(--ink-subtle)] uppercase">
+            {t("agents.config.title")}
+          </h3>
+
+          <div className="rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-4">
+            {schemaFields.length === 0 ? (
+              <p className="py-2 text-center text-[14px] text-[var(--ink-tertiary)]">
+                {t("agents.config.empty")}
+              </p>
+            ) : (
+              <div className="space-y-6">
+                {schemaFields.map(([fieldKey, property]) => (
+                  <ConfigSchemaField
+                    key={fieldKey}
+                    runner={runner.runner_type}
+                    fieldKey={fieldKey}
+                    property={property}
+                    value={formData[fieldKey]}
+                    onChange={handleConfigFieldChange}
+                    t={t}
+                  />
+                ))}
+              </div>
             )}
           </div>
 
-          {profilesError && (
-            <div className="rounded-[8px] border border-red-500/30 bg-red-500/10 p-3 text-[14px] text-red-300">
-              {profilesError}
-            </div>
-          )}
-
-          {!profilesError && canChooseModel && !selectedModel && (
-            <div className="rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-3 text-[14px] text-[var(--ink-tertiary)]">
-              Select a model to view its configuration.
-            </div>
-          )}
-
-          {!profilesError &&
-            (!canChooseModel || selectedModel) &&
-            schemaFields.length === 0 && (
-              <div className="rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-3 text-[14px] text-[var(--ink-tertiary)]">
-                No configurable fields reported for this agent.
-              </div>
-            )}
-
-          {!profilesError &&
-            (!canChooseModel || selectedModel) &&
-            schemaFields.length > 0 && (
-              <div className="rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-3">
-                <div className="space-y-4">
-                  {schemaFields.map(([fieldKey, property]) => (
-                    <ConfigSchemaField
-                      key={fieldKey}
-                      fieldKey={fieldKey}
-                      property={property}
-                      value={formData[fieldKey]}
-                      onChange={handleConfigFieldChange}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-
           {saveError && (
-            <div className="mt-4 rounded-[8px] border border-red-500/30 bg-red-500/10 p-3 text-[14px] text-red-300">
+            <div className="mt-4 flex items-start gap-2 rounded-[8px] border border-red-500/20 bg-red-500/5 p-3 text-[14px] leading-relaxed text-red-400">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {saveError}
             </div>
           )}
         </section>
       </div>
 
-      <footer className="shrink-0 border-t border-[var(--hairline)] bg-[var(--surface-1)] p-4">
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-3)] px-[14px] py-[8px] text-[14px] font-medium text-[var(--ink-subtle)] hover:bg-[var(--surface-2)]"
-          >
-            Close
-          </button>
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() =>
-              void onSave(runner.runner_type, selectedVariant, formData)
-            }
-            className="inline-flex items-center gap-2 rounded-[8px] bg-[var(--primary)] px-[14px] py-[8px] text-[14px] font-medium text-white hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {saving ? (
-              <RefreshCw className="h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            Save
-          </button>
-        </div>
-      </footer>
+      {isDirty && (
+        <footer className="absolute inset-x-0 bottom-0 z-20 border-t border-[var(--hairline)] bg-[var(--surface-1)] p-4">
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-[6px] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-4 py-2 text-[14px] font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+            >
+              {t("agents.save.cancel")}
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() =>
+                void onSave(
+                  runner.runner_type,
+                  formData,
+                  envDirty ? parseEnvText(envText) : null,
+                )
+              }
+              className="inline-flex items-center gap-2 rounded-[6px] bg-[var(--primary)] px-4 py-2 text-[14px] font-medium text-white transition-colors hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saving ? (
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              {saving ? t("agents.save.saving") : t("agents.save.saveChanges")}
+            </button>
+          </div>
+        </footer>
+      )}
     </aside>
   );
 }
 
-function AgentConfigEmptyState() {
+function AgentConfigEmptyState({ t }: { t: TranslateFn }) {
   return (
     <aside className="flex h-full min-h-0 flex-col bg-[var(--surface-1)]">
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
@@ -931,11 +990,10 @@ function AgentConfigEmptyState() {
           <Settings className="h-5 w-5" />
         </span>
         <h3 className="mt-3 text-[14px] font-medium text-[var(--ink)]">
-          Select an agent
+          {t("agents.sidebar.selectTitle")}
         </h3>
         <p className="mt-1 max-w-[260px] text-[14px] leading-[1.5] text-[var(--ink-tertiary)]">
-          Choose an agent from the list to inspect its CLI configuration,
-          version, and supported models.
+          {t("agents.sidebar.selectDesc")}
         </p>
       </div>
     </aside>
@@ -945,6 +1003,7 @@ function AgentConfigEmptyState() {
 /* ========== Main page ========== */
 
 export function AgentsPage() {
+  const { t } = useWorkspace();
   const [runners, setRunners] = useState<AgentRuntimeStatus[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<AgentRuntimeFilter>("all");
@@ -955,11 +1014,16 @@ export function AgentsPage() {
   const [selectedRunner, setSelectedRunner] =
     useState<AgentRuntimeStatus | null>(null);
   const [autoSelectedRunner, setAutoSelectedRunner] = useState(false);
-  const [profiles, setProfiles] = useState<ExecutorConfigs | null>(null);
-  const [profilesLoading, setProfilesLoading] = useState(true);
-  const [profilesError, setProfilesError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const discoveryRefreshedNotice = t("agents.notice.discoveryRefreshed");
+  const configSavedNotice = t("agents.notice.configSaved");
+
+  const statusFilterOptions = useMemo(() => createStatusFilterOptions(t), [t]);
+  const autoDismissNotices = useMemo(
+    () => new Set([discoveryRefreshedNotice, configSavedNotice]),
+    [configSavedNotice, discoveryRefreshedNotice],
+  );
 
   const filteredRunners = useMemo(
     () =>
@@ -975,35 +1039,15 @@ export function AgentsPage() {
       setRunners(response.runners);
     } catch (error) {
       setLoadError(
-        error instanceof Error ? error.message : "Failed to load agents",
+        error instanceof Error ? error.message : t("agents.load.failed"),
       );
     } finally {
       setLoading(false);
     }
   };
 
-  const loadProfiles = async () => {
-    setProfilesLoading(true);
-    setProfilesError(null);
-    try {
-      const response = await profilesApi.load();
-      const parsed = JSON.parse(response.content) as ExecutorConfigs;
-      setProfiles(parsed);
-    } catch (error) {
-      setProfilesError(
-        error instanceof Error
-          ? error.message
-          : "Failed to load agent profiles",
-      );
-      setProfiles(null);
-    } finally {
-      setProfilesLoading(false);
-    }
-  };
-
   useEffect(() => {
     void loadRuntime();
-    void loadProfiles();
   }, []);
 
   useEffect(() => {
@@ -1013,6 +1057,17 @@ export function AgentsPage() {
     }
   }, [autoSelectedRunner, filteredRunners, selectedRunner]);
 
+  useEffect(() => {
+    if (!notice) return;
+    if (!autoDismissNotices.has(notice)) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setNotice(null);
+    }, 3500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [autoDismissNotices, notice]);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     setNotice(null);
@@ -1021,41 +1076,57 @@ export function AgentsPage() {
       setRunners(response.runners);
       setNotice(
         response.errors.length > 0
-          ? `${response.errors.length} runner failed; cached discovery preserved.`
-          : "Discovery refreshed.",
+          ? t("agents.notice.refreshFailedCount", {
+              count: response.errors.length,
+            })
+          : discoveryRefreshedNotice,
       );
     } catch (error) {
       setNotice(
-        error instanceof Error ? error.message : "Refresh discovery failed",
+        error instanceof Error ? error.message : t("agents.refresh.failed"),
       );
     } finally {
       setRefreshing(false);
     }
   };
 
+  const handleDiagnosticsLoaded = useCallback(
+    (diagnostics: AgentRuntimeDiagnostics) => {
+      setRunners((current) =>
+        current.map((item) =>
+          item.runner_type === diagnostics.runner_type
+            ? {
+                ...item,
+                installed: diagnostics.installed,
+                executable: diagnostics.executable,
+                availability: diagnostics.availability,
+                discovered_models: diagnostics.discovered_models,
+                version: diagnostics.version,
+                last_checked_at: diagnostics.last_checked_at,
+                last_error: diagnostics.last_error,
+                run_mode: diagnostics.run_mode,
+                env_summary: diagnostics.env_summary,
+                executor_options: diagnostics.executor_options,
+              }
+            : item,
+        ),
+      );
+    },
+    [],
+  );
+
   const handleSave = async (
     runner: BaseCodingAgent,
-    variant: string,
     formData: Record<string, JsonValue | undefined>,
+    envJson: Record<string, string> | null,
   ) => {
     setSaving(true);
     setSaveError(null);
     try {
-      if (profiles) {
-        const nextProfiles = updateVariantFormData(
-          profiles,
-          runner,
-          variant,
-          formData,
-        );
-        await profilesApi.save(JSON.stringify(nextProfiles, null, 2));
-        setProfiles(nextProfiles);
-      }
-
       const updated = await agentRuntimeApi.updateConfig(runner, {
         run_mode: null,
-        env_json: null,
-        model_override: "",
+        env_json: envJson,
+        executor_options: formData as JsonValue,
       });
       setRunners((current) =>
         current.map((item) =>
@@ -1063,9 +1134,11 @@ export function AgentsPage() {
         ),
       );
       setSelectedRunner(updated);
-      setNotice("Agent configuration saved.");
+      setNotice(configSavedNotice);
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "Save failed");
+      setSaveError(
+        error instanceof Error ? error.message : t("agents.save.failed"),
+      );
     } finally {
       setSaving(false);
     }
@@ -1074,80 +1147,66 @@ export function AgentsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--surface-2)] text-[var(--ink)]">
       <header className="shrink-0 border-b border-[var(--hairline)] bg-[var(--surface-2)] px-4 py-4 md:px-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--primary)]">
               <Terminal className="h-5 w-5" />
             </span>
             <div className="min-w-0">
               <h1 className="text-[22px] font-semibold leading-[1.15] tracking-[-0.4px] text-[var(--ink)]">
-                Agent runtime
+                {t("agents.page.title")}
               </h1>
               <p className="mt-1 max-w-[560px] text-[14px] leading-[1.45] text-[var(--ink-subtle)]">
-                Manage local coding agents, model discovery, and runtime
-                configuration.
+                {t("agents.page.subtitle")}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => void handleRefresh()}
-            disabled={refreshing}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-[8px] bg-[var(--primary)] px-[14px] text-[14px] font-medium text-white transition hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+          <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center xl:w-auto">
+            <div className="relative min-w-[220px] sm:w-[280px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-tertiary)]" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={t("agents.search.placeholder")}
+                className="h-9 w-full rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] pl-8 pr-3 text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
+              />
+            </div>
+            <DropdownSelect
+              value={filter}
+              options={statusFilterOptions}
+              showSearch={false}
+              triggerIcon={
+                <Gauge className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+              }
+              className="min-w-[170px] [&>button]:h-9 [&>button]:bg-[var(--surface-1)] [&>button]:py-0"
+              panelClassName="max-w-none"
+              maxPanelHeightClassName="max-h-[220px]"
+              onChange={(value) => setFilter(value as AgentRuntimeFilter)}
             />
-            {refreshing ? "Refreshing" : "Refresh"}
-          </button>
+            <button
+              type="button"
+              onClick={() => void handleRefresh()}
+              disabled={refreshing}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-[8px] bg-[var(--primary)] px-[14px] text-[14px] font-medium text-white transition hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+              />
+              {refreshing ? t("agents.refreshing") : t("agents.refresh")}
+            </button>
+          </div>
         </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-hidden p-4">
         <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)]">
-          <div className="shrink-0 border-b border-[var(--hairline)] px-3 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <h2 className="text-[14px] font-medium leading-tight text-[var(--ink)]">
-                  Runtime availability
-                </h2>
-                <p className="mt-1 text-[14px] leading-[1.4] text-[var(--ink-tertiary)]">
-                  Available agents are kept first.
-                </p>
-              </div>
-              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-                <div className="relative min-w-[220px] sm:w-[280px]">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-tertiary)]" />
-                  <input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Search agents"
-                    className="h-9 w-full rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] pl-8 pr-3 text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
-                  />
-                </div>
-                <DropdownSelect
-                  value={filter}
-                  options={statusFilterOptions}
-                  showSearch={false}
-                  triggerIcon={
-                    <Gauge className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
-                  }
-                  className="min-w-[170px] [&>button]:h-9 [&>button]:bg-[var(--surface-2)] [&>button]:py-0"
-                  panelClassName="max-w-none"
-                  maxPanelHeightClassName="max-h-[220px]"
-                  onChange={(value) => setFilter(value as AgentRuntimeFilter)}
-                />
-              </div>
-            </div>
-          </div>
-
           {(loadError || notice) && (
             <div className="shrink-0 space-y-2 border-b border-[var(--hairline)] p-3">
               {loadError && (
                 <div className="rounded-[8px] border border-red-500/30 bg-red-500/10 p-3 text-[14px] text-red-300">
                   <span className="inline-flex items-center gap-2 font-medium">
                     <AlertTriangle className="h-4 w-4" />
-                    Agent runtime failed to load
+                    {t("agents.load.failedTitle")}
                   </span>
                   <p className="mt-1 text-red-300/80">{loadError}</p>
                 </div>
@@ -1160,7 +1219,7 @@ export function AgentsPage() {
             </div>
           )}
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_500px]">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(640px,750px)]">
             <div className="min-h-0 flex-1 overflow-y-auto ot-scroll-area-styled">
               {loading ? (
                 <div className="space-y-0">
@@ -1175,29 +1234,34 @@ export function AgentsPage() {
                 <div className="flex min-h-[240px] flex-col items-center justify-center text-center">
                   <Bot className="h-8 w-8 text-[var(--ink-tertiary)]" />
                   <h3 className="mt-3 text-[14px] font-medium text-[var(--ink)]">
-                    No matching agents
+                    {t("agents.empty.title")}
                   </h3>
                   <p className="mt-1 max-w-sm text-[14px] leading-[1.5] text-[var(--ink-subtle)]">
-                    Adjust search or status filters.
+                    {t("agents.empty.desc")}
                   </p>
                 </div>
               ) : (
                 <div>
                   <div className="sticky top-0 z-10 hidden grid-cols-[minmax(210px,1.15fr)_128px_minmax(220px,1.85fr)_72px] border-b border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2 text-[14px] font-medium text-[var(--ink-tertiary)] md:grid">
-                    <span>Agent</span>
-                    <span>Status</span>
-                    <span>Models</span>
-                    <span className="text-right">Actions</span>
+                    <span>{t("agents.table.agent")}</span>
+                    <span>{t("agents.table.status")}</span>
+                    <span>{t("agents.table.models")}</span>
+                    <span className="text-right">
+                      {t("agents.table.actions")}
+                    </span>
                   </div>
                   {filteredRunners.map((runner) => (
                     <AgentRow
                       key={runner.runner_type}
                       runner={runner}
-                      selected={selectedRunner?.runner_type === runner.runner_type}
+                      selected={
+                        selectedRunner?.runner_type === runner.runner_type
+                      }
                       onOpenConfig={() => {
                         setSelectedRunner(runner);
                         setSaveError(null);
                       }}
+                      t={t}
                     />
                   ))}
                 </div>
@@ -1208,16 +1272,15 @@ export function AgentsPage() {
               {selectedRunner ? (
                 <AgentConfigSidebar
                   runner={selectedRunner}
-                  profiles={profiles}
-                  profilesLoading={profilesLoading}
-                  profilesError={profilesError}
                   saving={saving}
                   saveError={saveError}
                   onClose={() => setSelectedRunner(null)}
                   onSave={handleSave}
+                  onDiagnosticsLoaded={handleDiagnosticsLoaded}
+                  t={t}
                 />
               ) : (
-                <AgentConfigEmptyState />
+                <AgentConfigEmptyState t={t} />
               )}
             </div>
           </div>

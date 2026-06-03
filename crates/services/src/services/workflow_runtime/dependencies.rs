@@ -5,7 +5,6 @@ const WORKFLOW_REAP_TIMEOUT: Duration = Duration::from_secs(3);
 const WORKFLOW_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKFLOW_EXECUTOR_ERROR_MAX_CHARS: usize = 1600;
 const WORKFLOW_EXECUTOR_ERROR_MAX_LINES: usize = 16;
-const EXECUTOR_PROFILE_VARIANT_KEY: &str = "executor_profile_variant";
 pub const WORKFLOW_PROTOCOL_PARSE_MAX_RETRIES: u32 = 1;
 
 /// Global registry: step_id → (CancellationToken, child_pid).

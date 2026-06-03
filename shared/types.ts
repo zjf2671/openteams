@@ -18,13 +18,15 @@ score: bigint, };
 
 export type SearchMatchType = "FileName" | "DirectoryName" | "FullPath";
 
-export type ProjectMember = { id: string, project_id: string, member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: string[], is_default: boolean, created_at: Date, updated_at: Date, };
+export type ProjectMember = { id: string, project_id: string, member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: string[], execution_config: MemberExecutionConfig, is_default: boolean, created_at: Date, updated_at: Date, };
 
 export enum ProjectMemberType { human = "human", agent = "agent" }
 
-export type CreateProjectMember = { member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: Array<string>, is_default: boolean, };
+export type CreateProjectMember = { member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: Array<string>, execution_config: MemberExecutionConfig | null, is_default: boolean, };
 
-export type UpdateProjectMember = { member_type: ProjectMemberType | null, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint | null, default_workspace_path: string | null, allowed_skill_ids: Array<string> | null, is_default: boolean | null, };
+export type UpdateProjectMember = { member_type: ProjectMemberType | null, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint | null, default_workspace_path: string | null, allowed_skill_ids: Array<string> | null, execution_config: MemberExecutionConfig | null, is_default: boolean | null, };
+
+export type MemberExecutionConfig = { runner_type?: BaseCodingAgent | null, model_name?: string | null, thinking_effort?: string | null, model_variant?: string | null, };
 
 export type ProjectPath = { id: string, project_id: string, path: string, label: string | null, kind: ProjectPathKind, is_default: boolean, created_at: Date, updated_at: Date, };
 
@@ -144,7 +146,7 @@ export type ChatMessage = { id: string, session_id: string, sender_type: ChatSen
 
 export enum ChatSenderType { user = "user", agent = "agent", system = "system" }
 
-export type ChatSessionAgent = { id: string, session_id: string, agent_id: string, state: ChatSessionAgentState, workspace_path: string | null, pty_session_key: string | null, agent_session_id: string | null, agent_message_id: string | null, allowed_skill_ids: string[], created_at: string, updated_at: string, };
+export type ChatSessionAgent = { id: string, session_id: string, agent_id: string, state: ChatSessionAgentState, workspace_path: string | null, pty_session_key: string | null, agent_session_id: string | null, agent_message_id: string | null, project_member_id: string | null, execution_config: MemberExecutionConfig, allowed_skill_ids: string[], created_at: string, updated_at: string, };
 
 export enum ChatSessionAgentState { idle = "idle", running = "running", stopping = "stopping", waitingapproval = "waitingapproval", dead = "dead" }
 
@@ -282,13 +284,13 @@ export type InstalledNativeSkill = { skill: ChatSkill, enabled: boolean, can_tog
 
 export type AgentRunMode = "auto" | "local" | "disabled";
 
-export type AgentRuntimeConfig = { runner_type: BaseCodingAgent, run_mode: AgentRunMode, env_json: { [key in string]?: string }, model_override: string | null, updated_at: string, };
+export type AgentRuntimeConfig = { runner_type: BaseCodingAgent, run_mode: AgentRunMode, env_json: { [key in string]?: string }, executor_options: JsonValue, updated_at: string, };
 
-export type UpdateAgentRuntimeConfig = { run_mode: AgentRunMode | null, env_json: { [key in string]?: string } | null, model_override: string | null, };
+export type UpdateAgentRuntimeConfig = { run_mode: AgentRunMode | null, env_json: { [key in string]?: string } | null, executor_options: JsonValue | null, };
 
 export type AgentRuntimeEnvSummary = { key: string, value: string, };
 
-export type AgentRuntimeStatus = { runner_type: BaseCodingAgent, installed: boolean, executable: boolean, availability: AvailabilityInfo, discovered_models: Array<string>, version: string | null, last_checked_at: string | null, last_error: string | null, run_mode: AgentRunMode, env_summary: Array<AgentRuntimeEnvSummary>, model_override: string | null, };
+export type AgentRuntimeStatus = { runner_type: BaseCodingAgent, installed: boolean, executable: boolean, availability: AvailabilityInfo, discovered_models: Array<string>, version: string | null, last_checked_at: string | null, last_error: string | null, run_mode: AgentRunMode, env_summary: Array<AgentRuntimeEnvSummary>, executor_options: JsonValue, };
 
 export type AgentRuntimeListResponse = { runners: Array<AgentRuntimeStatus>, };
 
@@ -296,7 +298,7 @@ export type AgentRuntimeRefreshError = { runner_type: BaseCodingAgent, message: 
 
 export type AgentRuntimeRefreshResponse = { runners: Array<AgentRuntimeStatus>, errors: Array<AgentRuntimeRefreshError>, };
 
-export type AgentRuntimeDiagnostics = { runner_type: BaseCodingAgent, installed: boolean, executable: boolean, availability: AvailabilityInfo, config_path: string, install_indicator_path: string | null, discovered_models: Array<string>, version: string | null, last_checked_at: string | null, last_error: string | null, run_mode: AgentRunMode, env_summary: Array<AgentRuntimeEnvSummary>, model_override: string | null, };
+export type AgentRuntimeDiagnostics = { runner_type: BaseCodingAgent, installed: boolean, executable: boolean, availability: AvailabilityInfo, config_path: string, install_indicator_path: string | null, discovered_models: Array<string>, version: string | null, last_checked_at: string | null, last_error: string | null, run_mode: AgentRunMode, env_summary: Array<AgentRuntimeEnvSummary>, executor_options: JsonValue, };
 
 export type ChatStreamEvent = { "type": "message_new", message: ChatMessage, } | { "type": "message_updated", message: ChatMessage, } | { "type": "work_item_new", work_item: ChatWorkItem, } | { "type": "agent_delta", session_id: string, session_agent_id: string, agent_id: string, run_id: string, stream_type: ChatStreamDeltaType, content: string, delta: boolean, is_final: boolean, } | { "type": "agent_run_started", session_id: string, session_agent_id: string, agent_id: string, agent_name: string, run_id: string, started_at: string | null, } | { "type": "agent_activity_line", line: ChatRunActivityLine, } | { "type": "agent_state", session_agent_id: string, agent_id: string, state: ChatSessionAgentState, started_at: string | null, } | { "type": "mention_acknowledged", session_id: string, message_id: string, mentioned_agent: string, agent_id: string, status: MentionStatus, } | { "type": "compression_warning", session_id: string, warning: CompressionWarning, } | { "type": "protocol_notice", session_id: string, session_agent_id: string, agent_id: string, run_id: string, agent_name: string, code: ChatProtocolNoticeCode, target: string | null, detail: string | null, output_is_empty: boolean, } | { "type": "mention_error", session_id: string, message_id: string, agent_name: string, agent_id: string | null, reason: string, } | { "type": "workflow_generate_detected", session_id: string, session_agent_id: string, run_id: string, } | { "type": "workflow_plan_preview_ready", session_id: string, plan_id: string, workflow_card_message: ChatMessage, } | { "type": "workflow_execution_updated", session_id: string, execution_id: string, } | { "type": "workflow_graph_updated", session_id: string, execution_id: string, graph_version: string, reason: string, nodes: Array<WorkflowPlanNode>, edges: Array<WorkflowPlanEdge>, changed_step_ids: Array<string>, } | { "type": "workflow_runtime_line", line_id: string, session_id: string, execution_id: string, workflow_agent_session_id: string | null, step_id: string, step_key: string, agent_id: string, agent_name: string, stream_type: ChatStreamDeltaType, content: string, created_at: string, };
 
@@ -456,9 +458,9 @@ export type UserIterationFeedbackResponse = { execution_id: string, status: stri
 
 export type CreateProjectRequest = { name: string, repositories: Array<CreateProjectRepo>, description: string | null, status: string | null, default_workspace_path: string | null, active_repo_id: string | null, };
 
-export type AddProjectMemberRequest = { member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: Array<string>, is_default: boolean, };
+export type AddProjectMemberRequest = { member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: Array<string>, execution_config: MemberExecutionConfig, is_default: boolean, };
 
-export type UpdateProjectMemberRequest = { role: string | null, display_order: bigint | null, default_workspace_path: string | null, is_default: boolean | null, allowed_skill_ids: Array<string> | null, };
+export type UpdateProjectMemberRequest = { role: string | null, display_order: bigint | null, default_workspace_path: string | null, is_default: boolean | null, allowed_skill_ids: Array<string> | null, execution_config: MemberExecutionConfig | null, };
 
 export type CreateProjectSessionRequest = { title: string | null, workspace_path: string | null, };
 
@@ -944,9 +946,9 @@ export type ExecutorConfigs = { executors: { [key in BaseCodingAgent]?: Executor
 
 export enum BaseAgentCapability { SESSION_FORK = "SESSION_FORK", SETUP_HELPER = "SETUP_HELPER", CONTEXT_USAGE = "CONTEXT_USAGE" }
 
-export type ClaudeCode = { append_prompt: AppendPrompt, claude_code_router?: boolean | null, plan?: boolean | null, approvals?: boolean | null, model?: string | null, dangerously_skip_permissions?: boolean | null, disable_api_key?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
+export type ClaudeCode = { append_prompt: AppendPrompt, claude_code_router?: boolean | null, plan?: boolean | null, approvals?: boolean | null, model?: string | null, effort?: string | null, dangerously_skip_permissions?: boolean | null, disable_api_key?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
-export type Gemini = { append_prompt: AppendPrompt, model?: string | null, yolo?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
+export type Gemini = { append_prompt: AppendPrompt, model?: string | null, thinking_effort?: string | null, yolo?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
 export type Amp = { append_prompt: AppendPrompt, model?: string | null, dangerously_allow_all?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
@@ -986,7 +988,7 @@ auto_approve: boolean,
  */
 auto_compact: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
-export type QwenCode = { append_prompt: AppendPrompt, model?: string | null, yolo?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
+export type QwenCode = { append_prompt: AppendPrompt, model?: string | null, thinking_effort?: string | null, yolo?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
 export type Droid = { append_prompt: AppendPrompt, autonomy: Autonomy, model?: string | null, reasoning_effort?: DroidReasoningEffort | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 

@@ -1,4 +1,5 @@
 import type {
+  AgentRuntimeEnvSummary,
   AgentRuntimeStatus,
   AvailabilityInfo,
   BaseCodingAgent,
@@ -11,7 +12,7 @@ export type RuntimeDisplayState = "available" | "error" | "not_installed";
 export const AGENT_RUNTIME_EDITABLE_FIELDS = [
   "run_mode",
   "env_json",
-  "model_override",
+  "executor_options",
 ] as const;
 
 export interface MachineSummary {
@@ -71,7 +72,6 @@ export function filterRuntimeRunners(
       runner.run_mode,
       runner.version ?? "",
       runner.last_error ?? "",
-      runner.discovered_models.join(" "),
       runner.env_summary.map((entry) => entry.key).join(" "),
     ]
       .join(" ")
@@ -110,6 +110,10 @@ export function buildLocalMachineSummary(
         ? `${configuredEnvCount} env keys configured`
         : "No active workload reported",
   };
+}
+
+export function envSummaryToText(envSummary: AgentRuntimeEnvSummary[]): string {
+  return envSummary.map((entry) => `${entry.key}=${entry.value}`).join("\n");
 }
 
 export function parseEnvText(text: string): Record<string, string> {

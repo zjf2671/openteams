@@ -20,6 +20,7 @@ pub mod filesystem;
 pub mod filesystem_watcher;
 pub mod git_host;
 pub mod image;
+pub mod member_execution;
 pub mod model_pricing_sync;
 pub mod native_skills;
 pub mod notification;

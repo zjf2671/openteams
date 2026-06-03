@@ -6,6 +6,7 @@ mod tests {
         chat_message::{ChatMessage, ChatSenderType},
         chat_session::{ChatSession, CreateChatSession},
         chat_session_agent::{ChatSessionAgent, ChatSessionAgentState},
+        member_execution_config::MemberExecutionConfig,
         project::CreateProject,
         project_member::{ProjectMember, ProjectMemberType},
     };
@@ -295,6 +296,7 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 default_workspace_path TEXT,
                 allowed_skill_ids TEXT,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 is_default BOOLEAN DEFAULT false,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -311,6 +313,8 @@ mod tests {
                 pty_session_key TEXT,
                 agent_session_id TEXT,
                 agent_message_id TEXT,
+                project_member_id BLOB,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 allowed_skill_ids TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -361,6 +365,7 @@ mod tests {
             0,
             Some("E:/workspace".to_string()),
             vec!["skill-a".to_string()],
+            MemberExecutionConfig::default(),
             true,
         )
         .await
@@ -590,6 +595,8 @@ mod tests {
             pty_session_key: None,
             agent_session_id: None,
             agent_message_id: None,
+            project_member_id: None,
+            execution_config: sqlx::types::Json(MemberExecutionConfig::default()),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

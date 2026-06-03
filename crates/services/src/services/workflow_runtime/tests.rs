@@ -3,6 +3,7 @@ mod tests {
     use chrono::Utc;
     use db::models::{
         chat_agent::ChatAgent,
+        member_execution_config::MemberExecutionConfig,
         chat_session_agent::{ChatSessionAgent, ChatSessionAgentState},
         workflow_plan::WorkflowPlan,
         workflow_plan_revision::WorkflowPlanRevision,
@@ -205,6 +206,8 @@ mod tests {
             pty_session_key: None,
             agent_session_id: None,
             agent_message_id: None,
+            project_member_id: None,
+            execution_config: Json(MemberExecutionConfig::default()),
             allowed_skill_ids: Json(Vec::new()),
             created_at: now,
             updated_at: now,

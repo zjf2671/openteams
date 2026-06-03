@@ -919,6 +919,10 @@ export function ChatSessions() {
   const { t: tCommon } = useTranslation('common');
   const { sessionId } = useParams<{ sessionId?: string }>();
   const navigate = useNavigate();
+  const routeSessionId = sessionId ?? null;
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    () => routeSessionId
+  );
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -955,6 +959,12 @@ export function ChatSessions() {
     [toast]
   );
 
+  useEffect(() => {
+    if (!routeSessionId) return;
+    setSelectedSessionId(routeSessionId);
+    navigate('/', { replace: true });
+  }, [navigate, routeSessionId]);
+
   // Data queries
   const {
     sortedSessions,
@@ -969,18 +979,19 @@ export function ChatSessions() {
     mentionAgents,
     isSessionsLoading,
     isLoading,
-  } = useChatData(sessionId ?? null);
+  } = useChatData(selectedSessionId);
 
   const activeSessionExists = useMemo(
     () =>
-      !!sessionId && sortedSessions.some((session) => session.id === sessionId),
-    [sessionId, sortedSessions]
+      !!selectedSessionId &&
+      sortedSessions.some((session) => session.id === selectedSessionId),
+    [selectedSessionId, sortedSessions]
   );
-  const activeSessionId = sessionId
+  const activeSessionId = selectedSessionId
     ? isSessionsLoading || activeSessionExists
-      ? sessionId
+      ? selectedSessionId
       : null
-    : (sortedSessions[0]?.id ?? null);
+    : null;
   const activeSession = useMemo(
     () => sortedSessions.find((session) => session.id === activeSessionId),
     [sortedSessions, activeSessionId]
@@ -1339,9 +1350,9 @@ export function ChatSessions() {
           status: 'succeeded',
         }
       );
-      navigate(`/chat/${session.id}`);
+      setSelectedSessionId(session.id);
     },
-    (session) => navigate(`/chat/${session.id}`),
+    (session) => setSelectedSessionId(session.id),
     upsertMessage,
     () => {
       if (activeSessionId) {
@@ -1350,8 +1361,10 @@ export function ChatSessions() {
         });
       }
     },
-    () => {
-      navigate('/chat');
+    (deletedSessionId) => {
+      setSelectedSessionId((current) =>
+        current === deletedSessionId ? null : current
+      );
     }
   );
 
@@ -2846,32 +2859,31 @@ export function ChatSessions() {
     createSession.mutate(undefined);
   }, [createSession, isSessionsLoading, sortedSessions.length]);
 
-  // Navigate to first session if needed
+  // Keep the selected session valid without reflecting it in the URL.
   useEffect(() => {
     if (isSessionsLoading || isSkillsPanelOpen) return;
 
-    if (!sessionId && sortedSessions.length > 0) {
-      navigate(`/chat/${sortedSessions[0].id}`, { replace: true });
+    if (!selectedSessionId && sortedSessions.length > 0) {
+      setSelectedSessionId(sortedSessions[0].id);
       return;
     }
 
-    if (sessionId && sortedSessions.length === 0) {
-      navigate('/chat', { replace: true });
+    if (selectedSessionId && sortedSessions.length === 0) {
+      setSelectedSessionId(null);
       return;
     }
 
     if (
-      sessionId &&
+      selectedSessionId &&
       sortedSessions.length > 0 &&
-      !sortedSessions.some((session) => session.id === sessionId)
+      !sortedSessions.some((session) => session.id === selectedSessionId)
     ) {
-      navigate(`/chat/${sortedSessions[0].id}`, { replace: true });
+      setSelectedSessionId(sortedSessions[0].id);
     }
   }, [
     isSessionsLoading,
     isSkillsPanelOpen,
-    navigate,
-    sessionId,
+    selectedSessionId,
     sortedSessions,
   ]);
 
@@ -5821,7 +5833,7 @@ export function ChatSessions() {
             return next;
           });
           setIsSkillsPanelOpen(false);
-          navigate(`/chat/${id}`);
+          setSelectedSessionId(id);
         }}
         onCreateSession={async () => {
           setIsSkillsPanelOpen(false);
@@ -5843,9 +5855,6 @@ export function ChatSessions() {
             return;
           }
           setIsSkillsPanelOpen(true);
-          if (sessionId) {
-            navigate('/chat');
-          }
         }}
         onOpenSettings={() => {
           SettingsDialog.show();
@@ -5892,12 +5901,12 @@ export function ChatSessions() {
         }}
         onEditSessionTitle={(id) => {
           setIsSkillsPanelOpen(false);
-          navigate(`/chat/${id}`);
+          setSelectedSessionId(id);
           setTimeout(() => setIsEditingTitle(true), 100);
         }}
         onToggleCleanupMode={(id) => {
           setIsSkillsPanelOpen(false);
-          navigate(`/chat/${id}`);
+          setSelectedSessionId(id);
           setTimeout(() => setIsCleanupMode(true), 100);
         }}
         isArchiving={archiveSession.isPending || restoreSession.isPending}

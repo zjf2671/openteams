@@ -630,6 +630,8 @@ mod tests {
                 pty_session_key TEXT,
                 agent_session_id TEXT,
                 agent_message_id TEXT,
+                project_member_id BLOB,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 allowed_skill_ids TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -655,6 +657,7 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 default_workspace_path TEXT,
                 allowed_skill_ids TEXT,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 is_default BOOLEAN DEFAULT false,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))

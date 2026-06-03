@@ -581,6 +581,9 @@ mod tests {
                 agent_id: agent.id,
                 workspace_path: Some("/workspace/a".to_string()),
                 allowed_skill_ids: Vec::new(),
+                project_member_id: None,
+                execution_config:
+                    crate::models::member_execution_config::MemberExecutionConfig::default(),
             },
             Uuid::new_v4(),
         )

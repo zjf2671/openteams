@@ -1084,11 +1084,6 @@ impl ChatRunner {
             )
             .await?;
 
-            let executor_profile_id = self.parse_executor_profile_id(&agent)?;
-            let mut executor =
-                ExecutorConfigs::get_cached().get_coding_agent_or_default(&executor_profile_id);
-            executor.use_approvals(Arc::new(NoopExecutorApprovalService));
-
             let repo_context = RepoContext::new(PathBuf::from(&workspace_path), Vec::new());
             let mut env = ExecutionEnv::new(repo_context, false, String::new());
             env.insert("VK_CHAT_SESSION_ID", session_id.to_string());
@@ -1102,13 +1097,10 @@ impl ChatRunner {
                     .to_string_lossy()
                     .to_string(),
             );
-            apply_agent_runtime_config(
-                executor_profile_id.executor,
-                &mut executor,
-                agent.model_name.as_deref(),
-                &mut env,
-            )
-            .map_err(|err| ChatRunnerError::Io(std::io::Error::other(err.to_string())))?;
+            let (effective_execution, mut executor) =
+                build_effective_member_executor(&agent, &session_agent, &mut env)
+                    .map_err(|err| ChatRunnerError::Io(std::io::Error::other(err.to_string())))?;
+            executor.use_approvals(Arc::new(NoopExecutorApprovalService));
 
             let mut spawned = if session_agent.state != ChatSessionAgentState::Dead {
                 if let Some(agent_session_id) = session_agent.agent_session_id.as_deref() {
@@ -1149,7 +1141,7 @@ impl ChatRunner {
                     session_id,
                     agent_id,
                     run_id,
-                    executor_profile: Some(executor_profile_id.to_string()),
+                    executor_profile: Some(effective_execution.analytics_profile_label()),
                 })
                 .await;
 
@@ -1189,7 +1181,7 @@ impl ChatRunner {
                 run_started_at,
                 protocol_retry_attempt,
                 track_source_message,
-                executor_profile_id.executor == BaseCodingAgent::Codex,
+                effective_execution.runner_type == BaseCodingAgent::Codex,
             );
 
             self.spawn_exit_watcher(

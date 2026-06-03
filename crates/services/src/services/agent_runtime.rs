@@ -10,10 +10,10 @@ use executors::{
     command::{CmdOverrides, CommandBuilder},
     env::ExecutionEnv,
     executors::{AvailabilityInfo, BaseCodingAgent, CodingAgent, StandardCodingAgentExecutor},
-    model_sync::with_model,
     profile::{ExecutorConfig, ExecutorConfigs},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tokio::{process::Command, time::timeout};
 use ts_rs::TS;
@@ -53,7 +53,9 @@ pub struct AgentRuntimeConfig {
     pub runner_type: BaseCodingAgent,
     pub run_mode: AgentRunMode,
     pub env_json: HashMap<String, String>,
-    pub model_override: Option<String>,
+    #[serde(default)]
+    #[ts(type = "JsonValue")]
+    pub executor_options: Value,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -62,7 +64,8 @@ pub struct AgentRuntimeConfig {
 pub struct UpdateAgentRuntimeConfig {
     pub run_mode: Option<AgentRunMode>,
     pub env_json: Option<HashMap<String, String>>,
-    pub model_override: Option<String>,
+    #[ts(type = "JsonValue | null")]
+    pub executor_options: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -85,7 +88,8 @@ pub struct AgentRuntimeStatus {
     pub last_error: Option<String>,
     pub run_mode: AgentRunMode,
     pub env_summary: Vec<AgentRuntimeEnvSummary>,
-    pub model_override: Option<String>,
+    #[ts(type = "JsonValue")]
+    pub executor_options: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -124,7 +128,8 @@ pub struct AgentRuntimeDiagnostics {
     pub last_error: Option<String>,
     pub run_mode: AgentRunMode,
     pub env_summary: Vec<AgentRuntimeEnvSummary>,
-    pub model_override: Option<String>,
+    #[ts(type = "JsonValue")]
+    pub executor_options: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -177,21 +182,27 @@ pub async fn refresh_runtime_discovery(
         }
 
         let mut env = ExecutionEnv::new(Default::default(), false, String::new());
-        apply_config_to_executor_and_env(*runner, &mut base, None, &mut env, &store);
+        apply_config_to_executor_and_env(*runner, &mut base, &mut env, &store)?;
+        let detected_version = detect_refresh_version(&base, &env).await;
 
         match discover_models_for_executor(&base, current_dir, &env).await {
             Ok(Some(models)) => {
+                let version = version_for_discovery_update(&store, *runner, detected_version);
                 store.discoveries.insert(
                     *runner,
                     AgentRuntimeDiscovery {
                         models,
-                        version: None,
+                        version,
                         last_checked_at: Utc::now(),
                         last_error: None,
                     },
                 );
             }
-            Ok(None) => {}
+            Ok(None) => {
+                if let Some(version) = detected_version {
+                    cache_runner_version(&mut store, *runner, version);
+                }
+            }
             Err(message) => {
                 let preserved_models = models_for_runner(*runner, executor_config, &store);
                 store
@@ -200,10 +211,13 @@ pub async fn refresh_runtime_discovery(
                     .and_modify(|entry| {
                         entry.last_checked_at = Utc::now();
                         entry.last_error = Some(message.clone());
+                        if let Some(version) = detected_version.clone() {
+                            entry.version = Some(version);
+                        }
                     })
                     .or_insert_with(|| AgentRuntimeDiscovery {
                         models: Vec::new(),
-                        version: None,
+                        version: detected_version.clone(),
                         last_checked_at: Utc::now(),
                         last_error: Some(message.clone()),
                     });
@@ -248,13 +262,8 @@ pub fn update_runtime_config(
         validate_env_json(&env_json)?;
         config.env_json = env_json;
     }
-    if let Some(model_override) = payload.model_override {
-        let trimmed = model_override.trim();
-        config.model_override = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
+    if let Some(executor_options) = payload.executor_options {
+        config.executor_options = executor_options;
     }
     config.updated_at = Utc::now();
 
@@ -291,7 +300,7 @@ pub async fn runtime_diagnostics(
     let status = build_status(runner, config, base, &store);
     let mut runtime_executor = base.clone();
     let mut env = ExecutionEnv::new(Default::default(), false, String::new());
-    apply_config_to_executor_and_env(runner, &mut runtime_executor, None, &mut env, &store);
+    apply_config_to_executor_and_env(runner, &mut runtime_executor, &mut env, &store)?;
 
     let detected_version = if status.installed {
         detect_cli_version(&runtime_executor, &env).await
@@ -319,42 +328,79 @@ pub async fn runtime_diagnostics(
         last_error: status.last_error,
         run_mode: status.run_mode,
         env_summary: status.env_summary,
-        model_override: status.model_override,
+        executor_options: status.executor_options,
     })
 }
 
 pub fn apply_agent_runtime_config(
     runner: BaseCodingAgent,
     executor: &mut CodingAgent,
-    session_model_override: Option<&str>,
     env: &mut ExecutionEnv,
 ) -> Result<(), AgentRuntimeError> {
     let store = read_store(&store_path())?;
-    apply_config_to_executor_and_env(runner, executor, session_model_override, env, &store);
+    apply_config_to_executor_and_env(runner, executor, env, &store)?;
     Ok(())
 }
 
 fn apply_config_to_executor_and_env(
     runner: BaseCodingAgent,
     executor: &mut CodingAgent,
-    session_model_override: Option<&str>,
     env: &mut ExecutionEnv,
     store: &AgentRuntimeStore,
-) {
+) -> Result<(), AgentRuntimeError> {
     if let Some(config) = store.configs.get(&runner) {
         merge_agent_env_without_overwriting_session(env, &config.env_json);
-        if session_model_override.is_none()
-            && let Some(model_override) = config.model_override.as_deref()
-            && let Some(next) = with_model(executor, model_override)
-        {
-            *executor = next;
-        }
+        apply_executor_options(runner, executor, &config.executor_options)?;
     }
+    Ok(())
+}
 
-    if let Some(model_override) = session_model_override
-        && let Some(next) = with_model(executor, model_override)
-    {
-        *executor = next;
+fn apply_executor_options(
+    runner: BaseCodingAgent,
+    executor: &mut CodingAgent,
+    executor_options: &Value,
+) -> Result<(), AgentRuntimeError> {
+    let Some(options) = executor_options
+        .as_object()
+        .filter(|options| !options.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let tag = serde_json::to_value(runner)?
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let mut wrapped = serde_json::to_value(&*executor)?;
+    let Value::Object(root) = &mut wrapped else {
+        return Ok(());
+    };
+    let Some(inner) = root.get_mut(&tag) else {
+        return Ok(());
+    };
+
+    merge_json_object(inner, &Value::Object(options.clone()));
+    *executor = serde_json::from_value(wrapped)?;
+    Ok(())
+}
+
+fn merge_json_object(target: &mut Value, source: &Value) {
+    match (target, source) {
+        (Value::Object(target_map), Value::Object(source_map)) => {
+            for (key, value) in source_map {
+                match (target_map.get_mut(key), value) {
+                    (Some(existing @ Value::Object(_)), Value::Object(_)) => {
+                        merge_json_object(existing, value);
+                    }
+                    _ => {
+                        target_map.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (target, source) => {
+            *target = source.clone();
+        }
     }
 }
 
@@ -403,6 +449,15 @@ async fn detect_cli_version(executor: &CodingAgent, env: &ExecutionEnv) -> Optio
     normalize_cli_version_output(&output.stdout, &output.stderr)
 }
 
+async fn detect_refresh_version(executor: &CodingAgent, env: &ExecutionEnv) -> Option<String> {
+    match executor {
+        CodingAgent::Opencode(_) | CodingAgent::OpenTeamsCli(_) => {
+            detect_cli_version(executor, env).await
+        }
+        _ => None,
+    }
+}
+
 fn version_command_base(executor: &CodingAgent) -> Option<String> {
     if let Some(base_override) = cmd_overrides_for_executor(executor)
         .and_then(|cmd| cmd.base_command_override.as_deref())
@@ -424,7 +479,7 @@ fn version_command_base(executor: &CodingAgent) -> Option<String> {
         CodingAgent::Gemini(_) => "npx -y @google/gemini-cli@0.33.0".to_string(),
         CodingAgent::Codex(_) => "npx -y @openai/codex@0.125.0".to_string(),
         CodingAgent::Opencode(_) => "npx -y opencode-ai@1.2.24".to_string(),
-        CodingAgent::OpenTeamsCli(_) => openteams_cli_binary_base()?,
+        CodingAgent::OpenTeamsCli(_) => openteams_cli_binary_base(),
         CodingAgent::CursorAgent(_) => "cursor-agent".to_string(),
         CodingAgent::QwenCode(_) => "npx -y @qwen-code/qwen-code@0.12.1".to_string(),
         CodingAgent::Copilot(_) => "npx -y @github/copilot@1.0.4".to_string(),
@@ -453,7 +508,7 @@ fn cmd_overrides_for_executor(executor: &CodingAgent) -> Option<&CmdOverrides> {
     }
 }
 
-fn openteams_cli_binary_base() -> Option<String> {
+fn openteams_cli_binary_base() -> String {
     let binary_name = if cfg!(windows) {
         "openteams-cli.exe"
     } else {
@@ -463,7 +518,7 @@ fn openteams_cli_binary_base() -> Option<String> {
     if let Ok(path) = std::env::var("OPENTEAMS_CLI_PATH") {
         let path = PathBuf::from(path);
         if path.exists() {
-            return Some(command_base_from_path(path));
+            return command_base_from_path(path);
         }
     }
 
@@ -472,27 +527,28 @@ fn openteams_cli_binary_base() -> Option<String> {
     {
         let bundled = exe_dir.join(binary_name);
         if bundled.exists() {
-            return Some(command_base_from_path(bundled));
+            return command_base_from_path(bundled);
         }
     }
 
     if let Ok(cwd) = std::env::current_dir() {
         let dev_binary = cwd.join("binaries").join(binary_name);
         if dev_binary.exists() {
-            return Some(command_base_from_path(dev_binary));
+            return command_base_from_path(dev_binary);
         }
     }
 
     if let Some(home) = dirs::home_dir() {
         let bundled = home.join(".openteams").join("bin").join(binary_name);
         if bundled.exists() {
-            return Some(command_base_from_path(bundled));
+            return command_base_from_path(bundled);
         }
     }
 
     which::which("openteams-cli")
         .ok()
         .map(command_base_from_path)
+        .unwrap_or_else(|| "npx -y openteams-cli@latest".to_string())
 }
 
 fn command_base_from_path(path: PathBuf) -> String {
@@ -535,6 +591,19 @@ fn cache_runner_version(store: &mut AgentRuntimeStore, runner: BaseCodingAgent, 
             last_checked_at: now,
             last_error: None,
         });
+}
+
+fn version_for_discovery_update(
+    store: &AgentRuntimeStore,
+    runner: BaseCodingAgent,
+    detected_version: Option<String>,
+) -> Option<String> {
+    detected_version.or_else(|| {
+        store
+            .discoveries
+            .get(&runner)
+            .and_then(|entry| entry.version.clone())
+    })
 }
 
 async fn discover_models_for_executor(
@@ -602,7 +671,7 @@ fn build_status(
         last_error: discovery.and_then(|entry| entry.last_error.clone()),
         run_mode: config.run_mode,
         env_summary: summarize_env(&config.env_json),
-        model_override: config.model_override,
+        executor_options: config.executor_options,
     }
 }
 
@@ -653,17 +722,17 @@ fn default_config(runner: BaseCodingAgent) -> AgentRuntimeConfig {
         runner_type: runner,
         run_mode: AgentRunMode::Auto,
         env_json: HashMap::new(),
-        model_override: None,
+        executor_options: serde_json::json!({}),
         updated_at: Utc::now(),
     }
 }
 
 fn summarize_env(env: &HashMap<String, String>) -> Vec<AgentRuntimeEnvSummary> {
     let mut summaries = env
-        .keys()
-        .map(|key| AgentRuntimeEnvSummary {
+        .iter()
+        .map(|(key, value)| AgentRuntimeEnvSummary {
             key: key.clone(),
-            value: "<redacted>".to_string(),
+            value: value.clone(),
         })
         .collect::<Vec<_>>();
     summaries.sort_by(|a, b| a.key.cmp(&b.key));
@@ -743,14 +812,14 @@ mod tests {
     }
 
     #[test]
-    fn env_summary_redacts_values() {
+    fn env_summary_includes_values() {
         let mut env = HashMap::new();
         env.insert("OPENAI_API_KEY".to_string(), "sk-test".to_string());
 
         let summary = summarize_env(&env);
 
         assert_eq!(summary[0].key, "OPENAI_API_KEY");
-        assert_eq!(summary[0].value, "<redacted>");
+        assert_eq!(summary[0].value, "sk-test");
     }
 
     #[test]
@@ -766,6 +835,31 @@ mod tests {
         let version = normalize_cli_version_output(b"", b"\nclaude-code 2.1.74\n");
 
         assert_eq!(version.as_deref(), Some("claude-code 2.1.74"));
+    }
+
+    #[test]
+    fn discovery_update_version_prefers_detected_then_cached() {
+        let runner = BaseCodingAgent::Opencode;
+        let mut store = AgentRuntimeStore::default();
+        store.discoveries.insert(
+            runner,
+            AgentRuntimeDiscovery {
+                models: vec!["openai/gpt-5.4".to_string()],
+                version: Some("opencode 1.2.23".to_string()),
+                last_checked_at: Utc::now(),
+                last_error: None,
+            },
+        );
+
+        assert_eq!(
+            version_for_discovery_update(&store, runner, Some("opencode 1.2.24".to_string()))
+                .as_deref(),
+            Some("opencode 1.2.24")
+        );
+        assert_eq!(
+            version_for_discovery_update(&store, runner, None).as_deref(),
+            Some("opencode 1.2.23")
+        );
     }
 
     #[test]
@@ -815,7 +909,7 @@ mod tests {
         assert_eq!(statuses[0].runner_type, runner);
         assert_eq!(statuses[0].run_mode, AgentRunMode::Local);
         assert_eq!(statuses[0].discovered_models, vec!["kimi-k2.5"]);
-        assert_eq!(statuses[0].env_summary[0].value, "<redacted>");
+        assert_eq!(statuses[0].env_summary[0].value, "secret");
     }
 
     #[test]
@@ -825,7 +919,12 @@ mod tests {
         let runner = BaseCodingAgent::KimiCode;
         let mut runtime = default_config(runner);
         runtime.run_mode = AgentRunMode::Disabled;
-        runtime.model_override = Some("kimi-k2.6".to_string());
+        runtime.executor_options = serde_json::json!({
+            "yolo": true,
+            "cmd": {
+                "base_command_override": "kimi-dev"
+            }
+        });
         runtime
             .env_json
             .insert("KIMI_API_KEY".to_string(), "secret".to_string());
@@ -839,37 +938,29 @@ mod tests {
         assert_eq!(restored_config.runner_type, runner);
         assert_eq!(restored_config.run_mode, AgentRunMode::Disabled);
         assert_eq!(restored_config.env_json["KIMI_API_KEY"], "secret");
-        assert_eq!(restored_config.model_override.as_deref(), Some("kimi-k2.6"));
+        assert_eq!(restored_config.executor_options["yolo"], true);
     }
 
     #[test]
-    fn agent_model_override_applies_when_session_model_absent() {
+    fn executor_options_merge_into_default_executor() {
         let runner = BaseCodingAgent::KimiCode;
         let mut runtime = default_config(runner);
-        runtime.model_override = Some("gpt-5.5".to_string());
+        runtime.executor_options = serde_json::json!({
+            "model": "kimi-k2.6",
+            "yolo": true
+        });
         let mut store = AgentRuntimeStore::default();
         store.configs.insert(runner, runtime);
         let mut executor = model_agent(Some("gpt-5.4"));
         let mut env = ExecutionEnv::new(Default::default(), false, String::new());
 
-        apply_config_to_executor_and_env(runner, &mut executor, None, &mut env, &store);
+        apply_config_to_executor_and_env(runner, &mut executor, &mut env, &store).unwrap();
 
-        assert_eq!(model_name(&executor), Some("gpt-5.5"));
-    }
-
-    #[test]
-    fn session_model_override_wins_over_agent_model_override() {
-        let runner = BaseCodingAgent::KimiCode;
-        let mut runtime = default_config(runner);
-        runtime.model_override = Some("gpt-5.5".to_string());
-        let mut store = AgentRuntimeStore::default();
-        store.configs.insert(runner, runtime);
-        let mut executor = model_agent(Some("gpt-5.4"));
-        let mut env = ExecutionEnv::new(Default::default(), false, String::new());
-
-        apply_config_to_executor_and_env(runner, &mut executor, Some("gpt-5.2"), &mut env, &store);
-
-        assert_eq!(model_name(&executor), Some("gpt-5.2"));
+        assert_eq!(model_name(&executor), Some("kimi-k2.6"));
+        let CodingAgent::KimiCode(config) = executor else {
+            panic!("expected KimiCode executor");
+        };
+        assert_eq!(config.yolo, Some(true));
     }
 
     #[test]
@@ -888,7 +979,7 @@ mod tests {
         let mut env = ExecutionEnv::new(Default::default(), false, String::new());
         env.insert("VK_CHAT_SESSION_ID", "session");
 
-        apply_config_to_executor_and_env(runner, &mut executor, None, &mut env, &store);
+        apply_config_to_executor_and_env(runner, &mut executor, &mut env, &store).unwrap();
 
         assert_eq!(
             env.get("VK_CHAT_SESSION_ID").map(String::as_str),
@@ -901,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn serialized_runtime_status_has_no_reasoning_level() {
+    fn serialized_runtime_status_has_no_model_override_or_reasoning_level() {
         let status = AgentRuntimeStatus {
             runner_type: BaseCodingAgent::Codex,
             installed: true,
@@ -913,12 +1004,14 @@ mod tests {
             last_error: None,
             run_mode: AgentRunMode::Auto,
             env_summary: Vec::new(),
-            model_override: Some("gpt-5.5".to_string()),
+            executor_options: serde_json::json!({ "ask_for_approval": "never" }),
         };
 
         let value = serde_json::to_value(status).unwrap();
 
+        assert!(value.get("model_override").is_none());
         assert!(value.get("reasoning_level").is_none());
         assert!(value.get("model_reasoning_effort").is_none());
+        assert_eq!(value["executor_options"]["ask_for_approval"], "never");
     }
 }

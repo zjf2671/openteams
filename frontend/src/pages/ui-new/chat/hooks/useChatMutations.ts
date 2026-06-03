@@ -42,7 +42,7 @@ export function useChatMutations(
   onSessionUpdated?: (session: ChatSession) => void,
   onMessageSent?: (message: ChatMessage) => void,
   onMessagesDeleted?: (count: number) => void,
-  onSessionDeleted?: () => void
+  onSessionDeleted?: (sessionId: string) => void
 ): UseChatMutationsResult {
   const queryClient = useQueryClient();
 
@@ -114,7 +114,7 @@ export function useChatMutations(
         exact: true,
       });
       queryClient.invalidateQueries({ queryKey: ['chatSessions'] });
-      onSessionDeleted?.();
+      onSessionDeleted?.(deletedSessionId);
     },
   });
 

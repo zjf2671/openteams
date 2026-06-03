@@ -434,7 +434,7 @@ export type AgentRunMode = 'auto' | 'local' | 'disabled';
 export interface UpdateAgentRuntimeConfig {
   run_mode: AgentRunMode | null;
   env_json: Record<string, string> | null;
-  model_override: string | null;
+  executor_options: JsonValue | null;
 }
 
 export interface AgentRuntimeEnvSummary {
@@ -453,7 +453,7 @@ export interface AgentRuntimeStatus {
   last_error: string | null;
   run_mode: AgentRunMode;
   env_summary: AgentRuntimeEnvSummary[];
-  model_override: string | null;
+  executor_options: JsonValue;
 }
 
 export interface AgentRuntimeListResponse {
@@ -484,7 +484,7 @@ export interface AgentRuntimeDiagnostics {
   last_error: string | null;
   run_mode: AgentRunMode;
   env_summary: AgentRuntimeEnvSummary[];
-  model_override: string | null;
+  executor_options: JsonValue;
 }
 
 export type ExecutorVariantConfig = Record<

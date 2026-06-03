@@ -186,23 +186,15 @@ async fn run_workflow_agent_prompt_inner(
     )
     .await?;
 
-    let executor_profile_id = parse_executor_profile_id(agent)?;
-    let mut executor =
-        ExecutorConfigs::get_cached().get_coding_agent_or_default(&executor_profile_id);
-    executor.use_approvals(Arc::new(NoopExecutorApprovalService));
-
     let repo_context = RepoContext::new(workspace_path.clone(), Vec::new());
     let mut env = ExecutionEnv::new(repo_context, false, String::new());
     env.insert("VK_WORKFLOW_SESSION_ID", session.id.to_string());
     env.insert("VK_WORKFLOW_AGENT_ID", agent.id.to_string());
     env.insert("VK_WORKFLOW_SESSION_AGENT_ID", session_agent.id.to_string());
-    apply_agent_runtime_config(
-        executor_profile_id.executor,
-        &mut executor,
-        agent.model_name.as_deref(),
-        &mut env,
-    )
-    .map_err(|err| WorkflowRuntimeError::Io(std::io::Error::other(err.to_string())))?;
+    let (_effective_execution, mut executor) =
+        build_effective_member_executor(agent, session_agent, &mut env)
+            .map_err(|err| WorkflowRuntimeError::Io(std::io::Error::other(err.to_string())))?;
+    executor.use_approvals(Arc::new(NoopExecutorApprovalService));
 
     let mut spawned = match resume_session_id {
         Some(session_id) => {
@@ -832,31 +824,6 @@ async fn persist_workflow_runtime_session_ids(
     }
 
     Ok(())
-}
-
-fn parse_runner_type(agent: &ChatAgent) -> Result<BaseCodingAgent, WorkflowRuntimeError> {
-    let raw = agent.runner_type.trim();
-    let normalized = raw.replace(['-', ' '], "_").to_ascii_uppercase();
-    BaseCodingAgent::from_str(&normalized)
-        .map_err(|_| WorkflowRuntimeError::Validation(format!("unknown runner type: {raw}")))
-}
-
-fn parse_executor_profile_id(agent: &ChatAgent) -> Result<ExecutorProfileId, WorkflowRuntimeError> {
-    let executor = parse_runner_type(agent)?;
-    let variant = agent
-        .tools_enabled
-        .0
-        .as_object()
-        .and_then(|value| value.get(EXECUTOR_PROFILE_VARIANT_KEY))
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("DEFAULT"))
-        .map(canonical_variant_key);
-
-    Ok(match variant {
-        Some(variant) => ExecutorProfileId::with_variant(executor, variant),
-        None => ExecutorProfileId::new(executor),
-    })
 }
 
 fn spawn_log_forwarders(

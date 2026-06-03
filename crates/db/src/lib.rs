@@ -12,6 +12,7 @@ pub mod models;
 const WORKFLOW_EXECUTION_STATUS_MIGRATION_VERSION: i64 = 20260422120000;
 const WORKFLOW_AGENT_SESSION_STATE_MIGRATION_VERSION: i64 = 20260423100000;
 const PROJECT_CENTRIC_BACKEND_SCHEMA_MIGRATION_VERSION: i64 = 20260531120000;
+const MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION: i64 = 20260603120000;
 
 async fn apply_workflow_execution_status_migration_shim(
     pool: &Pool<Sqlite>,
@@ -915,6 +916,7 @@ async fn apply_project_centric_backend_schema_migration_shim(
             display_order          INTEGER DEFAULT 0,
             default_workspace_path TEXT,
             allowed_skill_ids      JSONB,
+            execution_config       JSONB NOT NULL DEFAULT '{}',
             is_default             BOOLEAN DEFAULT false,
             created_at             TIMESTAMPTZ NOT NULL DEFAULT (datetime('now', 'subsec')),
             updated_at             TIMESTAMPTZ NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -1029,9 +1031,125 @@ async fn apply_project_centric_backend_schema_migration_shim(
     )
     .await?;
     add_column_if_missing(pool, "projects", "active_repo_id", "active_repo_id TEXT").await?;
+    add_column_if_missing(
+        pool,
+        "project_members",
+        "execution_config",
+        "execution_config TEXT NOT NULL DEFAULT '{}'",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "chat_session_agents",
+        "project_member_id",
+        "project_member_id BLOB",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "chat_session_agents",
+        "execution_config",
+        "execution_config TEXT NOT NULL DEFAULT '{}'",
+    )
+    .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_updated ON chat_sessions(project_id, updated_at)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chat_session_agents_project_member_id ON chat_session_agents(project_member_id)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO _sqlx_migrations (
+            version,
+            description,
+            success,
+            checksum,
+            execution_time
+        )
+        VALUES (?1, ?2, 1, ?3, ?4)
+        ON CONFLICT(version) DO UPDATE SET
+            description = excluded.description,
+            success = excluded.success,
+            checksum = excluded.checksum,
+            execution_time = excluded.execution_time
+        "#,
+    )
+    .bind(migration.version)
+    .bind(migration.description.clone())
+    .bind(&*migration.checksum)
+    .bind(started.elapsed().as_nanos() as i64)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn apply_member_execution_config_migration_shim(
+    pool: &Pool<Sqlite>,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<(), Error> {
+    let Some(migration) = migrator
+        .iter()
+        .find(|migration| migration.version == MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION)
+    else {
+        return Ok(());
+    };
+
+    if !table_exists(pool, "_sqlx_migrations").await?
+        || !table_exists(pool, "project_members").await?
+        || !table_exists(pool, "chat_session_agents").await?
+    {
+        return Ok(());
+    }
+
+    let already_applied = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?1 AND success = 1",
+    )
+    .bind(MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION)
+    .fetch_one(pool)
+    .await?;
+    if already_applied > 0 {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Applying compatibility shim for migration {} before sqlx migrator runs",
+        MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION
+    );
+
+    let started = Instant::now();
+    add_column_if_missing(
+        pool,
+        "project_members",
+        "execution_config",
+        "execution_config TEXT NOT NULL DEFAULT '{}'",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "chat_session_agents",
+        "project_member_id",
+        "project_member_id BLOB",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "chat_session_agents",
+        "execution_config",
+        "execution_config TEXT NOT NULL DEFAULT '{}'",
+    )
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chat_session_agents_project_member_id ON chat_session_agents(project_member_id)",
     )
     .execute(pool)
     .await?;
@@ -1070,6 +1188,7 @@ async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
     apply_workflow_execution_status_migration_shim(pool, &migrator).await?;
     apply_workflow_agent_session_state_migration_shim(pool, &migrator).await?;
     apply_project_centric_backend_schema_migration_shim(pool, &migrator).await?;
+    apply_member_execution_config_migration_shim(pool, &migrator).await?;
     let mut processed_versions: HashSet<i64> = HashSet::new();
 
     loop {
@@ -1196,11 +1315,15 @@ mod tests {
     use sqlx::{Row, SqlitePool};
     use uuid::Uuid;
 
-    use super::{PROJECT_CENTRIC_BACKEND_SCHEMA_MIGRATION_VERSION, run_migrations};
+    use super::{
+        MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION,
+        PROJECT_CENTRIC_BACKEND_SCHEMA_MIGRATION_VERSION, run_migrations,
+    };
     use crate::models::{
         chat_agent::{ChatAgent, CreateChatAgent},
         chat_session::{ChatSession, CreateChatSession},
         chat_session_agent::{ChatSessionAgent, ChatSessionAgentState, CreateChatSessionAgent},
+        member_execution_config::MemberExecutionConfig,
         project::{CreateProject, Project, UpdateProject},
         project_delivery_event::{ProjectDeliveryEvent, ProjectDeliveryEventType},
         project_member::{ProjectMember, ProjectMemberType, UpdateProjectMember},
@@ -1249,6 +1372,8 @@ mod tests {
                 agent_id: agent.id,
                 workspace_path: None,
                 allowed_skill_ids: Vec::new(),
+                project_member_id: None,
+                execution_config: MemberExecutionConfig::default(),
             },
             Uuid::new_v4(),
         )
@@ -1426,6 +1551,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn member_execution_config_migration_reruns_after_columns_exist() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        run_migrations(&pool).await.expect("run migrations");
+
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = ?1")
+            .bind(MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION)
+            .execute(&pool)
+            .await
+            .expect("delete member execution config migration ledger row");
+
+        run_migrations(&pool)
+            .await
+            .expect("rerun member execution config migration idempotently");
+
+        for (table, column) in [
+            ("project_members", "execution_config"),
+            ("chat_session_agents", "project_member_id"),
+            ("chat_session_agents", "execution_config"),
+        ] {
+            let count = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await
+                .expect("read table columns")
+                .into_iter()
+                .filter(|row| row.get::<String, _>("name") == column)
+                .count();
+            assert_eq!(count, 1, "{table}.{column} should exist once");
+        }
+
+        let index_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        )
+        .bind("idx_chat_session_agents_project_member_id")
+        .fetch_one(&pool)
+        .await
+        .expect("read project member session agent index");
+        assert_eq!(index_count, 1);
+    }
+
+    #[tokio::test]
     async fn project_stats_period_is_unique_per_project() {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
@@ -1555,6 +1722,7 @@ mod tests {
             0,
             None,
             Vec::new(),
+            MemberExecutionConfig::default(),
             true,
         )
         .await
@@ -1569,6 +1737,7 @@ mod tests {
             1,
             Some("E:/workspace/agent".to_string()),
             vec!["skill-a".to_string()],
+            MemberExecutionConfig::default(),
             true,
         )
         .await
@@ -1596,6 +1765,7 @@ mod tests {
                 display_order: Some(2),
                 default_workspace_path: None,
                 allowed_skill_ids: Some(vec!["skill-b".to_string()]),
+                execution_config: None,
                 is_default: Some(false),
             },
         )
@@ -1994,6 +2164,8 @@ mod tests {
                 agent_id: agent.id,
                 workspace_path: None,
                 allowed_skill_ids: Vec::new(),
+                project_member_id: None,
+                execution_config: MemberExecutionConfig::default(),
             },
             Uuid::new_v4(),
         )

@@ -27,7 +27,6 @@ const RUN_ACTIVITY_FILE_NAME: &str = "activity.jsonl";
 const RUN_ACTIVITY_RETENTION_HOURS: i64 = 24;
 const RESERVED_USER_HANDLE: &str = "you";
 const PROTOCOL_SEND_INTENT_VALUES: &[&str] = &["request", "reply", "notify", "blocker", "confirm"];
-const EXECUTOR_PROFILE_VARIANT_KEY: &str = "executor_profile_variant";
 const EXECUTOR_GRACEFUL_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LIVE_LOG_MAX_BYTES_PER_RUN: u64 = 8 * 1024 * 1024;
 const LIVE_LOG_BUDGET_BYTES_PER_WORKSPACE: u64 = 64 * 1024 * 1024;

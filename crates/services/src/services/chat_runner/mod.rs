@@ -36,7 +36,6 @@ use executors::{
         NormalizedEntryError, NormalizedEntryType, TokenUsageInfo,
         utils::patch::extract_normalized_entry_from_patch,
     },
-    profile::{ExecutorConfigs, ExecutorProfileId, canonical_variant_key},
 };
 use futures::StreamExt;
 use regex::Regex;
@@ -59,7 +58,7 @@ use utils::{
 };
 use uuid::Uuid;
 
-use crate::services::agent_runtime::apply_agent_runtime_config;
+use crate::services::member_execution::build_effective_member_executor;
 
 include!("dependencies.rs");
 include!("types.rs");

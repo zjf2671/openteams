@@ -70,6 +70,7 @@ mod tests {
     use chrono::NaiveDate;
     use db::models::{
         chat_session::{ChatSession, CreateChatSession},
+        member_execution_config::MemberExecutionConfig,
         project::{CreateProject, Project},
         project_member::{ProjectMember, ProjectMemberType},
         project_path::{ProjectPath, ProjectPathKind},
@@ -124,6 +125,7 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 default_workspace_path TEXT,
                 allowed_skill_ids TEXT,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 is_default BOOLEAN DEFAULT false,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -245,6 +247,7 @@ mod tests {
             0,
             None,
             Vec::new(),
+            MemberExecutionConfig::default(),
             true,
         )
         .await

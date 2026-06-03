@@ -40,9 +40,11 @@ pub async fn create_session_with_project_members(
 
     let default_members = sqlx::query(
         r#"
-        SELECT agent_id,
+        SELECT id AS project_member_id,
+               agent_id,
                default_workspace_path,
-               COALESCE(allowed_skill_ids, '[]') AS allowed_skill_ids
+               COALESCE(allowed_skill_ids, '[]') AS allowed_skill_ids,
+               COALESCE(execution_config, '{}') AS execution_config
         FROM project_members
         WHERE project_id = ?1
           AND member_type = 'agent'
@@ -56,10 +58,13 @@ pub async fn create_session_with_project_members(
     .await?;
 
     for member in default_members {
+        let project_member_id: Uuid = member.try_get("project_member_id")?;
         let agent_id: Uuid = member.try_get("agent_id")?;
         let workspace_path: Option<String> = member.try_get("default_workspace_path")?;
         let allowed_skill_ids: sqlx::types::Json<Vec<String>> =
             member.try_get("allowed_skill_ids")?;
+        let execution_config: sqlx::types::Json<db::models::member_execution_config::MemberExecutionConfig> =
+            member.try_get("execution_config")?;
 
         sqlx::query(
             r#"
@@ -69,9 +74,11 @@ pub async fn create_session_with_project_members(
                 agent_id,
                 workspace_path,
                 allowed_skill_ids,
+                project_member_id,
+                execution_config,
                 state
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, 'idle')
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'idle')
             "#,
         )
         .bind(Uuid::new_v4())
@@ -79,6 +86,8 @@ pub async fn create_session_with_project_members(
         .bind(agent_id)
         .bind(workspace_path)
         .bind(allowed_skill_ids)
+        .bind(project_member_id)
+        .bind(execution_config)
         .execute(&mut *tx)
         .await?;
     }
@@ -133,6 +142,8 @@ mod session_creation_tests {
                 pty_session_key TEXT,
                 agent_session_id TEXT,
                 agent_message_id TEXT,
+                project_member_id BLOB,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 allowed_skill_ids TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -149,6 +160,7 @@ mod session_creation_tests {
                 display_order INTEGER DEFAULT 0,
                 default_workspace_path TEXT,
                 allowed_skill_ids TEXT,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 is_default BOOLEAN DEFAULT false,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -171,6 +183,7 @@ mod session_creation_tests {
         is_default: bool,
         workspace_path: Option<&str>,
         allowed_skill_ids: &str,
+        execution_config: &str,
     ) {
         sqlx::query(
             r#"
@@ -183,9 +196,10 @@ mod session_creation_tests {
                 display_order,
                 default_workspace_path,
                 allowed_skill_ids,
+                execution_config,
                 is_default
             )
-            VALUES (?1, ?2, 'agent', ?3, 'agent', 0, ?4, ?5, ?6)
+            VALUES (?1, ?2, 'agent', ?3, 'agent', 0, ?4, ?5, ?6, ?7)
             "#,
         )
         .bind(Uuid::new_v4())
@@ -193,6 +207,7 @@ mod session_creation_tests {
         .bind(agent_id)
         .bind(workspace_path)
         .bind(allowed_skill_ids)
+        .bind(execution_config)
         .bind(is_default)
         .execute(pool)
         .await
@@ -211,6 +226,7 @@ mod session_creation_tests {
             true,
             Some("/agent/workspace"),
             r#"["shell"]"#,
+            r#"{"runner_type":"CODEX","model_name":"gpt-5.4","thinking_effort":"high"}"#,
         )
         .await;
         insert_project_member(
@@ -220,6 +236,7 @@ mod session_creation_tests {
             false,
             Some("/ignored"),
             r#"["ignored"]"#,
+            r#"{}"#,
         )
         .await;
         insert_project_member(
@@ -229,6 +246,7 @@ mod session_creation_tests {
             true,
             Some("/other"),
             r#"["other"]"#,
+            r#"{}"#,
         )
         .await;
 
@@ -255,6 +273,15 @@ mod session_creation_tests {
             Some("/agent/workspace")
         );
         assert_eq!(session_agents[0].allowed_skill_ids.0, vec!["shell"]);
+        assert_eq!(session_agents[0].project_member_id.is_some(), true);
+        assert_eq!(
+            session_agents[0].execution_config.0.model_name.as_deref(),
+            Some("gpt-5.4")
+        );
+        assert_eq!(
+            session_agents[0].execution_config.0.thinking_effort.as_deref(),
+            Some("high")
+        );
 
         let project_member_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM project_members WHERE project_id = ?1")
@@ -277,6 +304,7 @@ mod session_creation_tests {
             true,
             Some("/agent/workspace"),
             "not-json",
+            r#"{}"#,
         )
         .await;
 

@@ -5,6 +5,7 @@ import type { AgentRuntimeStatus } from "@/types";
 import {
   AGENT_RUNTIME_EDITABLE_FIELDS,
   buildLocalMachineSummary,
+  envSummaryToText,
   filterRuntimeRunners,
   getRuntimeDisplayState,
   parseEnvText,
@@ -36,8 +37,8 @@ const baseRunner = {
   last_checked_at: "2026-06-02T00:00:00Z",
   last_error: null,
   run_mode: "auto",
-  env_summary: [{ key: "OPENAI_API_KEY", value: "<redacted>" }],
-  model_override: null,
+  env_summary: [{ key: "OPENAI_API_KEY", value: "sk-live-test" }],
+  executor_options: {},
 } satisfies AgentRuntimeStatus;
 
 const runners = [
@@ -101,6 +102,13 @@ check(
   }),
 );
 check(
+  "renders env summaries with raw values",
+  envSummaryToText([
+    { key: "OPENAI_API_KEY", value: "sk-live-test" },
+    { key: "DEBUG", value: "true" },
+  ]) === "OPENAI_API_KEY=sk-live-test\nDEBUG=true",
+);
+check(
   "parses env text",
   same(parseEnvText("OPENAI_API_KEY=secret\nEMPTY_VALUE\nMODEL=gpt-5"), {
     OPENAI_API_KEY: "secret",
@@ -113,7 +121,7 @@ check(
   same(AGENT_RUNTIME_EDITABLE_FIELDS, [
     "run_mode",
     "env_json",
-    "model_override",
+    "executor_options",
   ]),
 );
 

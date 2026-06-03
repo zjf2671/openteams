@@ -137,6 +137,8 @@ async fn setup_chat_runner_db() -> DBService {
                 pty_session_key TEXT,
                 agent_session_id TEXT,
                 agent_message_id TEXT,
+                project_member_id BLOB,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 allowed_skill_ids TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -227,6 +229,8 @@ async fn insert_test_session_agent(
             agent_id,
             workspace_path: None,
             allowed_skill_ids: Vec::new(),
+            project_member_id: None,
+            execution_config: db::models::member_execution_config::MemberExecutionConfig::default(),
         },
         Uuid::new_v4(),
     )

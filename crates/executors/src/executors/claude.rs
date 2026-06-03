@@ -76,6 +76,8 @@ pub struct ClaudeCode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dangerously_skip_permissions: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_api_key: Option<bool>,
@@ -119,6 +121,9 @@ impl ClaudeCode {
         }
         if let Some(model) = &self.model {
             builder = builder.extend_params(["--model", model]);
+        }
+        if let Some(effort) = &self.effort {
+            builder = builder.extend_params(["--effort", effort]);
         }
         builder = builder.extend_params([
             "--verbose",
@@ -2286,6 +2291,7 @@ mod tests {
             plan: None,
             approvals: None,
             model: None,
+            effort: None,
             append_prompt: AppendPrompt::default(),
             dangerously_skip_permissions: None,
             cmd: crate::command::CmdOverrides {

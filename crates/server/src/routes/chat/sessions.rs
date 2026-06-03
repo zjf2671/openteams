@@ -19,6 +19,7 @@ use db::models::{
     chat_run::ChatRun,
     chat_session::{ChatSession, ChatSessionStatus, CreateChatSession, UpdateChatSession},
     chat_session_agent::{ChatSessionAgent, CreateChatSessionAgent},
+    member_execution_config::MemberExecutionConfig,
 };
 use deployment::Deployment;
 use git::{Commit, DiffTarget, GitCli, GitService};
@@ -1361,6 +1362,8 @@ pub async fn create_session_agent(
             agent_id: payload.agent_id,
             workspace_path,
             allowed_skill_ids,
+            project_member_id: None,
+            execution_config: MemberExecutionConfig::default(),
         },
         Uuid::new_v4(),
     )

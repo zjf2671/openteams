@@ -7,6 +7,7 @@ use axum::{
 use chrono::NaiveDate;
 use db::models::{
     chat_session::{ChatSession, CreateChatSession},
+    member_execution_config::MemberExecutionConfig,
     project::{CreateProject, Project, ProjectError, UpdateProject},
     project_member::{ProjectMember, ProjectMemberType},
     project_path::ProjectPath,
@@ -52,6 +53,8 @@ pub struct AddProjectMemberRequest {
     #[serde(default)]
     pub allowed_skill_ids: Vec<String>,
     #[serde(default)]
+    pub execution_config: MemberExecutionConfig,
+    #[serde(default)]
     pub is_default: bool,
 }
 
@@ -62,6 +65,7 @@ pub struct UpdateProjectMemberRequest {
     pub default_workspace_path: Option<String>,
     pub is_default: Option<bool>,
     pub allowed_skill_ids: Option<Vec<String>>,
+    pub execution_config: Option<MemberExecutionConfig>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -311,6 +315,7 @@ pub async fn add_project_member(
             payload.default_workspace_path,
             payload.allowed_skill_ids,
             payload.is_default,
+            payload.execution_config,
         )
         .await
         .map_err(|err| ApiError::BadRequest(format!("Project member creation failed: {err}")))?;
@@ -336,6 +341,7 @@ pub async fn update_project_member(
                 default_workspace_path: payload.default_workspace_path,
                 is_default: payload.is_default,
                 allowed_skill_ids: payload.allowed_skill_ids,
+                execution_config: payload.execution_config,
             },
         )
         .await

@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use derivative::Derivative;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tokio::fs;
 use ts_rs::TS;
+use uuid::Uuid;
 use workspace_utils::msg_store::MsgStore;
 
 use crate::{
@@ -25,6 +28,11 @@ pub struct QwenCode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(description = "Model to use (e.g., qwen3-coder-plus, qwen3-coder-flash)")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Per-run Qwen Code reasoning effort: off, low, medium, high, max, or a numeric token budget"
+    )]
+    pub thinking_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yolo: Option<bool>,
     #[serde(flatten)]
@@ -52,6 +60,69 @@ impl QwenCode {
         builder = builder.extend_params(["--acp"]);
         apply_overrides(builder, &self.cmd)
     }
+
+    async fn env_with_per_run_settings(
+        &self,
+        current_dir: &Path,
+        env: &ExecutionEnv,
+    ) -> Result<ExecutionEnv, ExecutorError> {
+        let Some(effort) = self
+            .thinking_effort
+            .as_deref()
+            .filter(|value| has_value(value))
+        else {
+            return Ok(env.clone());
+        };
+
+        let settings_path = write_internal_settings(
+            current_dir,
+            "qwen-settings",
+            &json!({
+                "model": {
+                    "generationConfig": {
+                        "reasoning": qwen_reasoning_config(effort),
+                    }
+                }
+            }),
+        )
+        .await?;
+
+        let mut next_env = env.clone();
+        next_env.insert(
+            "QWEN_CODE_SYSTEM_SETTINGS_PATH",
+            settings_path.to_string_lossy().to_string(),
+        );
+        Ok(next_env)
+    }
+}
+
+fn has_value(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
+fn qwen_reasoning_config(effort: &str) -> serde_json::Value {
+    let normalized = effort.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "off" | "none" | "disabled" | "disable" => json!(false),
+        "low" | "medium" | "high" | "max" => json!({ "effort": normalized }),
+        _ => normalized
+            .parse::<i64>()
+            .map(|budget| json!({ "budget_tokens": budget.max(0) }))
+            .unwrap_or_else(|_| json!({ "effort": normalized })),
+    }
+}
+
+async fn write_internal_settings(
+    current_dir: &Path,
+    prefix: &str,
+    value: &serde_json::Value,
+) -> Result<std::path::PathBuf, ExecutorError> {
+    let dir = current_dir.join(".openteams").join("tmp");
+    fs::create_dir_all(&dir).await.map_err(ExecutorError::Io)?;
+    let path = dir.join(format!("{prefix}-{}.json", Uuid::new_v4()));
+    let body = serde_json::to_vec_pretty(value)?;
+    fs::write(&path, body).await.map_err(ExecutorError::Io)?;
+    Ok(path)
 }
 
 #[async_trait]
@@ -70,6 +141,7 @@ impl StandardCodingAgentExecutor for QwenCode {
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
         let harness = AcpAgentHarness::with_session_namespace("qwen_sessions")
             .with_max_resume_prompt_bytes(Self::MAX_RESUME_PROMPT_BYTES);
+        let runtime_env = self.env_with_per_run_settings(current_dir, env).await?;
         let approvals = if self.yolo.unwrap_or(false) {
             None
         } else {
@@ -80,7 +152,7 @@ impl StandardCodingAgentExecutor for QwenCode {
                 current_dir,
                 combined_prompt,
                 qwen_command,
-                env,
+                &runtime_env,
                 &self.cmd,
                 approvals,
             )
@@ -99,6 +171,7 @@ impl StandardCodingAgentExecutor for QwenCode {
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
         let harness = AcpAgentHarness::with_session_namespace("qwen_sessions")
             .with_max_resume_prompt_bytes(Self::MAX_RESUME_PROMPT_BYTES);
+        let runtime_env = self.env_with_per_run_settings(current_dir, env).await?;
         let approvals = if self.yolo.unwrap_or(false) {
             None
         } else {
@@ -110,7 +183,7 @@ impl StandardCodingAgentExecutor for QwenCode {
                 combined_prompt,
                 session_id,
                 qwen_command,
-                env,
+                &runtime_env,
                 &self.cmd,
                 approvals,
             )

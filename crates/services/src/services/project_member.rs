@@ -1,6 +1,8 @@
 use anyhow::{Result, bail};
 use db::models::{
     chat_agent::ChatAgent,
+    chat_session_agent::ChatSessionAgent,
+    member_execution_config::MemberExecutionConfig,
     project_member::{ProjectMember, ProjectMemberType, UpdateProjectMember},
 };
 use sqlx::{Row, SqlitePool};
@@ -15,6 +17,7 @@ pub struct ProjectMemberUpdateInput {
     pub default_workspace_path: Option<String>,
     pub is_default: Option<bool>,
     pub allowed_skill_ids: Option<Vec<String>>,
+    pub execution_config: Option<MemberExecutionConfig>,
 }
 
 impl ProjectMemberService {
@@ -59,6 +62,7 @@ impl ProjectMemberService {
         default_workspace_path: Option<String>,
         allowed_skill_ids: Vec<String>,
         is_default: bool,
+        execution_config: MemberExecutionConfig,
     ) -> Result<ProjectMember> {
         if member_type == ProjectMemberType::Agent {
             let Some(agent_id) = agent_id else {
@@ -79,6 +83,7 @@ impl ProjectMemberService {
             display_order,
             default_workspace_path,
             allowed_skill_ids,
+            execution_config,
             is_default,
         )
         .await?)
@@ -90,7 +95,8 @@ impl ProjectMemberService {
         id: Uuid,
         input: ProjectMemberUpdateInput,
     ) -> Result<ProjectMember> {
-        Ok(ProjectMember::update(
+        let should_sync_execution_config = input.execution_config.is_some();
+        let member = ProjectMember::update(
             pool,
             id,
             &UpdateProjectMember {
@@ -101,10 +107,27 @@ impl ProjectMemberService {
                 display_order: input.display_order,
                 default_workspace_path: input.default_workspace_path,
                 allowed_skill_ids: input.allowed_skill_ids,
+                execution_config: input.execution_config,
                 is_default: input.is_default,
             },
         )
-        .await?)
+        .await?;
+
+        if should_sync_execution_config {
+            let synced = ChatSessionAgent::sync_execution_config_for_project_member(
+                pool,
+                member.id,
+                member.execution_config.0.clone(),
+            )
+            .await?;
+            tracing::info!(
+                project_member_id = %member.id,
+                synced_session_agents = synced,
+                "Synced member execution config to idle session agents"
+            );
+        }
+
+        Ok(member)
     }
 
     pub async fn remove_member(&self, pool: &SqlitePool, id: Uuid) -> Result<u64> {
@@ -134,6 +157,7 @@ impl ProjectMemberService {
                     0,
                     None,
                     Vec::new(),
+                    MemberExecutionConfig::default(),
                     true,
                 )
                 .await?,
@@ -171,6 +195,7 @@ impl ProjectMemberService {
                     (index + 1) as i64,
                     None,
                     Vec::new(),
+                    MemberExecutionConfig::default(),
                     true,
                 )
                 .await?,
@@ -220,6 +245,7 @@ async fn chat_agents_has_is_default(pool: &SqlitePool) -> Result<bool> {
 mod tests {
     use db::models::{
         chat_agent::{ChatAgent, CreateChatAgent},
+        member_execution_config::MemberExecutionConfig,
         project_member::ProjectMemberType,
     };
     use sqlx::SqlitePool;
@@ -271,7 +297,25 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 default_workspace_path TEXT,
                 allowed_skill_ids TEXT,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 is_default BOOLEAN DEFAULT false,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+            r#"
+            CREATE TABLE chat_session_agents (
+                id BLOB PRIMARY KEY,
+                session_id BLOB NOT NULL,
+                agent_id BLOB NOT NULL,
+                state TEXT NOT NULL DEFAULT 'idle',
+                workspace_path TEXT,
+                pty_session_key TEXT,
+                agent_session_id TEXT,
+                agent_message_id TEXT,
+                project_member_id BLOB,
+                execution_config TEXT NOT NULL DEFAULT '{}',
+                allowed_skill_ids TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
             )
@@ -323,6 +367,7 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                MemberExecutionConfig::default(),
             )
             .await;
 
@@ -346,10 +391,111 @@ mod tests {
                 None,
                 Vec::new(),
                 true,
+                MemberExecutionConfig::default(),
             )
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_member_syncs_execution_config_to_unstarted_session_members() {
+        let pool = setup_pool().await;
+        let service = ProjectMemberService::new();
+        let project_id = Uuid::new_v4();
+        let agent = create_agent(&pool).await;
+        let member = service
+            .add_member(
+                &pool,
+                project_id,
+                ProjectMemberType::Agent,
+                None,
+                Some(agent.id),
+                Some("agent".to_string()),
+                1,
+                None,
+                Vec::new(),
+                true,
+                MemberExecutionConfig::default(),
+            )
+            .await
+            .expect("create member");
+
+        let synced_session_agent_id = Uuid::new_v4();
+        let running_session_agent_id = Uuid::new_v4();
+        let resumed_session_agent_id = Uuid::new_v4();
+        for (id, state, agent_session_id) in [
+            (synced_session_agent_id, "idle", None),
+            (running_session_agent_id, "running", None),
+            (resumed_session_agent_id, "idle", Some("upstream-session")),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO chat_session_agents (
+                    id,
+                    session_id,
+                    agent_id,
+                    state,
+                    project_member_id,
+                    agent_session_id
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+            )
+            .bind(id)
+            .bind(Uuid::new_v4())
+            .bind(agent.id)
+            .bind(state)
+            .bind(member.id)
+            .bind(agent_session_id)
+            .execute(&pool)
+            .await
+            .expect("insert session agent");
+        }
+
+        service
+            .update_member(
+                &pool,
+                member.id,
+                super::ProjectMemberUpdateInput {
+                    role: None,
+                    display_order: None,
+                    default_workspace_path: None,
+                    is_default: None,
+                    allowed_skill_ids: None,
+                    execution_config: Some(MemberExecutionConfig {
+                        runner_type: Some(executors::executors::BaseCodingAgent::Codex),
+                        model_name: Some("gpt-5.4".to_string()),
+                        thinking_effort: Some("high".to_string()),
+                        model_variant: None,
+                    }),
+                },
+            )
+            .await
+            .expect("update member");
+
+        let synced_config: String =
+            sqlx::query_scalar("SELECT execution_config FROM chat_session_agents WHERE id = ?1")
+                .bind(synced_session_agent_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read synced config");
+        let running_config: String =
+            sqlx::query_scalar("SELECT execution_config FROM chat_session_agents WHERE id = ?1")
+                .bind(running_session_agent_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read running config");
+        let resumed_config: String =
+            sqlx::query_scalar("SELECT execution_config FROM chat_session_agents WHERE id = ?1")
+                .bind(resumed_session_agent_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read resumed config");
+
+        assert!(synced_config.contains("gpt-5.4"));
+        assert_eq!(running_config, "{}");
+        assert_eq!(resumed_config, "{}");
     }
 
     #[tokio::test]

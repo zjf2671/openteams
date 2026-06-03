@@ -4,6 +4,25 @@ use sqlx::{FromRow, SqlitePool, Type, types::Json};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use super::member_execution_config::MemberExecutionConfig;
+
+const PROJECT_MEMBER_SELECT: &str = r#"
+    SELECT id,
+           project_id,
+           member_type,
+           user_id,
+           agent_id,
+           role,
+           display_order,
+           default_workspace_path,
+           COALESCE(allowed_skill_ids, '[]') AS allowed_skill_ids,
+           COALESCE(execution_config, '{}') AS execution_config,
+           is_default,
+           created_at,
+           updated_at
+    FROM project_members
+"#;
+
 #[derive(Debug, Clone, Type, Serialize, Deserialize, PartialEq, TS)]
 #[sqlx(type_name = "project_member_type", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
@@ -25,6 +44,8 @@ pub struct ProjectMember {
     pub default_workspace_path: Option<String>,
     #[ts(type = "string[]")]
     pub allowed_skill_ids: Json<Vec<String>>,
+    #[ts(type = "MemberExecutionConfig")]
+    pub execution_config: Json<MemberExecutionConfig>,
     pub is_default: bool,
     #[ts(type = "Date")]
     pub created_at: DateTime<Utc>,
@@ -41,6 +62,7 @@ pub struct CreateProjectMember {
     pub display_order: i64,
     pub default_workspace_path: Option<String>,
     pub allowed_skill_ids: Vec<String>,
+    pub execution_config: Option<MemberExecutionConfig>,
     pub is_default: bool,
 }
 
@@ -53,6 +75,7 @@ pub struct UpdateProjectMember {
     pub display_order: Option<i64>,
     pub default_workspace_path: Option<String>,
     pub allowed_skill_ids: Option<Vec<String>>,
+    pub execution_config: Option<MemberExecutionConfig>,
     pub is_default: Option<bool>,
 }
 
@@ -61,25 +84,10 @@ impl ProjectMember {
         pool: &SqlitePool,
         project_id: Uuid,
     ) -> Result<Vec<Self>, sqlx::Error> {
-        sqlx::query_as!(
-            ProjectMember,
-            r#"SELECT id as "id!: Uuid",
-                      project_id as "project_id!: Uuid",
-                      member_type as "member_type!: ProjectMemberType",
-                      user_id,
-                      agent_id as "agent_id: Uuid",
-                      role,
-                      display_order as "display_order!: i64",
-                      default_workspace_path,
-                      COALESCE(allowed_skill_ids, '[]') as "allowed_skill_ids!: Json<Vec<String>>",
-                      is_default as "is_default!: bool",
-                      created_at as "created_at!: DateTime<Utc>",
-                      updated_at as "updated_at!: DateTime<Utc>"
-               FROM project_members
-               WHERE project_id = $1
-               ORDER BY display_order ASC, created_at ASC"#,
-            project_id
-        )
+        sqlx::query_as::<_, ProjectMember>(&format!(
+            "{PROJECT_MEMBER_SELECT}\nWHERE project_id = ?1\nORDER BY display_order ASC, created_at ASC"
+        ))
+        .bind(project_id)
         .fetch_all(pool)
         .await
     }
@@ -88,27 +96,10 @@ impl ProjectMember {
         pool: &SqlitePool,
         project_id: Uuid,
     ) -> Result<Vec<Self>, sqlx::Error> {
-        sqlx::query_as!(
-            ProjectMember,
-            r#"SELECT id as "id!: Uuid",
-                      project_id as "project_id!: Uuid",
-                      member_type as "member_type!: ProjectMemberType",
-                      user_id,
-                      agent_id as "agent_id: Uuid",
-                      role,
-                      display_order as "display_order!: i64",
-                      default_workspace_path,
-                      COALESCE(allowed_skill_ids, '[]') as "allowed_skill_ids!: Json<Vec<String>>",
-                      is_default as "is_default!: bool",
-                      created_at as "created_at!: DateTime<Utc>",
-                      updated_at as "updated_at!: DateTime<Utc>"
-               FROM project_members
-               WHERE project_id = $1
-                 AND member_type = 'agent'
-                 AND is_default = 1
-               ORDER BY display_order ASC, created_at ASC"#,
-            project_id
-        )
+        sqlx::query_as::<_, ProjectMember>(&format!(
+            "{PROJECT_MEMBER_SELECT}\nWHERE project_id = ?1\n  AND member_type = 'agent'\n  AND is_default = 1\nORDER BY display_order ASC, created_at ASC"
+        ))
+        .bind(project_id)
         .fetch_all(pool)
         .await
     }
@@ -117,26 +108,10 @@ impl ProjectMember {
         pool: &SqlitePool,
         project_id: Uuid,
     ) -> Result<Option<Self>, sqlx::Error> {
-        sqlx::query_as!(
-            ProjectMember,
-            r#"SELECT id as "id!: Uuid",
-                      project_id as "project_id!: Uuid",
-                      member_type as "member_type!: ProjectMemberType",
-                      user_id,
-                      agent_id as "agent_id: Uuid",
-                      role,
-                      display_order as "display_order!: i64",
-                      default_workspace_path,
-                      COALESCE(allowed_skill_ids, '[]') as "allowed_skill_ids!: Json<Vec<String>>",
-                      is_default as "is_default!: bool",
-                      created_at as "created_at!: DateTime<Utc>",
-                      updated_at as "updated_at!: DateTime<Utc>"
-               FROM project_members
-               WHERE project_id = $1
-                 AND member_type = 'human'
-               LIMIT 1"#,
-            project_id
-        )
+        sqlx::query_as::<_, ProjectMember>(&format!(
+            "{PROJECT_MEMBER_SELECT}\nWHERE project_id = ?1\n  AND member_type = 'human'\nLIMIT 1"
+        ))
+        .bind(project_id)
         .fetch_optional(pool)
         .await
     }
@@ -152,13 +127,14 @@ impl ProjectMember {
         display_order: i64,
         default_workspace_path: Option<String>,
         allowed_skill_ids: Vec<String>,
+        execution_config: MemberExecutionConfig,
         is_default: bool,
     ) -> Result<Self, sqlx::Error> {
         let id = Uuid::new_v4();
         let allowed_skill_ids = Json(allowed_skill_ids);
+        let execution_config = Json(execution_config.normalized());
 
-        sqlx::query_as!(
-            ProjectMember,
+        sqlx::query_as::<_, ProjectMember>(
             r#"INSERT INTO project_members (
                     id,
                     project_id,
@@ -169,31 +145,34 @@ impl ProjectMember {
                     display_order,
                     default_workspace_path,
                     allowed_skill_ids,
+                    execution_config,
                     is_default
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-               RETURNING id as "id!: Uuid",
-                         project_id as "project_id!: Uuid",
-                         member_type as "member_type!: ProjectMemberType",
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+               RETURNING id,
+                         project_id,
+                         member_type,
                          user_id,
-                         agent_id as "agent_id: Uuid",
+                         agent_id,
                          role,
-                         display_order as "display_order!: i64",
+                         display_order,
                          default_workspace_path,
-                         COALESCE(allowed_skill_ids, '[]') as "allowed_skill_ids!: Json<Vec<String>>",
-                         is_default as "is_default!: bool",
-                         created_at as "created_at!: DateTime<Utc>",
-                         updated_at as "updated_at!: DateTime<Utc>""#,
-            id,
-            project_id,
-            member_type,
-            user_id,
-            agent_id,
-            role,
-            display_order,
-            default_workspace_path,
-            allowed_skill_ids,
-            is_default
+                         COALESCE(allowed_skill_ids, '[]') AS allowed_skill_ids,
+                         COALESCE(execution_config, '{}') AS execution_config,
+                         is_default,
+                         created_at,
+                         updated_at"#,
         )
+        .bind(id)
+        .bind(project_id)
+        .bind(member_type)
+        .bind(user_id)
+        .bind(agent_id)
+        .bind(role)
+        .bind(display_order)
+        .bind(default_workspace_path)
+        .bind(allowed_skill_ids)
+        .bind(execution_config)
+        .bind(is_default)
         .fetch_one(pool)
         .await
     }
@@ -203,27 +182,12 @@ impl ProjectMember {
         id: Uuid,
         data: &UpdateProjectMember,
     ) -> Result<Self, sqlx::Error> {
-        let existing = sqlx::query_as!(
-            ProjectMember,
-            r#"SELECT id as "id!: Uuid",
-                      project_id as "project_id!: Uuid",
-                      member_type as "member_type!: ProjectMemberType",
-                      user_id,
-                      agent_id as "agent_id: Uuid",
-                      role,
-                      display_order as "display_order!: i64",
-                      default_workspace_path,
-                      COALESCE(allowed_skill_ids, '[]') as "allowed_skill_ids!: Json<Vec<String>>",
-                      is_default as "is_default!: bool",
-                      created_at as "created_at!: DateTime<Utc>",
-                      updated_at as "updated_at!: DateTime<Utc>"
-               FROM project_members
-               WHERE id = $1"#,
-            id
-        )
-        .fetch_optional(pool)
-        .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        let existing =
+            sqlx::query_as::<_, ProjectMember>(&format!("{PROJECT_MEMBER_SELECT}\nWHERE id = ?1"))
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
+                .ok_or(sqlx::Error::RowNotFound)?;
 
         let member_type = data.member_type.clone().unwrap_or(existing.member_type);
         let user_id = data.user_id.clone().or(existing.user_id);
@@ -239,43 +203,51 @@ impl ProjectMember {
                 .clone()
                 .unwrap_or(existing.allowed_skill_ids.0),
         );
+        let execution_config = Json(
+            data.execution_config
+                .clone()
+                .unwrap_or(existing.execution_config.0)
+                .normalized(),
+        );
         let is_default = data.is_default.unwrap_or(existing.is_default);
 
-        sqlx::query_as!(
-            ProjectMember,
+        sqlx::query_as::<_, ProjectMember>(
             r#"UPDATE project_members
-               SET member_type = $2,
-                   user_id = $3,
-                   agent_id = $4,
-                   role = $5,
-                   display_order = $6,
-                   default_workspace_path = $7,
-                   allowed_skill_ids = $8,
-                   is_default = $9,
+               SET member_type = ?2,
+                   user_id = ?3,
+                   agent_id = ?4,
+                   role = ?5,
+                   display_order = ?6,
+                   default_workspace_path = ?7,
+                   allowed_skill_ids = ?8,
+                   execution_config = ?9,
+                   is_default = ?10,
                    updated_at = datetime('now', 'subsec')
-               WHERE id = $1
-               RETURNING id as "id!: Uuid",
-                         project_id as "project_id!: Uuid",
-                         member_type as "member_type!: ProjectMemberType",
+               WHERE id = ?1
+               RETURNING id,
+                         project_id,
+                         member_type,
                          user_id,
-                         agent_id as "agent_id: Uuid",
+                         agent_id,
                          role,
-                         display_order as "display_order!: i64",
+                         display_order,
                          default_workspace_path,
-                         COALESCE(allowed_skill_ids, '[]') as "allowed_skill_ids!: Json<Vec<String>>",
-                         is_default as "is_default!: bool",
-                         created_at as "created_at!: DateTime<Utc>",
-                         updated_at as "updated_at!: DateTime<Utc>""#,
-            id,
-            member_type,
-            user_id,
-            agent_id,
-            role,
-            display_order,
-            default_workspace_path,
-            allowed_skill_ids,
-            is_default
+                         COALESCE(allowed_skill_ids, '[]') AS allowed_skill_ids,
+                         COALESCE(execution_config, '{}') AS execution_config,
+                         is_default,
+                         created_at,
+                         updated_at"#,
         )
+        .bind(id)
+        .bind(member_type)
+        .bind(user_id)
+        .bind(agent_id)
+        .bind(role)
+        .bind(display_order)
+        .bind(default_workspace_path)
+        .bind(allowed_skill_ids)
+        .bind(execution_config)
+        .bind(is_default)
         .fetch_one(pool)
         .await
     }
@@ -294,6 +266,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{ProjectMember, ProjectMemberType, UpdateProjectMember};
+    use crate::models::member_execution_config::MemberExecutionConfig;
 
     async fn setup_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:")
@@ -312,6 +285,7 @@ mod tests {
                 display_order INTEGER DEFAULT 0,
                 default_workspace_path TEXT,
                 allowed_skill_ids TEXT,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 is_default BOOLEAN DEFAULT false,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -351,6 +325,7 @@ mod tests {
             0,
             None,
             Vec::new(),
+            MemberExecutionConfig::default(),
             true,
         )
         .await
@@ -365,6 +340,10 @@ mod tests {
             1,
             Some("/workspace".to_string()),
             vec!["shell".to_string()],
+            MemberExecutionConfig {
+                model_name: Some("gpt-5.4".to_string()),
+                ..Default::default()
+            },
             true,
         )
         .await
@@ -379,6 +358,7 @@ mod tests {
             2,
             None,
             Vec::new(),
+            MemberExecutionConfig::default(),
             false,
         )
         .await
@@ -414,6 +394,10 @@ mod tests {
                 display_order: Some(9),
                 default_workspace_path: Some("/updated".to_string()),
                 allowed_skill_ids: Some(vec!["read".to_string()]),
+                execution_config: Some(MemberExecutionConfig {
+                    thinking_effort: Some("high".to_string()),
+                    ..Default::default()
+                }),
                 is_default: Some(false),
             },
         )
@@ -422,6 +406,10 @@ mod tests {
         assert_eq!(updated.role.as_deref(), Some("reviewer"));
         assert_eq!(updated.display_order, 9);
         assert_eq!(updated.allowed_skill_ids.0, vec!["read"]);
+        assert_eq!(
+            updated.execution_config.0.thinking_effort.as_deref(),
+            Some("high")
+        );
         assert!(!updated.is_default);
 
         assert_eq!(
@@ -453,6 +441,7 @@ mod tests {
             0,
             None,
             Vec::new(),
+            MemberExecutionConfig::default(),
             true,
         )
         .await
@@ -468,6 +457,7 @@ mod tests {
             1,
             None,
             Vec::new(),
+            MemberExecutionConfig::default(),
             true,
         )
         .await;
@@ -483,6 +473,7 @@ mod tests {
             2,
             None,
             Vec::new(),
+            MemberExecutionConfig::default(),
             true,
         )
         .await

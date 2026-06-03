@@ -218,32 +218,6 @@ impl ChatRunner {
         Ok(skills)
     }
 
-    pub(super) fn parse_executor_profile_id(
-        &self,
-        agent: &ChatAgent,
-    ) -> Result<ExecutorProfileId, ChatRunnerError> {
-        let executor = self.parse_runner_type(agent)?;
-        let variant = Self::extract_executor_profile_variant(&agent.tools_enabled.0);
-        Ok(match variant {
-            Some(variant) => ExecutorProfileId::with_variant(executor, variant),
-            None => ExecutorProfileId::new(executor),
-        })
-    }
-
-    pub(super) fn extract_executor_profile_variant(
-        tools_enabled: &serde_json::Value,
-    ) -> Option<String> {
-        let variant = tools_enabled
-            .as_object()
-            .and_then(|value| value.get(EXECUTOR_PROFILE_VARIANT_KEY))
-            .and_then(serde_json::Value::as_str)?
-            .trim();
-        if variant.is_empty() || variant.eq_ignore_ascii_case("DEFAULT") {
-            return None;
-        }
-        Some(canonical_variant_key(variant))
-    }
-
     pub(super) fn sanitize_sender_token(value: &str, fallback: &str) -> String {
         let sanitized = value
             .chars()

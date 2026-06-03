@@ -149,6 +149,8 @@ Open the page and inspect it carefully.
                 pty_session_key TEXT,
                 agent_session_id TEXT,
                 agent_message_id TEXT,
+                project_member_id TEXT,
+                execution_config TEXT NOT NULL DEFAULT '{}',
                 allowed_skill_ids TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -213,6 +215,8 @@ Open the page and inspect it carefully.
                     installed_skill.id.to_string(),
                     custom_skill.id.to_string(),
                 ],
+                project_member_id: None,
+                execution_config: db::models::member_execution_config::MemberExecutionConfig::default(),
             },
             Uuid::new_v4(),
         )
