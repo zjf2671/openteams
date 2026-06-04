@@ -139,27 +139,42 @@
     "CODEX": {
       "DEFAULT": {
         "CODEX": {
+          "model": "gpt-5.5",
           "sandbox": "danger-full-access",
           "model_reasoning_summary": "auto"
         }
       },
-      "HIGH": {
+      "GPT_5.3_CODEX_SPARK": {
         "CODEX": {
+          "model": "gpt-5.3-codex-spark",
           "sandbox": "danger-full-access",
-          "model_reasoning_effort": "high",
           "model_reasoning_summary": "auto"
         }
       },
-      "APPROVALS": {
+      "GPT_5.4": {
         "CODEX": {
-          "sandbox": "workspace-write",
-          "ask_for_approval": "unless-trusted",
+          "model": "gpt-5.4",
+          "sandbox": "danger-full-access",
           "model_reasoning_summary": "auto"
         }
       },
-      "MAX": {
+      "CODEX_AUTO_REVIEW": {
         "CODEX": {
-          "model": "gpt-5.1-codex-max",
+          "model": "codex-auto-review",
+          "sandbox": "danger-full-access",
+          "model_reasoning_summary": "auto"
+        }
+      },
+      "GPT_5.5": {
+        "CODEX": {
+          "model": "gpt-5.5",
+          "sandbox": "danger-full-access",
+          "model_reasoning_summary": "auto"
+        }
+      },
+      "GPT_5.4_MINI": {
+        "CODEX": {
+          "model": "gpt-5.4-mini",
           "sandbox": "danger-full-access",
           "model_reasoning_summary": "auto"
         }
@@ -248,7 +263,7 @@
       "GPT_5_3_CODEX": {
         "CURSOR_AGENT": {
           "force": true,
-          "model": "gpt-5.2-codex"
+          "model": "gpt-5.3-codex"
         }
       },
       "OPUS_4_5_THINKING": {
@@ -327,7 +342,7 @@
       "GPT_5_3_CODEX": {
         "COPILOT": {
           "allow_all_tools": true,
-          "model": "gpt-5.2-codex"
+          "model": "gpt-5.3-codex"
         }
       },
       "GEMINI_3_PRO_PREVIEW": {
@@ -436,7 +451,7 @@
       "GPT_5_3_CODEX": {
         "DROID": {
           "autonomy": "skip-permissions-unsafe",
-          "model": "gpt-5.2-codex"
+          "model": "gpt-5.3-codex"
         }
       },
       "GEMINI_3_PRO": {

@@ -52,9 +52,14 @@ export const buildStatsApi = {
   getModelPricing: async (
     projectId: string,
     period?: "7d" | "30d" | "90d",
+    date?: string,
   ): Promise<ModelPricingResponse> => {
     const r = await makeRequest(
-      `/api/build-stats/model-pricing${qs({ project_id: projectId, period })}`,
+      `/api/build-stats/model-pricing${qs({
+        project_id: projectId,
+        period,
+        date,
+      })}`,
     );
     return handleApiResponse<ModelPricingResponse>(r);
   },

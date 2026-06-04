@@ -44,6 +44,8 @@ use sdk::{
 use slash_commands::{OpenTeamsCliSlashCommand, hardcoded_slash_commands};
 
 const FREE_MODEL_PROVIDER_ID: &str = "opencode";
+const CONFIG_CONTENT_ENV: &str = "OPENTEAMS_CONFIG_CONTENT";
+const PUBLIC_API_KEY: &str = "public";
 
 #[derive(Derivative, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[derivative(Debug, PartialEq)]
@@ -208,7 +210,8 @@ impl OpenTeamsCli {
         current_dir: &Path,
         env: &ExecutionEnv,
     ) -> Result<Vec<String>, ExecutorError> {
-        let server = self.spawn_server(current_dir, env).await?;
+        let env = setup_builtin_provider_env(env);
+        let server = self.spawn_server(current_dir, &env).await?;
         let directory = current_dir.to_string_lossy().to_string();
 
         let result = async {
@@ -519,6 +522,7 @@ impl StandardCodingAgentExecutor for OpenTeamsCli {
     ) -> Result<SpawnedChild, ExecutorError> {
         let env = setup_permissions_env(self.auto_approve, env);
         let env = setup_compaction_env(self.auto_compact, &env);
+        let env = setup_builtin_provider_env(&env);
         self.spawn_inner(current_dir, prompt, None, &env).await
     }
 
@@ -532,6 +536,7 @@ impl StandardCodingAgentExecutor for OpenTeamsCli {
     ) -> Result<SpawnedChild, ExecutorError> {
         let env = setup_permissions_env(self.auto_approve, env);
         let env = setup_compaction_env(self.auto_compact, &env);
+        let env = setup_builtin_provider_env(&env);
         self.spawn_inner(current_dir, prompt, Some(session_id), &env)
             .await
     }
@@ -619,11 +624,10 @@ fn collect_discoverable_models(
         }
     }
 
-    for provider in &config_providers.providers {
-        insert_provider_models(&mut models, &provider.id, provider.models.keys());
-    }
-
     for (provider_id, model_id) in &config_providers.default {
+        if provider_id == FREE_MODEL_PROVIDER_ID && !is_opencode_free_model(model_id) {
+            continue;
+        }
         if let Some(model) = model_from_provider(provider_id, model_id) {
             models.insert(model);
         }
@@ -728,6 +732,44 @@ fn merge_compaction_config(existing_json: Option<&str>) -> String {
     serde_json::to_string(&config).unwrap_or_else(|_| r#"{"compaction":{"auto":true}}"#.to_string())
 }
 
+fn setup_builtin_provider_env(env: &ExecutionEnv) -> ExecutionEnv {
+    let mut env = env.clone();
+    let merged = merge_builtin_provider_config(env.get(CONFIG_CONTENT_ENV).map(String::as_str));
+    env.insert(CONFIG_CONTENT_ENV, merged);
+    env
+}
+
+fn merge_builtin_provider_config(existing_json: Option<&str>) -> String {
+    let mut config: Map<String, Value> = existing_json
+        .and_then(|value| serde_json::from_str(value.trim()).ok())
+        .unwrap_or_default();
+    let mut providers = config
+        .remove("provider")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut opencode = providers
+        .remove(FREE_MODEL_PROVIDER_ID)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut options = opencode
+        .remove("options")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    options
+        .entry("apiKey".to_string())
+        .or_insert_with(|| Value::String(PUBLIC_API_KEY.to_string()));
+    opencode.insert("options".to_string(), Value::Object(options));
+    providers.insert(FREE_MODEL_PROVIDER_ID.to_string(), Value::Object(opencode));
+    config.insert("provider".to_string(), Value::Object(providers));
+
+    serde_json::to_string(&config).unwrap_or_else(|_| {
+        format!(
+            r#"{{"provider":{{"{FREE_MODEL_PROVIDER_ID}":{{"options":{{"apiKey":"{PUBLIC_API_KEY}"}}}}}}}}"#
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -735,7 +777,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        collect_discoverable_models,
+        collect_discoverable_models, merge_builtin_provider_config,
         sdk::{ConfigProvidersResponse, ProviderInfo, ProviderListResponse},
     };
 
@@ -785,16 +827,44 @@ mod tests {
             models,
             vec![
                 "LiteLLM/gpt-5.2-codex",
-                "cpa/gpt-5.2-codex",
                 "cpa/sonnet",
                 "github-models/openai/gpt-4",
                 "opencode/kimi-k2-free",
                 "opencode/qwen3-coder-free",
-                "zAI/glm-5",
             ]
         );
         assert!(!models.iter().any(|model| model.starts_with("openrouter/")));
         assert!(!models.contains(&"opencode/free-model".to_string()));
         assert!(!models.contains(&"opencode/gpt-5".to_string()));
+        assert!(!models.contains(&"cpa/gpt-5.2-codex".to_string()));
+        assert!(!models.contains(&"zAI/glm-5".to_string()));
+    }
+
+    #[test]
+    fn builtin_provider_config_adds_public_opencode_key() {
+        let merged = merge_builtin_provider_config(None);
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        assert_eq!(
+            value["provider"]["opencode"]["options"]["apiKey"],
+            json!("public")
+        );
+    }
+
+    #[test]
+    fn builtin_provider_config_preserves_existing_opencode_key() {
+        let merged = merge_builtin_provider_config(Some(
+            r#"{"provider":{"opencode":{"options":{"apiKey":"user-key","timeout":123}}}}"#,
+        ));
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        assert_eq!(
+            value["provider"]["opencode"]["options"]["apiKey"],
+            json!("user-key")
+        );
+        assert_eq!(
+            value["provider"]["opencode"]["options"]["timeout"],
+            json!(123)
+        );
     }
 }

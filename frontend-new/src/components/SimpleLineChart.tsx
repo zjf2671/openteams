@@ -23,6 +23,7 @@ export interface SimpleLineChartProps<T extends { date: string }> {
   height?: number;
   formatValue?: (value: number) => string;
   tooltipRows?: (datum: T) => SimpleLineChartTooltipRow[];
+  onDatumClick?: (datum: T) => void;
 }
 
 const chartPadding = {
@@ -40,6 +41,7 @@ export function SimpleLineChart<T extends { date: string }>({
   height = 220,
   formatValue = formatNumber,
   tooltipRows,
+  onDatumClick,
 }: SimpleLineChartProps<T>) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const chartData = Array.isArray(data) ? data : [];
@@ -214,11 +216,21 @@ export function SimpleLineChart<T extends { date: string }>({
               r={12}
               fill="transparent"
               tabIndex={0}
+              role={onDatumClick ? 'button' : undefined}
               aria-label={`${formatChartDate(datum.date)} ${item.label} chart point`}
               onFocus={() => setActiveIndex(index)}
               onBlur={() => setActiveIndex(null)}
               onPointerEnter={() => setActiveIndex(index)}
               onPointerLeave={() => setActiveIndex(null)}
+              onClick={() => onDatumClick?.(datum)}
+              onKeyDown={(event) => {
+                if (!onDatumClick) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onDatumClick(datum);
+                }
+              }}
+              className={onDatumClick ? 'cursor-pointer' : undefined}
             />
           )),
         )}

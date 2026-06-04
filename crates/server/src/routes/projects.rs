@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::NaiveDate;
 use db::models::{
+    chat_agent::ChatAgent,
     chat_session::{ChatSession, CreateChatSession},
     member_execution_config::MemberExecutionConfig,
     project::{CreateProject, Project, ProjectError, UpdateProject},
@@ -16,9 +17,12 @@ use db::models::{
     repo::Repo,
 };
 use deployment::Deployment;
+use executors::executors::BaseCodingAgent;
 use serde::{Deserialize, Serialize};
 use services::services::{
+    agent_runtime::{AgentRuntimeReasoningCapability, reasoning_capability_for_runner_type},
     chat::create_session_with_project_members,
+    member_execution::parse_runner_type,
     project::ProjectDetail,
     project_member::{ProjectMemberService, ProjectMemberUpdateInput},
     project_stats::ProjectStatsService,
@@ -103,13 +107,21 @@ pub struct ProjectDetailResponse {
 }
 
 #[derive(Debug, Serialize, TS)]
+pub struct ProjectMemberWithRuntime {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub member: ProjectMember,
+    pub reasoning_capability: Option<AgentRuntimeReasoningCapability>,
+}
+
+#[derive(Debug, Serialize, TS)]
 pub struct ProjectMembersResponse {
-    pub members: Vec<ProjectMember>,
+    pub members: Vec<ProjectMemberWithRuntime>,
 }
 
 #[derive(Debug, Serialize, TS)]
 pub struct ProjectMemberResponse {
-    pub member: ProjectMember,
+    pub member: ProjectMemberWithRuntime,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -183,6 +195,58 @@ async fn ensure_member_belongs_to_project(
         Ok(())
     } else {
         Err(ApiError::BadRequest("Project member not found".to_string()))
+    }
+}
+
+async fn project_member_views(
+    deployment: &DeploymentImpl,
+    members: Vec<ProjectMember>,
+) -> Result<Vec<ProjectMemberWithRuntime>, ApiError> {
+    let mut views = Vec::with_capacity(members.len());
+    for member in members {
+        views.push(project_member_view(deployment, member).await?);
+    }
+    Ok(views)
+}
+
+async fn project_member_view(
+    deployment: &DeploymentImpl,
+    member: ProjectMember,
+) -> Result<ProjectMemberWithRuntime, ApiError> {
+    let runner = effective_member_runner(deployment, &member).await?;
+    let reasoning_capability = runner.and_then(reasoning_capability_for_runner_type);
+    Ok(ProjectMemberWithRuntime {
+        member,
+        reasoning_capability,
+    })
+}
+
+async fn effective_member_runner(
+    deployment: &DeploymentImpl,
+    member: &ProjectMember,
+) -> Result<Option<BaseCodingAgent>, ApiError> {
+    if let Some(runner) = member.execution_config.0.runner_type {
+        return Ok(Some(runner));
+    }
+
+    let Some(agent_id) = member.agent_id else {
+        return Ok(None);
+    };
+    let Some(agent) = ChatAgent::find_by_id(&deployment.db().pool, agent_id).await? else {
+        return Ok(None);
+    };
+
+    match parse_runner_type(&agent.runner_type) {
+        Ok(runner) => Ok(Some(runner)),
+        Err(err) => {
+            tracing::warn!(
+                agent_id = %agent.id,
+                runner_type = %agent.runner_type,
+                error = %err,
+                "Unable to resolve project member runner type"
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -288,20 +352,22 @@ pub async fn delete_project(
 pub async fn list_project_members(
     State(deployment): State<DeploymentImpl>,
     Path(project_id): Path<Uuid>,
-) -> Result<ResponseJson<ApiResponse<Vec<ProjectMember>>>, ApiError> {
+) -> Result<ResponseJson<ApiResponse<Vec<ProjectMemberWithRuntime>>>, ApiError> {
     ensure_project_exists(&deployment, project_id).await?;
     let members = ProjectMemberService::new()
         .list_members(&deployment.db().pool, project_id)
         .await
         .map_err(|err| ApiError::BadRequest(format!("Project member lookup failed: {err}")))?;
-    Ok(ResponseJson(ApiResponse::success(members)))
+    Ok(ResponseJson(ApiResponse::success(
+        project_member_views(&deployment, members).await?,
+    )))
 }
 
 pub async fn add_project_member(
     State(deployment): State<DeploymentImpl>,
     Path(project_id): Path<Uuid>,
     Json(payload): Json<AddProjectMemberRequest>,
-) -> Result<ResponseJson<ApiResponse<ProjectMember>>, ApiError> {
+) -> Result<ResponseJson<ApiResponse<ProjectMemberWithRuntime>>, ApiError> {
     ensure_project_exists(&deployment, project_id).await?;
     let member = ProjectMemberService::new()
         .add_member(
@@ -320,14 +386,16 @@ pub async fn add_project_member(
         .await
         .map_err(|err| ApiError::BadRequest(format!("Project member creation failed: {err}")))?;
 
-    Ok(ResponseJson(ApiResponse::success(member)))
+    Ok(ResponseJson(ApiResponse::success(
+        project_member_view(&deployment, member).await?,
+    )))
 }
 
 pub async fn update_project_member(
     State(deployment): State<DeploymentImpl>,
     Path((project_id, member_id)): Path<(Uuid, Uuid)>,
     Json(payload): Json<UpdateProjectMemberRequest>,
-) -> Result<ResponseJson<ApiResponse<ProjectMember>>, ApiError> {
+) -> Result<ResponseJson<ApiResponse<ProjectMemberWithRuntime>>, ApiError> {
     ensure_project_exists(&deployment, project_id).await?;
     ensure_member_belongs_to_project(&deployment, project_id, member_id).await?;
 
@@ -347,7 +415,9 @@ pub async fn update_project_member(
         .await
         .map_err(|err| ApiError::BadRequest(format!("Project member update failed: {err}")))?;
 
-    Ok(ResponseJson(ApiResponse::success(member)))
+    Ok(ResponseJson(ApiResponse::success(
+        project_member_view(&deployment, member).await?,
+    )))
 }
 
 pub async fn delete_project_member(

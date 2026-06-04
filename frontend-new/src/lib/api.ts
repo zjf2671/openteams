@@ -68,7 +68,7 @@ import type {
   CreateProjectSessionRequest,
   Project,
   ProjectDetail,
-  ProjectMember,
+  ProjectMemberWithRuntime,
   ProjectStats,
   ProjectStatsQuery,
   Repo,
@@ -929,34 +929,34 @@ export const projectApi = {
     });
     return handleApiResponse<void>(r);
   },
-  listMembers: async (projectId: string): Promise<ProjectMember[]> => {
+  listMembers: async (projectId: string): Promise<ProjectMemberWithRuntime[]> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/members`,
     );
-    return handleApiResponse<ProjectMember[]>(r);
+    return handleApiResponse<ProjectMemberWithRuntime[]>(r);
   },
   addMember: async (
     projectId: string,
     data: AddProjectMemberRequest,
-  ): Promise<ProjectMember> => {
+  ): Promise<ProjectMemberWithRuntime> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/members`,
       { method: "POST", body: jsonBody(data) },
     );
-    return handleApiResponse<ProjectMember>(r);
+    return handleApiResponse<ProjectMemberWithRuntime>(r);
   },
   updateMember: async (
     projectId: string,
     memberId: string,
     data: UpdateProjectMemberRequest,
-  ): Promise<ProjectMember> => {
+  ): Promise<ProjectMemberWithRuntime> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(
         memberId,
       )}`,
       { method: "PUT", body: jsonBody(data) },
     );
-    return handleApiResponse<ProjectMember>(r);
+    return handleApiResponse<ProjectMemberWithRuntime>(r);
   },
   removeMember: async (projectId: string, memberId: string): Promise<void> => {
     const r = await makeRequest(

@@ -454,6 +454,10 @@ export interface AgentRuntimeEnvSummary {
   value: string;
 }
 
+export type AgentRuntimeReasoningCapability =
+  | { kind: 'effort'; options: string[] }
+  | { kind: 'variant'; options: string[] };
+
 export interface AgentRuntimeStatus {
   runner_type: BaseCodingAgent;
   installed: boolean;

@@ -267,6 +267,12 @@ fn with_thinking_or_variant(
             next.variant = Some(variant.to_string());
             Some(CodingAgent::Opencode(next))
         }
+        CodingAgent::OpenTeamsCli(base) => {
+            let variant = model_variant.or(thinking_effort)?;
+            let mut next = base.clone();
+            next.variant = Some(variant.to_string());
+            Some(CodingAgent::OpenTeamsCli(next))
+        }
         CodingAgent::Gemini(base) => {
             let effort = thinking_effort?;
             let mut next = base.clone();
@@ -410,6 +416,18 @@ mod tests {
         };
         assert_eq!(opencode.model.as_deref(), Some("openai/gpt-5.2-codex"));
         assert_eq!(opencode.variant.as_deref(), Some("thinking-high"));
+
+        let openteams_cli = with_member_execution_overrides(
+            &agent_from_json(serde_json::json!({ "OPEN_TEAMS_CLI": {} })),
+            Some("openai/gpt-5.2-codex"),
+            Some("thinking-high"),
+            None,
+        );
+        let CodingAgent::OpenTeamsCli(openteams_cli) = openteams_cli else {
+            panic!("expected OpenTeamsCli");
+        };
+        assert_eq!(openteams_cli.model.as_deref(), Some("openai/gpt-5.2-codex"));
+        assert_eq!(openteams_cli.variant.as_deref(), Some("thinking-high"));
 
         let gemini = with_member_execution_overrides(
             &agent_from_json(serde_json::json!({ "GEMINI": {} })),

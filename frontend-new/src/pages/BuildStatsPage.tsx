@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { buildStatsApi } from '@/lib/buildStatsApi';
 import type {
@@ -328,6 +334,9 @@ const mockModels: ModelUsageRow[] = [
 export function BuildStatsPage() {
   const { t, selectedProjectId } = useWorkspace();
   const [timeRange, setTimeRange] = useState<TimeRange>('7d');
+  const [selectedTokenDate, setSelectedTokenDate] = useState<string | null>(
+    null,
+  );
   const [sessionViewMode, setSessionViewMode] =
     useState<SessionCostViewMode>('bar');
 
@@ -344,8 +353,10 @@ export function BuildStatsPage() {
   const [activityError, setActivityError] = useState<string | null>(null);
 
   const [models, setModels] = useState<ModelUsageRow[]>([]);
+  const [modelCostModels, setModelCostModels] = useState<ModelUsageRow[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const modelsLoadedRef = useRef(false);
 
   const text = useCallback(
     (key: string, fallback: string) => {
@@ -436,23 +447,35 @@ export function BuildStatsPage() {
   const fetchModels = useCallback(async () => {
     if (!selectedProjectId) {
       setModels(mockModels);
+      setModelCostModels(mockModels);
       setModelsLoading(false);
       setModelsError(null);
+      modelsLoadedRef.current = true;
       return;
     }
-    setModelsLoading(true);
+    setModelsLoading(!modelsLoadedRef.current);
     setModelsError(null);
     try {
-      const res = await buildStatsApi.getModelPricing(selectedProjectId, timeRange);
+      const res = await buildStatsApi.getModelPricing(
+        selectedProjectId,
+        timeRange,
+        selectedTokenDate ?? undefined,
+      );
       const models = asArray(res?.models);
       setModels(models);
+      if (!selectedTokenDate) {
+        setModelCostModels(models);
+      }
+      modelsLoadedRef.current = true;
     } catch {
-      setModels([]);
-      setModelsError(t('buildStats.error.fetchFailed'));
+      if (!modelsLoadedRef.current) {
+        setModels([]);
+        setModelsError(t('buildStats.error.fetchFailed'));
+      }
     } finally {
       setModelsLoading(false);
     }
-  }, [selectedProjectId, timeRange, t]);
+  }, [selectedProjectId, selectedTokenDate, timeRange, t]);
 
   const refreshCostData = useCallback(async () => {
     await Promise.all([fetchDailyTokens(), fetchSessions(), fetchModels()]);
@@ -467,9 +490,25 @@ export function BuildStatsPage() {
   }, [fetchDailyTokens, fetchActivity]);
 
   useEffect(() => {
+    modelsLoadedRef.current = false;
+  }, [selectedProjectId]);
+
+  useEffect(() => {
     void fetchSessions();
+  }, [fetchSessions]);
+
+  useEffect(() => {
     void fetchModels();
-  }, [fetchSessions, fetchModels]);
+  }, [fetchModels]);
+
+  useEffect(() => {
+    if (
+      selectedTokenDate &&
+      !dailyTokens.some((datum) => datum.date === selectedTokenDate)
+    ) {
+      setSelectedTokenDate(null);
+    }
+  }, [dailyTokens, selectedTokenDate]);
 
   const totals = useMemo(() => {
     const tokenTotal = dailyTokens.reduce(
@@ -484,12 +523,12 @@ export function BuildStatsPage() {
       (sum, item) => sum + asNumber(item.features_delivered),
       0,
     );
-    const modelCost = models.reduce(
+    const modelCost = modelCostModels.reduce(
       (sum, item) => sum + asNumber(item.estimated_cost),
       0,
     );
     return { tokenTotal, bugsFixed, featuresDelivered, modelCost };
-  }, [activityDays, dailyTokens, models]);
+  }, [activityDays, dailyTokens, modelCostModels]);
 
   return (
     <div className="h-full w-full overflow-y-auto bg-[var(--surface-2)] p-4 md:p-5">
@@ -534,7 +573,12 @@ export function BuildStatsPage() {
           onRetry={() => void fetchDailyTokens()}
           retryLabel={t('buildStats.error.retry')}
         >
-          <DailyTokenChart data={dailyTokens} loading={dailyTokensLoading} t={t} />
+          <DailyTokenChart
+            data={dailyTokens}
+            loading={dailyTokensLoading}
+            onDateSelect={setSelectedTokenDate}
+            t={t}
+          />
         </Panel>
 
         <Panel
@@ -581,7 +625,25 @@ export function BuildStatsPage() {
           />
         </Panel>
 
-        <Panel title={text('buildStats.modelUsage', 'Model usage')}>
+        <Panel
+          title={text('buildStats.modelUsage', 'Model usage')}
+          action={
+            selectedTokenDate ? (
+              <button
+                type="button"
+                onClick={() => setSelectedTokenDate(null)}
+                aria-label={text(
+                  'buildStats.clearDateFilter',
+                  'Clear date filter',
+                )}
+                className="inline-flex items-center gap-1 rounded-sm border border-[var(--hairline)] px-2 py-1 font-mono text-[11px] text-[var(--ink-subtle)] transition hover:text-[var(--ink)]"
+              >
+                {selectedTokenDate}
+                <span aria-hidden="true">x</span>
+              </button>
+            ) : undefined
+          }
+        >
           <ModelPricingTable
             models={models}
             loading={modelsLoading}

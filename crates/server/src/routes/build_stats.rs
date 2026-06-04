@@ -102,6 +102,7 @@ pub struct ActivityResponse {
 pub struct ModelPricingQuery {
     pub project_id: Uuid,
     pub period: Option<String>,
+    pub date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +179,24 @@ fn parse_period_days(period: &str) -> Result<i64, ApiError> {
             "Invalid period. Must be one of: 7d, 30d, 90d".to_string(),
         )),
     }
+}
+
+fn parse_filter_date(date: &str) -> Result<NaiveDate, ApiError> {
+    let valid_shape = date.len() == 10
+        && date.as_bytes()[4] == b'-'
+        && date.as_bytes()[7] == b'-'
+        && date
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit());
+    if !valid_shape {
+        return Err(ApiError::BadRequest(
+            "Invalid date. Must use YYYY-MM-DD".to_string(),
+        ));
+    }
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| ApiError::BadRequest("Invalid date. Must use YYYY-MM-DD".to_string()))
 }
 
 /// Fill zero-value entries for dates with no data within the selected range.
@@ -394,7 +413,12 @@ async fn get_model_pricing(
     let pool = &deployment.db().pool;
 
     let service = TokenCostStatsService::new();
-    let model_stats = if let Some(period) = params.period.as_deref() {
+    let model_stats = if let Some(date) = params.date.as_deref() {
+        let date = parse_filter_date(date)?;
+        service
+            .model_usage_for_period(pool, params.project_id, date, date, u32::MAX)
+            .await?
+    } else if let Some(period) = params.period.as_deref() {
         let num_days = parse_period_days(period)?;
         let today = Utc::now().date_naive();
         let start_date = today - chrono::Duration::days(num_days - 1);
@@ -716,6 +740,17 @@ mod tests {
         assert!(parse_period_days("").is_err());
         assert!(parse_period_days("7").is_err());
         assert!(parse_period_days("invalid").is_err());
+    }
+
+    #[test]
+    fn test_parse_filter_date() {
+        assert_eq!(
+            parse_filter_date("2026-06-03").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 6, 3).unwrap()
+        );
+        assert!(parse_filter_date("2026/06/03").is_err());
+        assert!(parse_filter_date("2026-6-3").is_err());
+        assert!(parse_filter_date("").is_err());
     }
 
     // 鈹€鈹€鈹€ Price Validation Tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

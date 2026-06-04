@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -210,6 +211,37 @@ const translateWithFallback = (
 ): string => {
   const translated = t(key);
   return translated === key ? fallback : translated;
+};
+
+type RuntimeRunnerUpdateOptions = {
+  notifyErrors?: boolean;
+};
+
+const runtimeSnapshotTime = (value: string | null | undefined) => {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+const shouldApplyRuntimeSnapshot = (
+  current: Pick<AgentRuntimeStatus, "last_checked_at">,
+  next: Pick<AgentRuntimeStatus, "last_checked_at">,
+): boolean => {
+  const currentTime = runtimeSnapshotTime(current.last_checked_at);
+  const nextTime = runtimeSnapshotTime(next.last_checked_at);
+  if (currentTime !== null && nextTime === null) return false;
+  if (currentTime === null || nextTime === null) return true;
+  return nextTime >= currentTime;
+};
+
+const getRuntimeErrorMessage = (
+  runner: AgentRuntimeStatus,
+  t: TranslateFn,
+): string => {
+  const lastError = runner.last_error?.trim();
+  if (lastError) return lastError;
+  if (runner.installed && !runner.executable) return t("agents.status.error");
+  return "";
 };
 
 const translateConfigFieldText = (
@@ -943,6 +975,8 @@ function AgentConfigSidebar({
     useState<AgentRuntimeDiagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const latestRunnerRef = useRef(runner);
+  latestRunnerRef.current = runner;
   const schema = agentConfigSchemas[runner.runner_type];
   const diagnosticsFailedLabel = t("agents.diagnostics.failed");
   const schemaFields = Object.entries(schema.properties ?? {}).filter(
@@ -1012,6 +1046,8 @@ function AgentConfigSidebar({
       .getDiagnostics(runner.runner_type)
       .then((result) => {
         if (active) {
+          const latestRunner = latestRunnerRef.current;
+          if (!shouldApplyRuntimeSnapshot(latestRunner, result)) return;
           setDiagnostics(result);
           onDiagnosticsLoaded(result);
         }
@@ -1242,8 +1278,9 @@ function AgentConfigEmptyState({ t }: { t: TranslateFn }) {
 /* ========== Main page ========== */
 
 export function AgentsPage() {
-  const { t } = useWorkspace();
+  const { t, showToast } = useWorkspace();
   const [runners, setRunners] = useState<AgentRuntimeStatus[]>([]);
+  const runnersRef = useRef<AgentRuntimeStatus[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<AgentRuntimeFilter>("all");
   const [loading, setLoading] = useState(true);
@@ -1264,6 +1301,72 @@ export function AgentsPage() {
     [configSavedNotice, discoveryRefreshedNotice],
   );
 
+  const notifyRuntimeErrors = useCallback(
+    (next: AgentRuntimeStatus[], previous: AgentRuntimeStatus[]) => {
+      for (const runner of next) {
+        if (getRuntimeDisplayState(runner) !== "error") continue;
+        const previousRunner = previous.find(
+          (item) => item.runner_type === runner.runner_type,
+        );
+        if (!previousRunner) continue;
+
+        const message = getRuntimeErrorMessage(runner, t);
+        if (!message) continue;
+
+        const previousMessage = getRuntimeErrorMessage(previousRunner, t);
+        if (
+          getRuntimeDisplayState(previousRunner) !== "error" ||
+          previousMessage !== message
+        ) {
+          showToast(`${getRunnerLabel(runner.runner_type)}: ${message}`);
+          return;
+        }
+      }
+    },
+    [showToast, t],
+  );
+
+  const updateRuntimeRunners = useCallback(
+    (next: AgentRuntimeStatus[], options?: RuntimeRunnerUpdateOptions) => {
+      const previous = runnersRef.current;
+      if (options?.notifyErrors) {
+        notifyRuntimeErrors(next, previous);
+      }
+      runnersRef.current = next;
+      setRunners(next);
+    },
+    [notifyRuntimeErrors],
+  );
+
+  const updateRuntimeRunnersWith = useCallback(
+    (
+      updater: (current: AgentRuntimeStatus[]) => AgentRuntimeStatus[],
+      options?: RuntimeRunnerUpdateOptions,
+    ) => {
+      const previous = runnersRef.current;
+      const next = updater(previous);
+      if (options?.notifyErrors) {
+        notifyRuntimeErrors(next, previous);
+      }
+      runnersRef.current = next;
+      setRunners(next);
+    },
+    [notifyRuntimeErrors],
+  );
+
+  const replaceRuntimeRunner = useCallback(
+    (updated: AgentRuntimeStatus, options?: RuntimeRunnerUpdateOptions) => {
+      updateRuntimeRunnersWith(
+        (current) =>
+          current.map((item) =>
+            item.runner_type === updated.runner_type ? updated : item,
+          ),
+        options,
+      );
+    },
+    [updateRuntimeRunnersWith],
+  );
+
   const filteredRunners = useMemo(
     () =>
       sortRunnersByAvailability(filterRuntimeRunners(runners, query, filter)),
@@ -1277,7 +1380,7 @@ export function AgentsPage() {
       if (showLoading) setLoadError(null);
       try {
         const response = await agentRuntimeApi.list();
-        setRunners(response.runners);
+        updateRuntimeRunners(response.runners);
         setLoadError(null);
       } catch (error) {
         if (showLoading) {
@@ -1289,7 +1392,7 @@ export function AgentsPage() {
         if (showLoading) setLoading(false);
       }
     },
-    [t],
+    [t, updateRuntimeRunners],
   );
 
   useEffect(() => {
@@ -1310,7 +1413,7 @@ export function AgentsPage() {
           try {
             const response = await agentRuntimeApi.list();
             if (!cancelled) {
-              setRunners(response.runners);
+              updateRuntimeRunners(response.runners, { notifyErrors: true });
               setLoadError(null);
             }
           } catch (error) {
@@ -1328,7 +1431,7 @@ export function AgentsPage() {
       cancelled = true;
       timeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
     };
-  }, []);
+  }, [updateRuntimeRunners]);
 
   useEffect(() => {
     if (!autoSelectedRunner && !selectedRunner && filteredRunners[0]) {
@@ -1358,23 +1461,38 @@ export function AgentsPage() {
     return () => window.clearTimeout(timeoutId);
   }, [autoDismissNotices, notice]);
 
+  const refreshRuntimeStatus = useCallback(
+    async (options?: RuntimeRunnerUpdateOptions & { showNotice?: boolean }) => {
+      const response = await agentRuntimeApi.refresh();
+      updateRuntimeRunners(response.runners, {
+        notifyErrors: options?.notifyErrors ?? true,
+      });
+
+      if (options?.showNotice) {
+        setNotice(
+          response.errors.length > 0
+            ? t("agents.notice.refreshFailedCount", {
+                count: response.errors.length,
+              })
+            : discoveryRefreshedNotice,
+        );
+      }
+
+      return response;
+    },
+    [discoveryRefreshedNotice, t, updateRuntimeRunners],
+  );
+
   const handleRefresh = async () => {
     setRefreshing(true);
     setNotice(null);
     try {
-      const response = await agentRuntimeApi.refresh();
-      setRunners(response.runners);
-      setNotice(
-        response.errors.length > 0
-          ? t("agents.notice.refreshFailedCount", {
-              count: response.errors.length,
-            })
-          : discoveryRefreshedNotice,
-      );
+      await refreshRuntimeStatus({ notifyErrors: true, showNotice: true });
     } catch (error) {
-      setNotice(
-        error instanceof Error ? error.message : t("agents.refresh.failed"),
-      );
+      const message =
+        error instanceof Error ? error.message : t("agents.refresh.failed");
+      setNotice(message);
+      showToast(message);
     } finally {
       setRefreshing(false);
     }
@@ -1382,28 +1500,30 @@ export function AgentsPage() {
 
   const handleDiagnosticsLoaded = useCallback(
     (diagnostics: AgentRuntimeDiagnostics) => {
-      setRunners((current) =>
-        current.map((item) =>
-          item.runner_type === diagnostics.runner_type
-            ? {
-                ...item,
-                installed: diagnostics.installed,
-                executable: diagnostics.executable,
-                availability: diagnostics.availability,
-                discovered_models: diagnostics.discovered_models,
-                model_source: diagnostics.model_source,
-                version: diagnostics.version,
-                last_checked_at: diagnostics.last_checked_at,
-                last_error: diagnostics.last_error,
-                run_mode: diagnostics.run_mode,
-                env_summary: diagnostics.env_summary,
-                executor_options: diagnostics.executor_options,
-              }
-            : item,
-        ),
+      updateRuntimeRunnersWith(
+        (current) =>
+          current.map((item) => {
+            if (item.runner_type !== diagnostics.runner_type) return item;
+            const next = {
+              ...item,
+              installed: diagnostics.installed,
+              executable: diagnostics.executable,
+              availability: diagnostics.availability,
+              discovered_models: diagnostics.discovered_models,
+              model_source: diagnostics.model_source,
+              version: diagnostics.version,
+              last_checked_at: diagnostics.last_checked_at,
+              last_error: diagnostics.last_error,
+              run_mode: diagnostics.run_mode,
+              env_summary: diagnostics.env_summary,
+              executor_options: diagnostics.executor_options,
+            };
+            return shouldApplyRuntimeSnapshot(item, next) ? next : item;
+          }),
+        { notifyErrors: true },
       );
     },
-    [],
+    [updateRuntimeRunnersWith],
   );
 
   const handleSave = async (
@@ -1419,11 +1539,7 @@ export function AgentsPage() {
         env_json: envJson,
         executor_options: formData as JsonValue,
       });
-      setRunners((current) =>
-        current.map((item) =>
-          item.runner_type === updated.runner_type ? updated : item,
-        ),
-      );
+      replaceRuntimeRunner(updated);
       setSelectedRunner(updated);
       setNotice(configSavedNotice);
     } catch (error) {
@@ -1434,6 +1550,19 @@ export function AgentsPage() {
       setSaving(false);
     }
   };
+
+  const handleOpenConfig = useCallback(
+    (runner: AgentRuntimeStatus) => {
+      setSelectedRunner(runner);
+      setSaveError(null);
+      void refreshRuntimeStatus({ notifyErrors: true }).catch((error) => {
+        showToast(
+          error instanceof Error ? error.message : t("agents.refresh.failed"),
+        );
+      });
+    },
+    [refreshRuntimeStatus, showToast, t],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--surface-2)] text-[var(--ink)]">
@@ -1548,10 +1677,7 @@ export function AgentsPage() {
                       selected={
                         selectedRunner?.runner_type === runner.runner_type
                       }
-                      onOpenConfig={() => {
-                        setSelectedRunner(runner);
-                        setSaveError(null);
-                      }}
+                      onOpenConfig={() => handleOpenConfig(runner)}
                       t={t}
                     />
                   ))}

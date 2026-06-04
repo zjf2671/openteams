@@ -703,7 +703,7 @@ mod tests {
         let mut row = test_row("backend");
         row.model_name = Some("explicit-model".to_string());
         row.runner_type = "codex".to_string();
-        row.tools_enabled = SqlxJson(json!({ "executor_profile_variant": "GPT_5_5" }));
+        row.tools_enabled = SqlxJson(json!({ "executor_profile_variant": "GPT_5.5" }));
 
         let response = build_preset_snapshot(
             &session,
@@ -726,7 +726,7 @@ mod tests {
         let mut row = test_row("backend");
         row.model_name = None;
         row.runner_type = "codex".to_string();
-        row.tools_enabled = SqlxJson(json!({ "executor_profile_variant": "GPT_5_5" }));
+        row.tools_enabled = SqlxJson(json!({ "executor_profile_variant": "GPT_5.5" }));
 
         let response = build_preset_snapshot(
             &session,

@@ -7,6 +7,7 @@ export interface DailyTokenChartProps {
   data: DailyTokenDataPoint[];
   loading: boolean;
   t: (key: string, replacements?: Record<string, string | number>) => string;
+  onDateSelect?: (date: string) => void;
 }
 
 const numberValue = (value: unknown): number =>
@@ -19,7 +20,12 @@ const numberValue = (value: unknown): number =>
 const estimateDailyCost = (datum: DailyTokenDataPoint): number =>
   numberValue(datum.estimated_cost);
 
-export function DailyTokenChart({ data, loading, t }: DailyTokenChartProps) {
+export function DailyTokenChart({
+  data,
+  loading,
+  t,
+  onDateSelect,
+}: DailyTokenChartProps) {
   const label = (key: string, fallback: string) => {
     const value = t(key);
     return value === key ? fallback : value;
@@ -31,6 +37,9 @@ export function DailyTokenChart({ data, loading, t }: DailyTokenChartProps) {
       loading={loading}
       emptyLabel={label('buildStats.empty.noTokenData', 'No token usage data')}
       formatValue={formatCompactNumber}
+      onDatumClick={
+        onDateSelect ? (datum) => onDateSelect(datum.date) : undefined
+      }
       series={[
         {
           id: 'total',

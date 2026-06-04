@@ -24,6 +24,12 @@ pub fn codex_home() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".codex"))
 }
 
+fn codex_model_cache_paths() -> Vec<PathBuf> {
+    codex_home()
+        .map(|home| vec![home.join("models_cache.json")])
+        .unwrap_or_default()
+}
+
 use async_trait::async_trait;
 use codex_app_server_protocol::{
     AskForApproval as AppServerAskForApproval, ReviewTarget, SandboxMode as AppServerSandboxMode,
@@ -55,8 +61,8 @@ use crate::{
     },
     logs::utils::patch,
     model_discovery::{
-        ProviderKind, cli_model_commands, discover_from_sources, fetch_model_slugs_from_json_url,
-        runner_config_paths,
+        ProviderKind, cli_model_commands, discover_from_sources, model_slugs_from_models_json,
+        read_config_value, runner_config_paths,
     },
     skill_config::NativeSkillConfigBackend,
     stdout_dup::create_stdout_pipe_writer,
@@ -229,10 +235,22 @@ impl StandardCodingAgentExecutor for Codex {
             models.extend(discovered);
         }
 
-        match fetch_model_slugs_from_json_url(Self::MODELS_JSON_URL).await {
-            Ok(slugs) => models.extend(slugs),
-            Err(err) => {
-                tracing::debug!("Failed to fetch Codex models manager JSON: {err}");
+        for cache_path in codex_model_cache_paths() {
+            match read_config_value(&cache_path).await {
+                Ok(Some(value)) => {
+                    let slugs = model_slugs_from_models_json(&value);
+                    if !slugs.is_empty() {
+                        models.extend(slugs);
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::debug!(
+                        "Failed to read Codex model cache at {}: {err}",
+                        cache_path.display()
+                    );
+                }
             }
         }
 
@@ -336,7 +354,6 @@ impl StandardCodingAgentExecutor for Codex {
 
 impl Codex {
     const BASE_COMMAND: &'static str = "npx -y @openai/codex@0.136.0";
-    const MODELS_JSON_URL: &'static str = "https://raw.githubusercontent.com/openai/codex/refs/heads/main/codex-rs/models-manager/models.json";
 
     pub fn base_command() -> &'static str {
         Self::BASE_COMMAND

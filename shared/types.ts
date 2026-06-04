@@ -292,6 +292,8 @@ export type AgentRuntimeEnvSummary = { key: string, value: string, };
 
 export type AgentRuntimeModelSource = "runner" | "profile_fallback" | "none";
 
+export type AgentRuntimeReasoningCapability = { "kind": "effort", options: Array<string>, } | { "kind": "variant", options: Array<string>, };
+
 export type AgentRuntimeStatus = { runner_type: BaseCodingAgent, installed: boolean, executable: boolean, availability: AvailabilityInfo, discovered_models: Array<string>, model_source: AgentRuntimeModelSource, version: string | null, last_checked_at: string | null, last_error: string | null, run_mode: AgentRunMode, env_summary: Array<AgentRuntimeEnvSummary>, executor_options: JsonValue, };
 
 export type AgentRuntimeListResponse = { runners: Array<AgentRuntimeStatus>, };
@@ -474,9 +476,11 @@ export type ProjectResponse = { project: Project, };
 
 export type ProjectDetailResponse = { project: Project, paths: Array<ProjectPath>, members: Array<ProjectMember>, sessions: Array<ChatSession>, repos: Array<Repo>, stats: Array<ProjectStats>, };
 
-export type ProjectMembersResponse = { members: Array<ProjectMember>, };
+export type ProjectMemberWithRuntime = { reasoning_capability: AgentRuntimeReasoningCapability | null, id: string, project_id: string, member_type: ProjectMemberType, user_id: string | null, agent_id: string | null, role: string | null, display_order: bigint, default_workspace_path: string | null, allowed_skill_ids: string[], execution_config: MemberExecutionConfig, is_default: boolean, created_at: Date, updated_at: Date, };
 
-export type ProjectMemberResponse = { member: ProjectMember, };
+export type ProjectMembersResponse = { members: Array<ProjectMemberWithRuntime>, };
+
+export type ProjectMemberResponse = { member: ProjectMemberWithRuntime, };
 
 export type ProjectSessionsResponse = { sessions: Array<ChatSession>, };
 

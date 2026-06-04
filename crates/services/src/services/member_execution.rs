@@ -92,7 +92,10 @@ pub fn build_effective_member_executor(
 
 pub fn parse_runner_type(raw: &str) -> Result<BaseCodingAgent> {
     let trimmed = raw.trim();
-    let normalized = trimmed.replace(['-', ' '], "_").to_ascii_uppercase();
+    let mut normalized = trimmed.replace(['-', ' '], "_").to_ascii_uppercase();
+    if normalized == "OPENTEAMS_CLI" {
+        normalized = "OPEN_TEAMS_CLI".to_string();
+    }
     BaseCodingAgent::from_str(&normalized).map_err(|_| anyhow!("unknown runner type: {trimmed}"))
 }
 
@@ -201,5 +204,15 @@ mod tests {
         assert_eq!(resolved.model_name.as_deref(), Some("gemini-3-pro-preview"));
         assert_eq!(resolved.thinking_effort.as_deref(), Some("high"));
         assert_eq!(resolved.profile_id.to_string(), "GEMINI");
+    }
+
+    #[test]
+    fn parses_openteams_cli_runner_aliases() {
+        for raw in ["OPEN_TEAMS_CLI", "OPENTEAMS_CLI", "openteams-cli"] {
+            assert_eq!(
+                parse_runner_type(raw).expect("parse runner"),
+                BaseCodingAgent::OpenTeamsCli
+            );
+        }
     }
 }

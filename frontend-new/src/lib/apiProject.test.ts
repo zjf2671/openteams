@@ -5,7 +5,7 @@ import type {
   CreateProjectSessionRequest,
   Project,
   ProjectDetail,
-  ProjectMember,
+  ProjectMemberWithRuntime,
   ProjectStats,
   ProjectStatsQuery,
   Repo,
@@ -60,7 +60,10 @@ export type ProjectApiDeleteProjectReturn = Expect<
   Equal<Awaited<ReturnType<typeof projectApi.deleteProject>>, void>
 >;
 export type ProjectApiListMembersReturn = Expect<
-  Equal<Awaited<ReturnType<typeof projectApi.listMembers>>, ProjectMember[]>
+  Equal<
+    Awaited<ReturnType<typeof projectApi.listMembers>>,
+    ProjectMemberWithRuntime[]
+  >
 >;
 export type ProjectApiAddMemberArgs = Expect<
   Equal<

@@ -498,42 +498,17 @@ mod tests {
     };
 
     #[test]
-    fn default_profiles_do_not_include_gpt_5_2_codex_for_codex() {
+    fn default_profiles_include_supported_codex_models() {
         let profiles = ExecutorConfigs::from_defaults();
 
-        let default_codex = profiles
-            .get_coding_agent(&ExecutorProfileId::new(BaseCodingAgent::Codex))
-            .expect("codex default profile should exist");
-        let high_codex = profiles
-            .get_coding_agent(&ExecutorProfileId::with_variant(
-                BaseCodingAgent::Codex,
-                "HIGH".to_string(),
-            ))
-            .expect("codex HIGH profile should exist");
+        assert_codex_model(&profiles, "DEFAULT", "gpt-5.5");
+        assert_codex_model(&profiles, "GPT_5.3_CODEX_SPARK", "gpt-5.3-codex-spark");
+        assert_codex_model(&profiles, "GPT_5.4", "gpt-5.4");
+        assert_codex_model(&profiles, "CODEX_AUTO_REVIEW", "codex-auto-review");
+        assert_codex_model(&profiles, "GPT_5.5", "gpt-5.5");
+        assert_codex_model(&profiles, "GPT_5.4_MINI", "gpt-5.4-mini");
 
-        let assert_no_model = |agent: CodingAgent| match agent {
-            CodingAgent::Codex(Codex {
-                model,
-                model_reasoning_summary,
-                ..
-            }) => {
-                assert_eq!(model.as_deref(), None);
-                assert_eq!(model_reasoning_summary, Some(ReasoningSummary::Auto));
-            }
-            other => panic!("expected codex profile, got {other:?}"),
-        };
-
-        assert_no_model(default_codex);
-        assert_no_model(high_codex);
-
-        for variant in [
-            "GPT_5_4",
-            "GPT_5_4_HIGH",
-            "GPT_5_5",
-            "GPT_5_5_HIGH",
-            "GPT_5_3_CODEX",
-            "GPT_5_3_CODEX_HIGH",
-        ] {
+        for variant in ["HIGH", "APPROVALS", "MAX", "GPT_5.2", "GPT_5.3_CODEX"] {
             assert!(
                 profiles
                     .get_coding_agent(&ExecutorProfileId::with_variant(
@@ -612,6 +587,26 @@ mod tests {
                 assert_eq!(model.as_deref(), Some(expected));
             }
             other => panic!("expected claude code profile, got {other:?}"),
+        }
+    }
+
+    fn assert_codex_model(profiles: &ExecutorConfigs, variant: &str, expected: &str) {
+        match profiles
+            .get_coding_agent(&ExecutorProfileId::with_variant(
+                BaseCodingAgent::Codex,
+                variant.to_string(),
+            ))
+            .unwrap_or_else(|| panic!("codex {variant} profile should exist"))
+        {
+            CodingAgent::Codex(Codex {
+                model,
+                model_reasoning_summary,
+                ..
+            }) => {
+                assert_eq!(model.as_deref(), Some(expected));
+                assert_eq!(model_reasoning_summary, Some(ReasoningSummary::Auto));
+            }
+            other => panic!("expected codex profile, got {other:?}"),
         }
     }
 

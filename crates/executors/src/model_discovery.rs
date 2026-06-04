@@ -138,36 +138,30 @@ pub fn cli_model_commands(base: impl Into<String>, cmd: &CmdOverrides) -> Vec<Co
 
 pub fn model_slugs_from_models_json(value: &Value) -> Vec<String> {
     let mut models = BTreeSet::new();
-    value
-        .get("models")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|model| model.get("slug").and_then(Value::as_str))
-        .filter_map(normalize_model_id)
-        .for_each(|model| {
-            models.insert(model);
-        });
+    if let Some(models_value) = value.get("models") {
+        collect_model_slugs(models_value, &mut models);
+    }
     models.into_iter().collect()
 }
 
-pub async fn fetch_model_slugs_from_json_url(url: &str) -> Result<Vec<String>, ExecutorError> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .map_err(|err| ExecutorError::Io(std::io::Error::other(err)))?;
-    let value = client
-        .get(url)
-        .timeout(PROVIDER_DISCOVERY_TIMEOUT)
-        .send()
-        .await
-        .map_err(|err| ExecutorError::Io(std::io::Error::other(err)))?
-        .error_for_status()
-        .map_err(|err| ExecutorError::Io(std::io::Error::other(err)))?
-        .json::<Value>()
-        .await
-        .map_err(|err| ExecutorError::Io(std::io::Error::other(err)))?;
-    Ok(model_slugs_from_models_json(&value))
+fn collect_model_slugs(value: &Value, models: &mut BTreeSet<String>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_model_slugs(item, models);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(model) = map
+                .get("slug")
+                .and_then(Value::as_str)
+                .and_then(normalize_model_id)
+            {
+                models.insert(model);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub async fn read_config_value(path: &Path) -> Result<Option<Value>, ExecutorError> {
@@ -839,7 +833,7 @@ mod tests {
     #[test]
     fn extracts_configured_models_from_nested_config_shapes() {
         let value = json!({
-            "model": "gpt-5.2-codex",
+            "model": "gpt-5.3-codex",
             "modelConfigs": {
                 "aliases": {
                     "openteams-member": {
@@ -863,7 +857,7 @@ mod tests {
         collector.add_value_models(&value);
         let models = collector.finish().expect("models");
 
-        assert!(models.contains(&"gpt-5.2-codex".to_string()));
+        assert!(models.contains(&"gpt-5.3-codex".to_string()));
         assert!(models.contains(&"gemini-3-pro-preview".to_string()));
         assert!(models.contains(&"qwen3-coder-flash".to_string()));
         assert!(models.contains(&"provider/custom-model".to_string()));
@@ -951,17 +945,19 @@ mod tests {
     }
 
     #[test]
-    fn extracts_codex_models_manager_slugs() {
+    fn extracts_codex_models_cache_slugs() {
         let value = json!({
+            "fetched_at": "2026-06-03T00:00:00Z",
+            "etag": null,
             "models": [
-                { "slug": "gpt-5.5", "display_name": "GPT-5.5" },
-                { "slug": "gpt-5.2-codex", "display_name": "GPT-5.2 Codex" },
+                { "slug": "gpt-5.4", "display_name": "GPT-5.4" },
+                { "slug": "gpt-5.3-codex", "display_name": "GPT-5.3 Codex" },
                 { "slug": "", "display_name": "empty" }
             ]
         });
 
         let models = model_slugs_from_models_json(&value);
 
-        assert_eq!(models, vec!["gpt-5.2-codex", "gpt-5.5"]);
+        assert_eq!(models, vec!["gpt-5.3-codex", "gpt-5.4"]);
     }
 }

@@ -122,6 +122,14 @@ pub struct AgentRuntimeStatus {
     pub executor_options: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentRuntimeReasoningCapability {
+    Effort { options: Vec<String> },
+    Variant { options: Vec<String> },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentRuntimeListResponse {
@@ -265,9 +273,7 @@ async fn refresh_runtime_discovery_unlocked(
                 runner,
                 detected_version,
             } => {
-                if let Some(version) = detected_version {
-                    cache_runner_version(&mut store, runner, version);
-                }
+                cache_version_only_discovery(&mut store, runner, detected_version);
             }
             RunnerDiscoveryOutcome::Failed {
                 runner,
@@ -817,6 +823,30 @@ fn cache_runner_version(store: &mut AgentRuntimeStore, runner: BaseCodingAgent, 
         });
 }
 
+fn cache_version_only_discovery(
+    store: &mut AgentRuntimeStore,
+    runner: BaseCodingAgent,
+    detected_version: Option<String>,
+) {
+    let now = Utc::now();
+    store
+        .discoveries
+        .entry(runner)
+        .and_modify(|entry| {
+            entry.last_checked_at = now;
+            entry.last_error = None;
+            if let Some(version) = detected_version.clone() {
+                entry.version = Some(version);
+            }
+        })
+        .or_insert_with(|| AgentRuntimeDiscovery {
+            models: Vec::new(),
+            version: detected_version,
+            last_checked_at: now,
+            last_error: None,
+        });
+}
+
 fn version_for_discovery_update(
     store: &AgentRuntimeStore,
     runner: BaseCodingAgent,
@@ -909,6 +939,49 @@ fn build_status(
         env_summary: summarize_env(&config.env_json),
         executor_options: config.executor_options,
     }
+}
+
+fn reasoning_capability_for_runner(
+    runner: BaseCodingAgent,
+) -> Option<AgentRuntimeReasoningCapability> {
+    match runner {
+        BaseCodingAgent::ClaudeCode => Some(AgentRuntimeReasoningCapability::Effort {
+            options: strings(["low", "medium", "high"]),
+        }),
+        BaseCodingAgent::Codex => Some(AgentRuntimeReasoningCapability::Effort {
+            options: strings(["low", "medium", "high", "xhigh"]),
+        }),
+        BaseCodingAgent::Droid => Some(AgentRuntimeReasoningCapability::Effort {
+            options: strings(["none", "dynamic", "off", "low", "medium", "high"]),
+        }),
+        BaseCodingAgent::Gemini => Some(AgentRuntimeReasoningCapability::Effort {
+            options: strings(["off", "low", "medium", "high", "max"]),
+        }),
+        BaseCodingAgent::Opencode | BaseCodingAgent::OpenTeamsCli => {
+            Some(AgentRuntimeReasoningCapability::Effort {
+                options: strings(["thinking-low", "thinking-medium", "thinking-high"]),
+            })
+        }
+        BaseCodingAgent::QwenCode => Some(AgentRuntimeReasoningCapability::Effort {
+            options: strings(["off", "low", "medium", "high", "max"]),
+        }),
+        BaseCodingAgent::Amp
+        | BaseCodingAgent::CursorAgent
+        | BaseCodingAgent::Copilot
+        | BaseCodingAgent::KimiCode => None,
+        #[cfg(feature = "qa-mode")]
+        BaseCodingAgent::QaMock => None,
+    }
+}
+
+pub fn reasoning_capability_for_runner_type(
+    runner: BaseCodingAgent,
+) -> Option<AgentRuntimeReasoningCapability> {
+    reasoning_capability_for_runner(runner)
+}
+
+fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
+    values.into_iter().map(String::from).collect()
 }
 
 fn models_for_runner(
@@ -1222,6 +1295,31 @@ mod tests {
     }
 
     #[test]
+    fn version_only_discovery_clears_stale_error_and_preserves_models() {
+        let runner = BaseCodingAgent::Opencode;
+        let mut store = AgentRuntimeStore::default();
+        store.discoveries.insert(
+            runner,
+            AgentRuntimeDiscovery {
+                models: vec!["openai/gpt-5.2-codex".to_string()],
+                version: Some("opencode 1.2.23".to_string()),
+                last_checked_at: Utc::now(),
+                last_error: Some("temporary provider failure".to_string()),
+            },
+        );
+
+        cache_version_only_discovery(&mut store, runner, Some("opencode 1.2.24".to_string()));
+
+        let discovery = store
+            .discoveries
+            .get(&runner)
+            .expect("runtime discovery should remain cached");
+        assert_eq!(discovery.models, vec!["openai/gpt-5.2-codex"]);
+        assert_eq!(discovery.version.as_deref(), Some("opencode 1.2.24"));
+        assert_eq!(discovery.last_error, None);
+    }
+
+    #[test]
     fn refresh_failure_preserves_old_discovery_models() {
         let runner = BaseCodingAgent::Opencode;
         let mut configs = HashMap::new();
@@ -1494,5 +1592,23 @@ mod tests {
         assert!(value.get("reasoning_level").is_none());
         assert!(value.get("model_reasoning_effort").is_none());
         assert_eq!(value["executor_options"]["ask_for_approval"], "never");
+    }
+
+    #[test]
+    fn reasoning_capabilities_include_opencode_family_effort() {
+        for runner in [BaseCodingAgent::Opencode, BaseCodingAgent::OpenTeamsCli] {
+            let capability = reasoning_capability_for_runner(runner)
+                .unwrap_or_else(|| panic!("{runner} should expose reasoning capability"));
+            assert_eq!(
+                capability,
+                AgentRuntimeReasoningCapability::Effort {
+                    options: vec![
+                        "thinking-low".to_string(),
+                        "thinking-medium".to_string(),
+                        "thinking-high".to_string(),
+                    ],
+                }
+            );
+        }
     }
 }
