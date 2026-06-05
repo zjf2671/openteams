@@ -792,6 +792,7 @@ function WorkspaceLayout() {
             className={`flex-1 min-h-0 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] ${
               activeAppPage === "providers" ||
               activeAppPage === "build-stats" ||
+              activeAppPage === "github" ||
               activeAppPage === "agents" ||
               activeAppPage === "team"
                 ? "overflow-hidden p-0"

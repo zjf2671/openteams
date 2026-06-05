@@ -192,6 +192,301 @@ export interface SidebarNavigationItem {
 }
 
 // =============================================================================
+// PROJECT GITHUB INTEGRATION types
+// -----------------------------------------------------------------------------
+// Frontend-facing shapes for the local OpenTeams GitHub integration API. These
+// mirror the planned Rust-generated contract while backend implementation lands
+// in parallel; calls still go only through local `/api/*` endpoints.
+// =============================================================================
+
+export type RepoIntegrationSyncStatus =
+  | 'connected'
+  | 'disconnected'
+  | 'error';
+
+export type ProjectWorkItemType =
+  | 'feature'
+  | 'bug'
+  | 'task'
+  | 'deploy'
+  | 'test'
+  | 'doc'
+  | 'refactor';
+
+export type ProjectWorkItemStatus =
+  | 'open'
+  | 'in_progress'
+  | 'blocked'
+  | 'done'
+  | 'cancelled';
+
+export type ProjectWorkItemPriority = 'low' | 'medium' | 'high' | 'urgent';
+
+export type ProjectWorkItemSource =
+  | 'manual'
+  | 'github_issue'
+  | 'workflow'
+  | 'session';
+
+export type ProjectExternalType =
+  | 'github_issue'
+  | 'github_pr'
+  | 'github_commit'
+  | 'github_deployment'
+  | 'github_release';
+
+export type ProjectExecutionLinkType =
+  | 'created_from'
+  | 'discussed_in'
+  | 'implemented_by'
+  | 'reviewed_by'
+  | 'delivered_by';
+
+export type ProjectDeliveryEventType =
+  | 'pr_opened'
+  | 'pr_merged'
+  | 'deployment'
+  | 'release'
+  | 'test_passed'
+  | 'test_failed';
+
+export type GitHubOperationSource = 'user_ui' | 'agent';
+export type GitHubOperationResult =
+  | 'pending_approval'
+  | 'approved'
+  | 'denied'
+  | 'success'
+  | 'failed';
+export type GitHubTargetType = 'issue' | 'pull_request' | 'repo';
+
+export interface GitHubErrorData {
+  code:
+    | 'github_auth_required'
+    | 'github_rate_limited'
+    | 'github_repo_disconnected'
+    | 'github_write_failed'
+    | 'local_git_push_failed'
+    | 'github_stale_cache'
+    | string;
+  message: string;
+  retry_after?: string | null;
+  last_synced_at?: string | null;
+  stale?: boolean | null;
+}
+
+export interface GitHubAccount {
+  login: string;
+  id: number | string;
+  avatar_url: string | null;
+  html_url: string | null;
+  scopes: string[];
+  connected_at: string;
+}
+
+export interface GitHubDeviceFlowStartResponse {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string | null;
+  expires_in: number;
+  interval: number;
+}
+
+export interface GitHubDeviceFlowPollResponse {
+  status: 'pending' | 'slow_down' | 'authorized' | 'expired' | 'denied' | 'error';
+  account: GitHubAccount | null;
+  error: GitHubErrorData | string | null;
+}
+
+export interface ProjectRepoIntegration {
+  id: string;
+  repo_id: string;
+  provider: string;
+  owner: string | null;
+  name: string | null;
+  remote_url: string | null;
+  default_branch: string | null;
+  external_id: string | null;
+  installation_id: string | null;
+  github_account_id: string | null;
+  repo_grant_json: JsonValue | null;
+  sync_status: RepoIntegrationSyncStatus | null;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectWorkItem {
+  id: string;
+  project_id: string;
+  type: ProjectWorkItemType;
+  status: ProjectWorkItemStatus;
+  title: string;
+  description: string | null;
+  priority: ProjectWorkItemPriority;
+  source: ProjectWorkItemSource;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectWorkItemExternalLink {
+  id: string;
+  project_work_item_id: string;
+  provider: string;
+  repo_id: string | null;
+  external_type: ProjectExternalType;
+  external_id: string;
+  number: number | null;
+  url: string | null;
+  state: string | null;
+  metadata_json: JsonValue | null;
+  last_synced_at: string | null;
+  stale: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectWorkItemExecutionLink {
+  id: string;
+  project_work_item_id: string;
+  session_id: string | null;
+  workflow_execution_id: string | null;
+  workflow_step_id: string | null;
+  run_id: string | null;
+  link_type: ProjectExecutionLinkType;
+  created_at: string;
+}
+
+export interface ProjectDeliveryRecord {
+  id: string;
+  project_work_item_id: string | null;
+  repo_id: string | null;
+  external_link_id: string | null;
+  event_type: ProjectDeliveryEventType;
+  external_id: string | null;
+  url: string | null;
+  actor: string | null;
+  source_session_id: string | null;
+  source_workflow_execution_id: string | null;
+  metadata_json: JsonValue | null;
+  occurred_at: string;
+  created_at: string;
+}
+
+export interface GitHubOperationAudit {
+  id: string;
+  actor: string | null;
+  operation_source: GitHubOperationSource;
+  session_id: string | null;
+  workflow_execution_id: string | null;
+  repo_id: string | null;
+  target_type: GitHubTargetType;
+  target_id: string | null;
+  action: string;
+  result: GitHubOperationResult;
+  error: string | null;
+  created_at: string;
+}
+
+export interface GitHubIssueSummary {
+  number: number;
+  node_id: string | null;
+  title: string;
+  state: 'open' | 'closed' | string;
+  url: string | null;
+  author: string | null;
+  labels: string[];
+  assignees: string[];
+  updated_at: string | null;
+  last_synced_at: string | null;
+  stale: boolean;
+  work_item_id: string | null;
+  repo_integration_id?: string | null;
+}
+
+export interface GitHubIssueComment {
+  id: string | number;
+  author: string | null;
+  body: string;
+  created_at: string;
+  url: string | null;
+}
+
+export interface GitHubIssueDetail {
+  summary: GitHubIssueSummary;
+  body: string | null;
+  comments: GitHubIssueComment[];
+}
+
+export interface GitHubBranch {
+  name: string;
+  sha: string | null;
+  pushed: boolean | null;
+}
+
+export interface GitHubCommitSummary {
+  sha: string;
+  message: string;
+  author: string | null;
+  authored_at: string | null;
+  url: string | null;
+}
+
+export interface GitHubDiffSummary {
+  files_changed: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface GitHubPrPreview {
+  repo_id: string;
+  base_branch: string;
+  head_branch: string;
+  head_pushed: boolean;
+  commits: GitHubCommitSummary[];
+  diff_summary: GitHubDiffSummary;
+  diff_text: string;
+  requires_push: boolean;
+}
+
+export interface GitHubPullRequestSummary {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  base_branch: string;
+  head_branch: string;
+}
+
+export interface GitHubCreatePrResponse {
+  pull_request: GitHubPullRequestSummary;
+  delivery_record: ProjectDeliveryRecord | null;
+  external_link: ProjectWorkItemExternalLink | null;
+  audit: GitHubOperationAudit | null;
+}
+
+export interface ProjectWorkItemDetailResponse {
+  work_item: ProjectWorkItem;
+  external_links: ProjectWorkItemExternalLink[];
+  execution_links: ProjectWorkItemExecutionLink[];
+  delivery_records: ProjectDeliveryRecord[];
+  audits: GitHubOperationAudit[];
+}
+
+export interface ProjectDeliveryStatsSummary {
+  period_start: string;
+  period_end: string;
+  pr_opened_count: number;
+  pr_merged_count: number;
+  deployment_count: number;
+  release_count: number;
+  test_passed_count: number;
+  test_failed_count: number;
+}
+
+// =============================================================================
 // BACKEND TYPES (subset of shared/types.ts, sufficient for the new frontend)
 // -----------------------------------------------------------------------------
 // These mirror the Rust-generated `shared/types.ts` from the restored backend
