@@ -1512,7 +1512,7 @@ export function AgentsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--surface-2)] text-[var(--ink)]">
       <header className="shrink-0 border-b border-[var(--hairline)] bg-[var(--surface-2)] px-4 py-4 md:px-5">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--primary)]">
               <Terminal className="h-5 w-5" />
@@ -1526,7 +1526,7 @@ export function AgentsPage() {
               </p>
             </div>
           </div>
-          <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center xl:w-auto">
+          <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
             <div className="relative min-w-[220px] sm:w-[280px]">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-tertiary)]" />
               <input
