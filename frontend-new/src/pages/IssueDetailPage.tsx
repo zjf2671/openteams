@@ -140,10 +140,10 @@ const statusMenuOptions: StatusMenuOption[] = [
 
 const priorityMenuOptions: PriorityMenuOption[] = [
   { value: 'none', label: 'No priority', shortcut: '0' },
-  { value: 'urgent', label: 'Urgent', shortcut: '1' },
-  { value: 'high', label: 'High', shortcut: '2' },
-  { value: 'medium', label: 'Medium', shortcut: '3' },
-  { value: 'low', label: 'Low', shortcut: '4' },
+  { value: 'urgent', label: 'Urgent', shortcut: '4' },
+  { value: 'high', label: 'High', shortcut: '3' },
+  { value: 'medium', label: 'Medium', shortcut: '2' },
+  { value: 'low', label: 'Low', shortcut: '1' },
 ];
 
 const labelColorByName: Record<string, string> = {

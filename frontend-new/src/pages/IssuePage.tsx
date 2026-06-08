@@ -43,13 +43,19 @@ import {
 } from '@/components/NotificationToast';
 import { ProjectBreadcrumbAvatar } from '@/components/ProjectBreadcrumbAvatar';
 import { useWorkspace } from '@/context/WorkspaceContext';
-import { githubAuthApi, projectGithubApi, projectWorkItemsApi } from '@/lib/api';
+import {
+  githubAuthApi,
+  projectApi,
+  projectGithubApi,
+  projectWorkItemsApi,
+} from '@/lib/api';
 import {
   IssueDetailPage,
   projectWorkItemLabelList,
   type IssueDetailSyncSnapshot,
 } from '@/pages/IssueDetailPage';
 import type {
+  BackendChatSession,
   GitHubAccount,
   GitHubDeviceFlowStartResponse,
   GitHubIssueSummary,
@@ -226,6 +232,14 @@ export const projectWorkItemIssueStatus = (
   if (status === 'cancelled') return 'cancelled';
   if (status === 'blocked') return 'backlog';
   return status;
+};
+
+const issueGroupInitialWorkItemStatus = (
+  groupId: IssueStatusGroupId,
+): ProjectWorkItemStatus => {
+  if (groupId === 'todo') return 'open';
+  if (groupId === 'backlog') return 'blocked';
+  return groupId;
 };
 
 export const projectIssueIdPrefix = (projectName?: string | null) => {
@@ -505,7 +519,13 @@ export function IssuePage() {
   const [interactionMessage, setInteractionMessage] = useState('');
   const [repoNotice, setRepoNotice] = useState<IssueNotification | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createIssueInitialStatus, setCreateIssueInitialStatus] =
+    useState<ProjectWorkItemStatus>('open');
   const [createIssueSubmitting, setCreateIssueSubmitting] = useState(false);
+  const [projectSessions, setProjectSessions] = useState<BackendChatSession[]>(
+    [],
+  );
+  const [projectSessionsLoading, setProjectSessionsLoading] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importIssues, setImportIssues] = useState<GitHubIssueSummary[]>([]);
   const [importLoading, setImportLoading] = useState(false);
@@ -672,6 +692,35 @@ export function IssuePage() {
   useEffect(() => {
     void loadIssueIntegrations();
   }, [loadIssueIntegrations]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedProjectId) {
+      setProjectSessions([]);
+      setProjectSessionsLoading(false);
+      return;
+    }
+
+    setProjectSessionsLoading(true);
+    void projectApi
+      .listSessions(selectedProjectId)
+      .then((sessions) => {
+        if (!cancelled) setProjectSessions(sessions);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setProjectSessions([]);
+          setInteractionMessage(errorMessage(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setProjectSessionsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId]);
 
   useEffect(() => {
     if (!oauthFlow) return;
@@ -873,12 +922,23 @@ export function IssuePage() {
     [],
   );
 
-  const openCreateIssueDialog = useCallback(() => {
-    setCreateDialogOpen(true);
-  }, []);
+  const openCreateIssueDialog = useCallback(
+    (initialStatus: ProjectWorkItemStatus = 'open') => {
+      setCreateIssueInitialStatus(initialStatus);
+      setCreateDialogOpen(true);
+    },
+    [],
+  );
 
   const handleCreateIssue = useCallback(
-    async ({ title, description }: IssueCreateDialogSubmitValue) => {
+    async ({
+      title,
+      description,
+      status,
+      priority,
+      labels,
+      sessionId,
+    }: IssueCreateDialogSubmitValue) => {
       if (!selectedProjectId) {
         const message = 'Select a project before creating an issue.';
         setInteractionMessage(message);
@@ -890,11 +950,26 @@ export function IssuePage() {
         const created = await projectWorkItemsApi.create(selectedProjectId, {
           title,
           description: description || null,
-          status: 'open',
-          priority: 'medium',
+          labels_json: labels.length > 0 ? JSON.stringify(labels) : null,
+          status,
+          priority,
           type: 'task',
           source: 'manual',
         });
+        let sessionLinkError = '';
+        if (sessionId) {
+          try {
+            await projectWorkItemsApi.linkExecution(selectedProjectId, created.id, {
+              session_id: sessionId,
+              workflow_execution_id: null,
+              workflow_step_id: null,
+              run_id: null,
+              link_type: 'discussed_in',
+            });
+          } catch (error) {
+            sessionLinkError = errorMessage(error);
+          }
+        }
         const createdIssue = projectWorkItemToIssueItem(
           created,
           selectedProjectName,
@@ -904,7 +979,11 @@ export function IssuePage() {
         setActiveFilter('active');
         setSelectedIssueId(createdIssue.id);
         setActiveIssue(createdIssue);
-        setInteractionMessage(`Issue created: ${title}`);
+        setInteractionMessage(
+          sessionLinkError
+            ? `Issue created, but session link failed: ${sessionLinkError}`
+            : `Issue created: ${title}`,
+        );
       } catch (error) {
         setInteractionMessage(errorMessage(error));
         throw error;
@@ -1343,7 +1422,11 @@ export function IssuePage() {
                     selectedIssueId={selectedIssueId}
                     onToggle={() => handleGroupToggle(group.id)}
                     onIssueSelect={handleIssueSelect}
-                    onCreateIssue={openCreateIssueDialog}
+                    onCreateIssue={() =>
+                      openCreateIssueDialog(
+                        issueGroupInitialWorkItemStatus(group.id),
+                      )
+                    }
                     onAction={handleAction}
                   />
                 ))}
@@ -1388,6 +1471,9 @@ export function IssuePage() {
       <IssueCreateDialog
         open={createDialogOpen}
         projectName={selectedProjectName}
+        initialStatus={createIssueInitialStatus}
+        sessions={projectSessions}
+        sessionsLoading={projectSessionsLoading}
         submitting={createIssueSubmitting}
         onClose={() => setCreateDialogOpen(false)}
         onCreate={handleCreateIssue}
@@ -2389,7 +2475,7 @@ function IssueToolbar({
           type="button"
           className="ml-5 flex h-[26px] w-[26px] items-center justify-center rounded-full text-[#8a8d93] transition hover:bg-[#1d1e20] hover:text-[#f4f4f5]"
           aria-label="Create issue"
-          onClick={onCreateIssue}
+          onClick={() => onCreateIssue()}
         >
           <Plus aria-hidden="true" className="h-[15px] w-[15px]" />
         </button>
