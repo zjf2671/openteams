@@ -3,10 +3,11 @@ import {
   Crown,
   Plus,
   Search,
+  Trash2,
   UserPlus,
 } from "lucide-react";
 import { useState, useMemo, useRef, useEffect } from "react";
-import type { BackendChatAgent } from "@/types";
+import type { BackendChatAgent, BaseCodingAgent } from "@/types";
 import {
   compactRunnerLabel,
   cx,
@@ -88,26 +89,35 @@ type TeamMemberSidebarProps = {
   saving: boolean;
   selectedMemberId: string;
   sessionAgentLookup: SessionAgentLookup;
-  switchingLeadMemberId: string | null;
   t: TranslateFn;
+  onRemoveMember: (member: ProjectMemberWithExecution) => void;
   onSelectMember: (memberId: string) => void;
-  onSetLeadMember: (member: ProjectMemberWithExecution) => void;
 };
 
 type TeamAddMemberButtonProps = {
   agents: BackendChatAgent[];
   members: ProjectMemberWithExecution[];
+  runtimeOptions: TeamAddableRuntime[];
   saving: boolean;
   t: TranslateFn;
   onAddMember: (agentId: string) => void;
+  onCreateMember: (runnerType: BaseCodingAgent) => void;
+};
+
+type TeamAddableRuntime = {
+  label: string;
+  modelName: string | null;
+  runnerType: BaseCodingAgent;
 };
 
 export function TeamAddMemberButton({
   agents,
   members,
+  runtimeOptions,
   saving,
   t,
   onAddMember,
+  onCreateMember,
 }: TeamAddMemberButtonProps) {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -138,22 +148,40 @@ export function TeamAddMemberButton({
     );
   }, [availableAgents, searchQuery]);
 
-  const disabled = saving || availableAgents.length === 0;
+  const filteredRuntimeOptions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return runtimeOptions;
+    return runtimeOptions.filter((option) =>
+      `${option.label} ${option.runnerType} ${option.modelName ?? ""}`
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [runtimeOptions, searchQuery]);
+
+  const showRuntimeOptions =
+    availableAgents.length === 0 || filteredAgents.length === 0;
+  const hasAddOptions =
+    filteredAgents.length > 0 ||
+    (showRuntimeOptions && filteredRuntimeOptions.length > 0);
 
   return (
     <div className="relative" ref={menuRef}>
       <button
         type="button"
         onClick={() => setShowAddMenu((current) => !current)}
-        disabled={disabled}
+        disabled={saving}
         className={cx(
-          "flex h-7 w-7 items-center justify-center rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50",
-          showAddMenu && "border-[var(--primary)] text-[var(--primary)]",
+          "flex h-9 w-9 items-center justify-center rounded-[9px] bg-transparent text-[var(--ink)] transition-colors hover:text-[var(--primary-hover)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/35 disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
+          showAddMenu && "text-[var(--primary-hover)]",
         )}
         aria-label={t("teamPage.sidebar.addMember")}
         title={t("teamPage.sidebar.addMember")}
       >
-        <Plus aria-hidden="true" className="h-[15px] w-[15px]" />
+        <UserPlus
+          aria-hidden="true"
+          className="h-[17px] w-[17px]"
+          strokeWidth={2.45}
+        />
       </button>
 
       {showAddMenu && (
@@ -170,41 +198,71 @@ export function TeamAddMemberButton({
             />
           </div>
           <div className="max-h-[300px] overflow-y-auto p-1.5 ot-scroll-area-styled">
-            {filteredAgents.length === 0 ? (
+            {!hasAddOptions ? (
               <div className="px-3 py-4 text-center">
                 <p className="text-[12px] text-[var(--ink-tertiary)]">
                   {t("teamPage.sidebar.noAvailableAgents")}
                 </p>
               </div>
             ) : (
-              filteredAgents.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  onClick={() => {
-                    onAddMember(agent.id);
-                    setShowAddMenu(false);
-                    setSearchQuery("");
-                  }}
-                  className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-2)]"
-                >
-                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--surface-3)] text-[var(--ink-subtle)]">
-                    <Bot className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] font-medium text-[var(--ink)]">
-                      {agent.name}
-                    </p>
-                    <p className="truncate text-[11px] text-[var(--ink-tertiary)]">
-                      {compactRunnerLabel(
-                        normalizeRunnerType(agent.runner_type),
-                        t("teamPage.fallback.runtime"),
-                      )}
-                    </p>
-                  </div>
-                  <Plus className="h-3.5 w-3.5 text-[var(--ink-tertiary)]" />
-                </button>
-              ))
+              <>
+                {filteredAgents.map((agent) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => {
+                      onAddMember(agent.id);
+                      setShowAddMenu(false);
+                      setSearchQuery("");
+                    }}
+                    className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-2)]"
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--surface-3)] text-[var(--ink-subtle)]">
+                      <Bot className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-medium text-[var(--ink)]">
+                        {agent.name}
+                      </p>
+                      <p className="truncate text-[11px] text-[var(--ink-tertiary)]">
+                        {compactRunnerLabel(
+                          normalizeRunnerType(agent.runner_type),
+                          t("teamPage.fallback.runtime"),
+                        )}
+                      </p>
+                    </div>
+                    <Plus className="h-3.5 w-3.5 text-[var(--ink-tertiary)]" />
+                  </button>
+                ))}
+
+                {showRuntimeOptions &&
+                  filteredRuntimeOptions.map((option) => (
+                    <button
+                      key={option.runnerType}
+                      type="button"
+                      onClick={() => {
+                        onCreateMember(option.runnerType);
+                        setShowAddMenu(false);
+                        setSearchQuery("");
+                      }}
+                      className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-2)]"
+                    >
+                      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--primary-tint)] text-[var(--primary-hover)]">
+                        <Bot className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13px] font-medium text-[var(--ink)]">
+                          {option.label}
+                        </p>
+                        <p className="truncate text-[11px] text-[var(--ink-tertiary)]">
+                          {option.modelName ||
+                            t("teamPage.options.runtimeDefault")}
+                        </p>
+                      </div>
+                      <Plus className="h-3.5 w-3.5 text-[var(--ink-tertiary)]" />
+                    </button>
+                  ))}
+              </>
             )}
           </div>
         </div>
@@ -220,10 +278,9 @@ export function TeamMemberSidebar({
   saving,
   selectedMemberId,
   sessionAgentLookup,
-  switchingLeadMemberId,
   t,
+  onRemoveMember,
   onSelectMember,
-  onSetLeadMember,
 }: TeamMemberSidebarProps) {
   if (loading) {
     return (
@@ -267,7 +324,6 @@ export function TeamMemberSidebar({
                 ? sessionAgentLookup.byAgentId.get(member.agent_id)
                 : undefined);
             const runState = normalizeMemberRunState(sessionAgent?.state);
-            const switchingLead = switchingLeadMemberId === member.id;
 
             return (
               <div
@@ -315,25 +371,19 @@ export function TeamMemberSidebar({
                 </div>
 
                 <div className="flex justify-end">
-                  {!lead && (
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onSetLeadMember(member);
-                      }}
-                      disabled={saving}
-                      title={t("teamPage.sidebar.setLead")}
-                      className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--ink-tertiary)] opacity-0 shadow-sm transition-all group-hover:opacity-100 hover:border-[var(--primary)]/40 hover:text-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-0"
-                    >
-                      <Crown
-                        className={cx(
-                          "h-3.5 w-3.5",
-                          switchingLead && "animate-pulse",
-                        )}
-                      />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRemoveMember(member);
+                    }}
+                    disabled={saving}
+                    title={t("teamPage.sidebar.removeMember")}
+                    aria-label={t("teamPage.sidebar.removeMember")}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--ink-tertiary)] opacity-0 shadow-sm transition-all group-hover:opacity-100 hover:border-red-500/35 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-0"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               </div>
             );

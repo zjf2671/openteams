@@ -227,8 +227,11 @@ export type ProjectWorkItemStatus =
   | 'open'
   | 'in_progress'
   | 'blocked'
+  | 'ready_to_merge'
+  | 'merging'
   | 'done'
-  | 'cancelled';
+  | 'cancelled'
+  | 'duplicate';
 
 export type ProjectWorkItemPriority = 'low' | 'medium' | 'high' | 'urgent';
 
@@ -369,6 +372,7 @@ export interface ProjectWorkItem {
   status: ProjectWorkItemStatus;
   title: string;
   description: string | null;
+  labels_json?: string | null;
   priority: ProjectWorkItemPriority;
   source: ProjectWorkItemSource;
   created_by: string | null;
@@ -442,8 +446,10 @@ export interface GitHubIssueSummary {
   state: 'open' | 'closed' | string;
   url: string | null;
   author: string | null;
+  author_avatar_url?: string | null;
   labels: string[];
   assignees: string[];
+  created_at?: string | null;
   updated_at: string | null;
   last_synced_at: string | null;
   stale: boolean;
@@ -454,6 +460,7 @@ export interface GitHubIssueSummary {
 export interface GitHubIssueComment {
   id: string | number;
   author: string | null;
+  author_avatar_url?: string | null;
   body: string;
   created_at: string;
   url: string | null;

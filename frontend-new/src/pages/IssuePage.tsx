@@ -6,11 +6,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Circle,
-  CircleDashed,
   CloudDownload,
   Github,
-  Layers2,
   Link2,
   ListFilter,
   MoreHorizontal,
@@ -35,6 +32,10 @@ import {
   DropdownSelect,
   type DropdownSelectOption,
 } from '@/components/DropdownSelect';
+import {
+  IssueCreateDialog,
+  type IssueCreateDialogSubmitValue,
+} from '@/components/IssueCreateDialog';
 import { IssueImportDialog } from '@/components/IssueImportDialog';
 import {
   NotificationToast,
@@ -43,7 +44,11 @@ import {
 import { ProjectBreadcrumbAvatar } from '@/components/ProjectBreadcrumbAvatar';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { githubAuthApi, projectGithubApi, projectWorkItemsApi } from '@/lib/api';
-import { IssueDetailPage } from '@/pages/IssueDetailPage';
+import {
+  IssueDetailPage,
+  projectWorkItemLabelList,
+  type IssueDetailSyncSnapshot,
+} from '@/pages/IssueDetailPage';
 import type {
   GitHubAccount,
   GitHubDeviceFlowStartResponse,
@@ -66,14 +71,32 @@ type IssueItem = {
   id: string;
   workItemId: string;
   title: string;
-  status: 'todo' | 'backlog' | 'done';
+  status: IssueStatusGroupId;
   labels?: IssueLabel[];
   date: string;
   workItem: ProjectWorkItem;
 };
 
+type IssueRowOverride = {
+  status?: ProjectWorkItemStatus;
+  priority?: ProjectWorkItem['priority'];
+  externalLabels?: IssueLabel[];
+};
+
+type IssueRowOverrides = Record<string, IssueRowOverride>;
+
+type IssueStatusGroupId =
+  | 'todo'
+  | 'in_progress'
+  | 'backlog'
+  | 'ready_to_merge'
+  | 'merging'
+  | 'done'
+  | 'cancelled'
+  | 'duplicate';
+
 type IssueGroup = {
-  id: 'todo' | 'backlog' | 'done';
+  id: IssueStatusGroupId;
   title: string;
   count: number;
   items: IssueItem[];
@@ -109,8 +132,13 @@ type IssueTranslator = (
 
 const issueGroupTitles: Record<IssueGroup['id'], string> = {
   todo: 'Todo',
+  in_progress: 'In Progress',
   backlog: 'Backlog',
+  ready_to_merge: 'Ready To Merge',
+  merging: 'Merging',
   done: 'Done',
+  cancelled: 'Canceled',
+  duplicate: 'Duplicate',
 };
 
 const labelColorClass: Record<IssueLabel['color'], string> = {
@@ -121,34 +149,44 @@ const labelColorClass: Record<IssueLabel['color'], string> = {
 
 const issueGroupOrder: Array<IssueGroup['id']> = [
   'todo',
+  'in_progress',
   'backlog',
+  'ready_to_merge',
+  'merging',
   'done',
+  'cancelled',
+  'duplicate',
 ];
 
 export const projectWorkItemToIssueItem = (
   item: ProjectWorkItem,
   projectName: string | null | undefined,
   sequence: number,
+  override?: IssueRowOverride,
 ): IssueItem => ({
   id: projectWorkItemDisplayId(projectName, sequence),
   workItemId: item.id,
   title: item.title,
-  status: projectWorkItemIssueStatus(item.status),
-  labels: projectWorkItemLabels(item),
+  status: projectWorkItemIssueStatus(effectiveWorkItem(item, override).status),
+  labels: projectWorkItemLabels(
+    effectiveWorkItem(item, override),
+    override?.externalLabels,
+  ),
   date: formatSimpleDate(item.updated_at),
-  workItem: item,
+  workItem: effectiveWorkItem(item, override),
 });
 
 export const projectWorkItemsToIssueGroups = (
   items: ProjectWorkItem[],
   filter: IssueFilter,
   projectName?: string | null,
+  overrides: IssueRowOverrides = {},
 ): IssueGroup[] => {
   const allowedGroups = new Set<IssueGroup['id']>(
     filter === 'backlog'
       ? ['backlog']
       : filter === 'active'
-        ? ['todo', 'backlog']
+        ? ['todo', 'in_progress', 'backlog', 'ready_to_merge', 'merging']
         : issueGroupOrder,
   );
   let sequence = 0;
@@ -156,9 +194,19 @@ export const projectWorkItemsToIssueGroups = (
   return issueGroupOrder
     .map((groupId) => {
       const groupItems = items
-        .filter((item) => projectWorkItemIssueStatus(item.status) === groupId)
+        .filter(
+          (item) =>
+            projectWorkItemIssueStatus(
+              effectiveWorkItem(item, overrides[item.id]).status,
+            ) === groupId,
+        )
         .map((item) =>
-          projectWorkItemToIssueItem(item, projectName, ++sequence),
+          projectWorkItemToIssueItem(
+            item,
+            projectName,
+            ++sequence,
+            overrides[item.id],
+          ),
         );
       return {
         id: groupId,
@@ -173,9 +221,11 @@ export const projectWorkItemsToIssueGroups = (
 export const projectWorkItemIssueStatus = (
   status: ProjectWorkItemStatus,
 ): IssueItem['status'] => {
-  if (status === 'done' || status === 'cancelled') return 'done';
+  if (status === 'open') return 'todo';
+  if (status === 'done') return 'done';
+  if (status === 'cancelled') return 'cancelled';
   if (status === 'blocked') return 'backlog';
-  return 'todo';
+  return status;
 };
 
 export const projectIssueIdPrefix = (projectName?: string | null) => {
@@ -229,17 +279,49 @@ export const issueSourceProviderId = (
   }
 };
 
-const projectWorkItemLabels = (item: ProjectWorkItem): IssueLabel[] => {
-  return [
-    { name: titleCaseToken(item.type), color: 'cyan' },
-    {
-      name: titleCaseToken(item.priority),
-      color:
-        item.priority === 'high' || item.priority === 'urgent'
-          ? 'red'
-          : 'blue',
-    },
-  ];
+const projectWorkItemLabels = (
+  item: ProjectWorkItem,
+  externalLabels: IssueLabel[] = [],
+): IssueLabel[] => {
+  return dedupeIssueLabels([
+    ...githubLabelsToIssueLabels(projectWorkItemLabelList(item.labels_json)),
+    ...externalLabels,
+  ]);
+};
+
+const effectiveWorkItem = (
+  item: ProjectWorkItem,
+  override?: IssueRowOverride,
+): ProjectWorkItem =>
+  override
+    ? {
+        ...item,
+        status: override.status ?? item.status,
+        priority: override.priority ?? item.priority,
+      }
+    : item;
+
+const dedupeIssueLabels = (labels: IssueLabel[]) => {
+  const seen = new Set<string>();
+  return labels.filter((label) => {
+    const key = label.name.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const githubLabelsToIssueLabels = (labels: string[]): IssueLabel[] =>
+  labels.map((label) => ({
+    name: label,
+    color: githubIssueLabelColor(label),
+  }));
+
+const githubIssueLabelColor = (label: string): IssueLabel['color'] => {
+  const normalized = label.trim().toLowerCase();
+  if (normalized === 'bug' || normalized === 'urgent') return 'red';
+  if (normalized === 'enhancement' || normalized === 'feature') return 'blue';
+  return 'cyan';
 };
 
 const titleCaseToken = (value: string) =>
@@ -259,6 +341,50 @@ const mergeWorkItem = (
       candidate.id === item.id ? item : candidate,
     );
   });
+};
+
+const mergeIssueRowOverride = (
+  snapshot: IssueDetailSyncSnapshot,
+  setOverrides: Dispatch<SetStateAction<IssueRowOverrides>>,
+) => {
+  setOverrides((current) => {
+    const existing = current[snapshot.workItem.id];
+    const nextOverride = issueRowOverrideFromSnapshot(snapshot, existing);
+    if (issueRowOverrideEqual(existing, nextOverride)) return current;
+    return { ...current, [snapshot.workItem.id]: nextOverride };
+  });
+};
+
+const issueRowOverrideFromSnapshot = (
+  snapshot: IssueDetailSyncSnapshot,
+  existing?: IssueRowOverride,
+): IssueRowOverride => ({
+  status: snapshot.workItem.status,
+  priority: snapshot.workItem.priority,
+  externalLabels:
+    snapshot.labels === undefined
+      ? (existing?.externalLabels ?? [])
+      : githubLabelsToIssueLabels(snapshot.labels),
+});
+
+const issueRowOverrideEqual = (
+  left: IssueRowOverride | undefined,
+  right: IssueRowOverride,
+) => {
+  if (!left) return false;
+  if (left.status !== right.status || left.priority !== right.priority) {
+    return false;
+  }
+  const leftLabels = left.externalLabels ?? [];
+  const rightLabels = right.externalLabels ?? [];
+  return (
+    leftLabels.length === rightLabels.length &&
+    leftLabels.every(
+      (label, index) =>
+        label.name === rightLabels[index]?.name &&
+        label.color === rightLabels[index]?.color,
+    )
+  );
 };
 
 function GitHubProviderIcon(props: SVGProps<SVGSVGElement>) {
@@ -367,6 +493,8 @@ export function IssuePage() {
     () => new Set(),
   );
   const [workItems, setWorkItems] = useState<ProjectWorkItem[]>([]);
+  const [issueRowOverrides, setIssueRowOverrides] =
+    useState<IssueRowOverrides>({});
   const [workItemsProjectId, setWorkItemsProjectId] = useState<string | null>(
     null,
   );
@@ -376,6 +504,8 @@ export function IssuePage() {
   const [activeIssue, setActiveIssue] = useState<IssueItem | null>(null);
   const [interactionMessage, setInteractionMessage] = useState('');
   const [repoNotice, setRepoNotice] = useState<IssueNotification | null>(null);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createIssueSubmitting, setCreateIssueSubmitting] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importIssues, setImportIssues] = useState<GitHubIssueSummary[]>([]);
   const [importLoading, setImportLoading] = useState(false);
@@ -409,8 +539,9 @@ export function IssuePage() {
         workItems,
         activeFilter,
         selectedProjectName,
+        issueRowOverrides,
       ),
-    [activeFilter, selectedProjectName, workItems],
+    [activeFilter, issueRowOverrides, selectedProjectName, workItems],
   );
   const visibleIssueCount = visibleGroups.reduce(
     (total, group) => total + group.items.length,
@@ -468,6 +599,10 @@ export function IssuePage() {
   }, [loadWorkItems]);
 
   useEffect(() => {
+    setIssueRowOverrides({});
+  }, [selectedProjectId]);
+
+  useEffect(() => {
     if (selectedProjectId && workItemsProjectId !== selectedProjectId) {
       setSelectedIssueId('');
       setActiveIssue(null);
@@ -477,6 +612,7 @@ export function IssuePage() {
       workItems,
       'all',
       selectedProjectName,
+      issueRowOverrides,
     ).flatMap((group) => group.items);
     setSelectedIssueId((current) =>
       current && allIssues.some((issue) => issue.id === current)
@@ -489,7 +625,13 @@ export function IssuePage() {
           null
         : current,
     );
-  }, [selectedProjectId, selectedProjectName, workItems, workItemsProjectId]);
+  }, [
+    issueRowOverrides,
+    selectedProjectId,
+    selectedProjectName,
+    workItems,
+    workItemsProjectId,
+  ]);
 
   useEffect(() => {
     if (!repoNotice) return;
@@ -723,6 +865,56 @@ export function IssuePage() {
     setInteractionMessage(message);
   };
 
+  const handleIssueDetailSync = useCallback(
+    (snapshot: IssueDetailSyncSnapshot) => {
+      mergeWorkItem(snapshot.workItem, setWorkItems);
+      mergeIssueRowOverride(snapshot, setIssueRowOverrides);
+    },
+    [],
+  );
+
+  const openCreateIssueDialog = useCallback(() => {
+    setCreateDialogOpen(true);
+  }, []);
+
+  const handleCreateIssue = useCallback(
+    async ({ title, description }: IssueCreateDialogSubmitValue) => {
+      if (!selectedProjectId) {
+        const message = 'Select a project before creating an issue.';
+        setInteractionMessage(message);
+        throw new Error(message);
+      }
+
+      setCreateIssueSubmitting(true);
+      try {
+        const created = await projectWorkItemsApi.create(selectedProjectId, {
+          title,
+          description: description || null,
+          status: 'open',
+          priority: 'medium',
+          type: 'task',
+          source: 'manual',
+        });
+        const createdIssue = projectWorkItemToIssueItem(
+          created,
+          selectedProjectName,
+          1,
+        );
+        mergeWorkItem(created, setWorkItems);
+        setActiveFilter('active');
+        setSelectedIssueId(createdIssue.id);
+        setActiveIssue(createdIssue);
+        setInteractionMessage(`Issue created: ${title}`);
+      } catch (error) {
+        setInteractionMessage(errorMessage(error));
+        throw error;
+      } finally {
+        setCreateIssueSubmitting(false);
+      }
+    },
+    [selectedProjectId, selectedProjectName],
+  );
+
   const loadImportIssues = useCallback(async () => {
     if (!selectedProjectId || !linkedRepoId) {
       setImportIssues([]);
@@ -778,6 +970,13 @@ export function IssuePage() {
         number: issue.number,
       });
       mergeWorkItem(detail.work_item, setWorkItems);
+      mergeIssueRowOverride(
+        {
+          workItem: detail.work_item,
+          labels: detail.github_issue_detail?.summary.labels ?? [],
+        },
+        setIssueRowOverrides,
+      );
       setImportIssues((current) =>
         current.map((item) =>
           item.number === issue.number
@@ -789,6 +988,10 @@ export function IssuePage() {
         detail.work_item,
         selectedProjectName,
         1,
+        issueRowOverrideFromSnapshot({
+          workItem: detail.work_item,
+          labels: detail.github_issue_detail?.summary.labels ?? [],
+        }),
       );
       setSelectedIssueId(importedIssue.id);
       setActiveIssue(importedIssue);
@@ -1054,7 +1257,7 @@ export function IssuePage() {
   };
 
   return (
-    <div className="issue-page flex h-full min-h-0 flex-col overflow-hidden bg-[#0c0c0d] text-[#f4f4f5]">
+    <div className="issue-page flex h-full min-h-0 flex-col overflow-hidden bg-[var(--canvas)] text-[var(--ink)]">
       <span className="sr-only" aria-live="polite">
         {interactionMessage}
       </span>
@@ -1074,8 +1277,12 @@ export function IssuePage() {
           issue={activeIssue}
           onBack={handleIssueBack}
           onAction={handleAction}
+          onWorkItemChange={(item) => mergeWorkItem(item, setWorkItems)}
+          onIssueSync={handleIssueDetailSync}
           linkedProviderId={linkedProviderId}
+          linkedRepoId={linkedRepoId}
           linkedRepoName={linkedRepoName}
+          githubAccount={integrationState?.github_account ?? null}
           onOpenIntegrations={handleOpenIntegrations}
           tr={tr}
         />
@@ -1092,11 +1299,12 @@ export function IssuePage() {
             activeFilter={activeFilter}
             importEnabled={Boolean(linkedRepoId)}
             onFilterChange={handleFilterChange}
+            onCreateIssue={openCreateIssueDialog}
             onImport={handleOpenImportDialog}
             onAction={handleAction}
           />
 
-          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#0c0c0d] pb-10">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--surface-1)] pb-10">
             {suppressIssuePlaceholder ? (
               null
             ) : workItemsError ? (
@@ -1135,6 +1343,7 @@ export function IssuePage() {
                     selectedIssueId={selectedIssueId}
                     onToggle={() => handleGroupToggle(group.id)}
                     onIssueSelect={handleIssueSelect}
+                    onCreateIssue={openCreateIssueDialog}
                     onAction={handleAction}
                   />
                 ))}
@@ -1175,6 +1384,13 @@ export function IssuePage() {
         onQueryChange={setImportQuery}
         onImport={handleImportIssue}
         onClose={() => setImportDialogOpen(false)}
+      />
+      <IssueCreateDialog
+        open={createDialogOpen}
+        projectName={selectedProjectName}
+        submitting={createIssueSubmitting}
+        onClose={() => setCreateDialogOpen(false)}
+        onCreate={handleCreateIssue}
       />
     </div>
   );
@@ -1408,10 +1624,10 @@ function IssueHeader({
   tr: IssueTranslator;
 }) {
   return (
-    <header className="flex h-[49px] shrink-0 items-center justify-between border-b border-[#1e1f20] bg-[#101112] px-[29px]">
+    <header className="flex h-[49px] shrink-0 items-center justify-between border-b border-[var(--hairline)] bg-[var(--surface-1)] px-[29px]">
       <div className="flex min-w-0 items-center gap-[7px]">
         <ProjectBreadcrumbAvatar name={projectName} />
-        <span className="truncate text-[16px] font-semibold leading-none text-[#f2f2f3]">
+        <span className="truncate text-[16px] font-semibold leading-none text-[var(--ink)]">
           {projectName}
         </span>
         <ChevronRight
@@ -1419,7 +1635,7 @@ function IssueHeader({
           className="h-[15px] w-[15px] shrink-0 text-[#8f9298]"
           strokeWidth={2.4}
         />
-        <h1 className="truncate text-[16px] font-semibold leading-none text-[#f2f2f3]">
+        <h1 className="truncate text-[16px] font-semibold leading-none text-[var(--ink)]">
           Issues
         </h1>
       </div>
@@ -1446,10 +1662,10 @@ function HeaderIntegrationControls({
   tr: IssueTranslator;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-1.5 text-[#9b9da3]">
+    <div className="flex shrink-0 items-center gap-1.5 text-[var(--ink-tertiary)]">
       {linkedProviderId && (
         <span
-          className="relative flex h-6 w-6 items-center justify-center text-[#f2f2f3]"
+          className="relative flex h-6 w-6 items-center justify-center text-[var(--ink)]"
           aria-label={tr(
             'issue.linkDialog.header.linkedTo',
             'Linked to {repoName}',
@@ -1471,12 +1687,12 @@ function HeaderIntegrationControls({
             providerId={linkedProviderId}
             className="h-[15px] w-[15px]"
           />
-          <span className="absolute bottom-[3px] right-[2px] h-[6px] w-[6px] rounded-full border border-[#101112] bg-[#39d353] shadow-[0_0_0_1px_rgba(57,211,83,0.28)]" />
+          <span className="absolute bottom-[3px] right-[2px] h-[6px] w-[6px] rounded-full border border-[var(--surface-1)] bg-[#39d353] shadow-[0_0_0_1px_rgba(57,211,83,0.28)]" />
         </span>
       )}
       <button
         type="button"
-        className="flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[#191a1b] hover:text-[#f2f2f3]"
+        className="flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
         aria-label={tr(
           'issue.linkDialog.openButton',
           'Link external project tool',
@@ -2140,17 +2356,19 @@ function IssueToolbar({
   activeFilter,
   importEnabled,
   onFilterChange,
+  onCreateIssue,
   onImport,
   onAction,
 }: {
   activeFilter: IssueFilter;
   importEnabled: boolean;
   onFilterChange: (filter: IssueFilter) => void;
+  onCreateIssue: () => void;
   onImport: () => void;
   onAction: (message: string) => void;
 }) {
   return (
-    <section className="flex h-[46px] shrink-0 items-center justify-between bg-[#101112] px-[17px]">
+    <section className="flex h-[46px] shrink-0 items-center justify-between bg-[var(--surface-1)] px-[17px]">
       <div className="flex items-center gap-1.5">
         <FilterTab
           active={activeFilter === 'all'}
@@ -2170,10 +2388,10 @@ function IssueToolbar({
         <button
           type="button"
           className="ml-5 flex h-[26px] w-[26px] items-center justify-center rounded-full text-[#8a8d93] transition hover:bg-[#1d1e20] hover:text-[#f4f4f5]"
-          aria-label="Group by status"
-          onClick={() => onAction('Group menu opened')}
+          aria-label="Create issue"
+          onClick={onCreateIssue}
         >
-          <Layers2 aria-hidden="true" className="h-[15px] w-[15px]" />
+          <Plus aria-hidden="true" className="h-[15px] w-[15px]" />
         </button>
       </div>
 
@@ -2222,8 +2440,8 @@ function FilterTab({
       className={cn(
         'h-[33px] rounded-[17px] border px-3 text-[15px] font-semibold leading-none transition',
         active
-          ? 'border-[#2c2d30] bg-[#202123] text-[#fbfbfc]'
-          : 'border-[#292a2d] bg-[#121314] text-[#979a9f] hover:bg-[#191a1b] hover:text-[#d8d9dc]',
+          ? 'border-[var(--hairline-strong)] bg-[var(--surface-3)] text-[var(--ink)]'
+          : 'border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--ink-subtle)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]',
       )}
     >
       {label}
@@ -2250,10 +2468,10 @@ function ToolbarButton({
     <button
       type="button"
       className={cn(
-        'flex h-[33px] w-[33px] items-center justify-center rounded-full border border-[#2a2b2d] bg-[#202123] text-[#a1a3a8] transition',
+        'flex h-[33px] w-[33px] items-center justify-center rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--ink-subtle)] transition',
         disabled
           ? 'cursor-not-allowed opacity-45'
-          : 'hover:bg-[#292a2d] hover:text-[#f4f4f5]',
+          : 'hover:bg-[var(--surface-3)] hover:text-[var(--ink)]',
       )}
       aria-label={buttonLabel}
       disabled={disabled}
@@ -2271,6 +2489,7 @@ function IssueSection({
   selectedIssueId,
   onToggle,
   onIssueSelect,
+  onCreateIssue,
   onAction,
 }: {
   group: IssueGroup;
@@ -2278,6 +2497,7 @@ function IssueSection({
   selectedIssueId: string;
   onToggle: () => void;
   onIssueSelect: (issue: IssueItem) => void;
+  onCreateIssue: () => void;
   onAction: (message: string) => void;
 }) {
   return (
@@ -2293,10 +2513,7 @@ function IssueSection({
             onToggle();
           }
         }}
-        className={cn(
-          'flex h-[39px] items-center justify-between rounded-[9px] px-4',
-          group.id === 'done' ? 'bg-[#191a21]' : 'bg-[#191a1b]',
-        )}
+        className="flex h-[39px] items-center justify-between rounded-[9px] bg-[var(--surface-2)] px-4"
       >
         <div className="flex items-center gap-[10px]">
           <ChevronDown
@@ -2307,21 +2524,21 @@ function IssueSection({
           />
           <StatusIcon status={group.id} size="header" />
           <div className="flex items-baseline gap-3">
-            <h2 className="text-[16px] font-semibold leading-none text-[#e5e5e7]">
+            <h2 className="text-[16px] font-semibold leading-none text-[var(--ink)]">
               {group.title}
             </h2>
-            <span className="text-[16px] font-medium leading-none text-[#8f939b]">
+            <span className="text-[16px] font-medium leading-none text-[var(--ink-subtle)]">
               {group.count}
             </span>
           </div>
         </div>
         <button
           type="button"
-          className="flex h-6 w-6 items-center justify-center rounded-full text-[#979aa1] transition hover:bg-[#27282a] hover:text-[#f4f4f5]"
+          className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
           aria-label={`Add issue to ${group.title}`}
           onClick={(event) => {
             event.stopPropagation();
-            onAction(`Add issue to ${group.title}`);
+            onCreateIssue();
           }}
         >
           <Plus aria-hidden="true" className="h-[14px] w-[14px]" />
@@ -2368,13 +2585,13 @@ function IssueRow({
         }
       }}
       className={cn(
-        'grid h-[48px] grid-cols-[32px_70px_25px_minmax(0,1fr)_auto_48px_62px] items-center px-9 text-[#f2f2f3] transition hover:bg-[#131415]',
-        selected && 'bg-[#131415]',
+        'grid h-[48px] grid-cols-[32px_70px_25px_minmax(0,1fr)_48px_62px] items-center px-9 text-[var(--ink)] transition hover:bg-[var(--surface-2)]',
+        selected && 'bg-[var(--surface-2)]',
       )}
     >
       <button
         type="button"
-        className="flex h-5 w-5 items-center justify-center rounded-full text-[#91949a] opacity-90 transition hover:bg-[#1d1e20] hover:text-[#f2f2f3]"
+        className="flex h-5 w-5 items-center justify-center rounded-full text-[var(--ink-tertiary)] opacity-90 transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
         aria-label={`Open actions for ${issue.id}`}
         onClick={(event) => {
           event.stopPropagation();
@@ -2392,21 +2609,25 @@ function IssueRow({
 
       <StatusIcon status={issue.status} size="row" />
 
-      <h3 className="min-w-0 truncate pr-2 text-[13px] font-semibold leading-none text-[#f4f4f5]">
-        {issue.title}
-      </h3>
+      <div className="flex min-w-0 items-center gap-2 pr-2">
+        <h3 className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-none text-[var(--ink)]">
+          {issue.title}
+        </h3>
 
-      <div className="hidden min-w-[198px] items-center justify-end gap-1.5 xl:flex">
-        {issue.labels?.map((label) => (
-          <IssueLabel key={`${issue.id}-${label.name}`} label={label} />
-        ))}
+        {issue.labels && issue.labels.length > 0 && (
+          <div className="flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
+            {issue.labels.map((label) => (
+              <IssueLabel key={`${issue.id}-${label.name}`} label={label} />
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="flex justify-center">
         <IssueSourceIcon source={issue.workItem.source} />
       </div>
 
-      <time className="whitespace-nowrap text-right text-[13px] font-medium leading-none text-[#999ba0]">
+      <time className="whitespace-nowrap text-right text-[13px] font-medium leading-none text-[var(--ink-subtle)]">
         {issue.date}
       </time>
     </article>
@@ -2445,14 +2666,14 @@ function IssueSourceIcon({
 
 function IssueLabel({ label }: { label: IssueLabel }) {
   return (
-    <span className="inline-flex h-[27px] max-w-[116px] items-center gap-2 rounded-full border border-[#28292c] bg-[#101112] px-[10px] text-[13px] font-medium leading-none text-[#9b9da3]">
+    <span className="inline-flex h-[27px] min-w-0 max-w-[116px] items-center gap-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-1)] px-[10px] text-[13px] font-medium leading-none text-[var(--ink-subtle)]">
       <span
         className={cn(
           'h-[11px] w-[11px] shrink-0 rounded-full',
           labelColorClass[label.color],
         )}
       />
-      <span className="truncate">{label.name}</span>
+      <span className="min-w-0 truncate">{label.name}</span>
     </span>
   );
 }
@@ -2464,36 +2685,172 @@ function StatusIcon({
   status: IssueItem['status'] | IssueGroup['id'];
   size: 'header' | 'row';
 }) {
-  const iconSize = size === 'header' ? 'h-[17px] w-[17px]' : 'h-[18px] w-[18px]';
-
-  if (status === 'done') {
-    return (
-      <span
-        className={cn(
-          'flex shrink-0 items-center justify-center rounded-full bg-[#5e6ad2] text-[#111216]',
-          iconSize,
-        )}
-      >
-        <Check aria-hidden="true" className="h-3 w-3" strokeWidth={3} />
-      </span>
-    );
-  }
+  const dimension = size === 'header' ? 17 : 18;
+  const borderWidth = size === 'header' ? 2 : 2.2;
+  const iconSizeStyle = { height: dimension, width: dimension };
+  const innerBackground = size === 'header' ? '#191a1b' : '#0c0c0d';
 
   if (status === 'backlog') {
     return (
-      <CircleDashed
+      <span
         aria-hidden="true"
-        className={cn('shrink-0 text-[#a6a9b0]', iconSize)}
-        strokeWidth={2.4}
+        className="shrink-0 rounded-full"
+        style={{
+          ...iconSizeStyle,
+          background:
+            'repeating-conic-gradient(#a9aab0 0deg 13deg, transparent 13deg 30deg)',
+          WebkitMask: `radial-gradient(farthest-side, transparent calc(100% - ${
+            borderWidth * 2
+          }px), #000 calc(100% - ${borderWidth}px))`,
+          mask: `radial-gradient(farthest-side, transparent calc(100% - ${
+            borderWidth * 2
+          }px), #000 calc(100% - ${borderWidth}px))`,
+        }}
       />
     );
   }
 
+  if (status === 'todo') {
+    return (
+      <span
+        aria-hidden="true"
+        className="shrink-0 rounded-full border-[#d9d9de]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      />
+    );
+  }
+
+  if (status === 'in_progress') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative shrink-0 rounded-full border-[#f0c400]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      >
+        <span
+          className="absolute left-1/2 top-[3px] -translate-x-1/2 rounded-full bg-[#f0c400]"
+          style={{ height: dimension * 0.32, width: borderWidth }}
+        />
+        <span
+          className="absolute left-1/2 top-1/2 -translate-y-1/2 rounded-full bg-[#f0c400]"
+          style={{ height: borderWidth, width: dimension * 0.32 }}
+        />
+      </span>
+    );
+  }
+
+  if (status === 'ready_to_merge') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative shrink-0 overflow-hidden rounded-full border-[#4fc38b]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      >
+        <span
+          className="absolute rounded-r-full bg-[#4fc38b]"
+          style={{
+            bottom: borderWidth,
+            right: borderWidth,
+            top: borderWidth,
+            width: dimension * 0.29,
+          }}
+        />
+        <span
+          className="absolute rounded-full"
+          style={{
+            backgroundColor: innerBackground,
+            inset: borderWidth * 2,
+          }}
+        />
+      </span>
+    );
+  }
+
+  if (status === 'merging') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative shrink-0 rounded-full border-[#4fc38b]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      >
+        <span
+          className="absolute rounded-full border-l-[#4fc38b] border-t-[#4fc38b]"
+          style={{
+            backgroundColor: innerBackground,
+            borderLeftWidth: borderWidth * 1.6,
+            borderTopWidth: borderWidth * 1.6,
+            height: dimension * 0.48,
+            left: dimension * 0.19,
+            top: dimension * 0.16,
+            width: dimension * 0.48,
+          }}
+        />
+      </span>
+    );
+  }
+
+  if (status === 'done') {
+    return (
+      <span
+        className="flex shrink-0 items-center justify-center rounded-full bg-[#6671e8] text-[#141519]"
+        style={iconSizeStyle}
+      >
+        <Check
+          aria-hidden="true"
+          className={size === 'header' ? 'h-3 w-3' : 'h-[13px] w-[13px]'}
+          strokeWidth={3.2}
+        />
+      </span>
+    );
+  }
+
+  if (status === 'cancelled') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative flex shrink-0 items-center justify-center rounded-full bg-[#acbac8]"
+        style={iconSizeStyle}
+      >
+        <span
+          className="absolute rotate-45 rounded-full bg-white"
+          style={{
+            height: borderWidth * 1.08,
+            width: dimension * 0.46,
+          }}
+        />
+        <span
+          className="absolute -rotate-45 rounded-full bg-white"
+          style={{
+            height: borderWidth * 1.08,
+            width: dimension * 0.46,
+          }}
+        />
+      </span>
+    );
+  }
+
   return (
-    <Circle
+    <span
       aria-hidden="true"
-      className={cn('shrink-0 text-[#d7d9de]', iconSize)}
-      strokeWidth={2.4}
-    />
+      className="relative flex shrink-0 items-center justify-center rounded-full bg-[#acbac8]"
+      style={iconSizeStyle}
+    >
+      <span
+        className="absolute rounded-full bg-white"
+        style={{
+          height: borderWidth * 0.96,
+          transform: `translateY(${-dimension * 0.12}px) rotate(-45deg)`,
+          width: dimension * 0.45,
+        }}
+      />
+      <span
+        className="absolute rounded-full bg-white"
+        style={{
+          height: borderWidth * 0.96,
+          transform: `translateY(${dimension * 0.12}px) rotate(-45deg)`,
+          width: dimension * 0.45,
+        }}
+      />
+    </span>
   );
 }

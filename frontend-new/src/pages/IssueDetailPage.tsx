@@ -1,40 +1,47 @@
 import {
-  ArrowDown,
-  ArrowUp,
   Box,
   Check,
   ChevronDown,
   ChevronRight,
-  Circle,
-  CircleDashed,
-  Clock3,
-  GitBranch,
+  CloudUpload,
   Github,
   Link2,
   MoreHorizontal,
-  MousePointer2,
   Paperclip,
   Plus,
+  RefreshCw,
   Send,
-  SmilePlus,
   Tag,
-  Users,
+  User,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import {
+  useCallback,
   useEffect,
+  useMemo,
+  useRef,
   useState,
+  type ChangeEvent,
   type ReactNode,
   type SVGProps,
 } from 'react';
 import { ProjectBreadcrumbAvatar } from '@/components/ProjectBreadcrumbAvatar';
-import { projectWorkItemsApi } from '@/lib/api';
+import {
+  projectApi,
+  projectGithubApi,
+  projectWorkItemsApi,
+} from '@/lib/api';
 import type {
+  BackendChatSession,
+  GitHubAccount,
   ProjectWorkItem,
   ProjectWorkItemDetailResponse,
+  ProjectWorkItemPriority,
+  ProjectWorkItemStatus,
 } from '@/types';
 
-type IssueDetailStatus = 'todo' | 'backlog' | 'done';
+type IssueDetailStatus = ProjectWorkItemStatus;
 type RemoteProviderId = 'github' | 'linear' | 'jira';
 type RemoteProviderIcon = (props: SVGProps<SVGSVGElement>) => ReactNode;
 
@@ -42,7 +49,7 @@ export type IssueDetailItem = {
   id: string;
   workItemId: string;
   title: string;
-  status: IssueDetailStatus;
+  status: string;
   workItem: ProjectWorkItem;
 };
 
@@ -52,14 +59,23 @@ export type IssueDetailTranslator = (
   replacements?: Record<string, string | number>,
 ) => string;
 
+export type IssueDetailSyncSnapshot = {
+  workItem: ProjectWorkItem;
+  labels?: string[];
+};
+
 export type IssueDetailPageProps = {
   projectId: string;
   projectName: string;
   issue: IssueDetailItem;
   onBack: () => void;
   onAction: (message: string) => void;
+  onWorkItemChange?: (item: ProjectWorkItem) => void;
+  onIssueSync?: (snapshot: IssueDetailSyncSnapshot) => void;
   linkedProviderId: RemoteProviderId | null;
+  linkedRepoId?: string;
   linkedRepoName?: string;
+  githubAccount?: GitHubAccount | null;
   onOpenIntegrations: () => void;
   tr: IssueDetailTranslator;
 };
@@ -67,6 +83,78 @@ export type IssueDetailPageProps = {
 type RemoteProviderIconConfig = {
   Icon: RemoteProviderIcon;
   iconClassName: string;
+};
+
+type StatusMenuOption = {
+  value: IssueDetailStatus;
+  label: string;
+  shortcut: string;
+};
+
+type PriorityMenuValue = ProjectWorkItemPriority | 'none';
+
+type PriorityMenuOption = {
+  value: PriorityMenuValue;
+  label: string;
+  shortcut: string;
+};
+
+type LabelMenuOption = {
+  value: string;
+  label: string;
+  color: string;
+  shortcut: string;
+};
+
+type SessionMenuOption = {
+  value: string;
+  label: string;
+  shortcut: string;
+};
+
+export type IssueCommentAttachment = {
+  name: string;
+  size: number;
+};
+
+export const COMMON_GITHUB_LABELS = [
+  'bug',
+  'feature',
+  'enhancement',
+  'documentation',
+  'question',
+  'help wanted',
+  'good first issue',
+] as const;
+
+const statusMenuOptions: StatusMenuOption[] = [
+  { value: 'blocked', label: 'Backlog', shortcut: '1' },
+  { value: 'open', label: 'Todo', shortcut: '2' },
+  { value: 'in_progress', label: 'In Progress', shortcut: '3' },
+  { value: 'ready_to_merge', label: 'Ready to Merge', shortcut: '4' },
+  { value: 'merging', label: 'Merging', shortcut: '5' },
+  { value: 'done', label: 'Done', shortcut: '6' },
+  { value: 'cancelled', label: 'Canceled', shortcut: '7' },
+  { value: 'duplicate', label: 'Duplicate', shortcut: '8' },
+];
+
+const priorityMenuOptions: PriorityMenuOption[] = [
+  { value: 'none', label: 'No priority', shortcut: '0' },
+  { value: 'urgent', label: 'Urgent', shortcut: '1' },
+  { value: 'high', label: 'High', shortcut: '2' },
+  { value: 'medium', label: 'Medium', shortcut: '3' },
+  { value: 'low', label: 'Low', shortcut: '4' },
+];
+
+const labelColorByName: Record<string, string> = {
+  bug: '#f25f67',
+  feature: '#b987ff',
+  enhancement: '#5aaef7',
+  improvement: '#5aaef7',
+  documentation: '#8ddfcb',
+  question: '#f3c86b',
+  'help wanted': '#f59fb7',
+  'good first issue': '#7edc8f',
 };
 
 const remoteProviderIcons: Record<RemoteProviderId, RemoteProviderIconConfig> =
@@ -98,8 +186,12 @@ export function IssueDetailPage({
   issue,
   onBack,
   onAction,
+  onWorkItemChange,
+  onIssueSync,
   linkedProviderId,
+  linkedRepoId,
   linkedRepoName,
+  githubAccount,
   onOpenIntegrations,
   tr,
 }: IssueDetailPageProps) {
@@ -108,48 +200,568 @@ export function IssueDetailPage({
   );
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const [action, setAction] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
+  const [commentText, setCommentText] = useState('');
+  const [descriptionDraft, setDescriptionDraft] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [labelDraft, setLabelDraft] = useState('');
+  const [projectSessions, setProjectSessions] = useState<BackendChatSession[]>(
+    [],
+  );
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [openPropertyMenu, setOpenPropertyMenu] = useState<
+    'status' | 'priority' | 'labels' | 'session' | null
+  >(null);
+  const [statusQuery, setStatusQuery] = useState('');
+  const [priorityQuery, setPriorityQuery] = useState('');
+  const [labelQuery, setLabelQuery] = useState('');
+  const [sessionQuery, setSessionQuery] = useState('');
+  const propertyMenuRef = useRef<HTMLDivElement | null>(null);
+  const labelMenuRef = useRef<HTMLDivElement | null>(null);
+  const sessionMenuRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const detailRequestIdRef = useRef(0);
 
-  useEffect(() => {
+  const loadDetail = useCallback(async () => {
     if (!projectId || !issue.workItemId) {
       setDetail(null);
       return;
     }
-    let cancelled = false;
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
     setDetailLoading(true);
     setDetailError('');
-    void projectWorkItemsApi
-      .get(projectId, issue.workItemId)
-      .then((loaded) => {
-        if (!cancelled) setDetail(loaded);
+    try {
+      const nextDetail = await projectWorkItemsApi.get(projectId, issue.workItemId, {
+        includeGithubDetail: false,
+      });
+      if (detailRequestIdRef.current !== requestId) return;
+      setDetail(nextDetail);
+      setDetailLoading(false);
+    } catch (error) {
+      if (detailRequestIdRef.current !== requestId) return;
+      setDetailError(errorMessage(error));
+      setDetailLoading(false);
+    }
+  }, [issue.workItemId, projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId) {
+      setProjectSessions([]);
+      return;
+    }
+    setSessionsLoading(true);
+    void projectApi
+      .listSessions(projectId)
+      .then((sessions) => {
+        if (!cancelled) setProjectSessions(sessions);
       })
       .catch((error) => {
-        if (!cancelled) setDetailError(errorMessage(error));
+        if (!cancelled) setActionError(errorMessage(error));
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (!cancelled) setSessionsLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [issue.workItemId, projectId]);
+  }, [projectId]);
+
+  useEffect(() => {
+    void loadDetail();
+    return () => {
+      detailRequestIdRef.current += 1;
+    };
+  }, [loadDetail]);
+
+  useEffect(() => {
+    if (!openPropertyMenu) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        !propertyMenuRef.current?.contains(event.target as Node) &&
+        !labelMenuRef.current?.contains(event.target as Node) &&
+        !sessionMenuRef.current?.contains(event.target as Node)
+      ) {
+        setOpenPropertyMenu(null);
+        setStatusQuery('');
+        setPriorityQuery('');
+        setLabelQuery('');
+        setSessionQuery('');
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [openPropertyMenu]);
 
   const current = detail?.work_item ?? issue.workItem;
   const githubIssue = detail?.github_issue_detail ?? null;
-  const githubIssueLink =
-    detail?.external_links.find(
-      (link) =>
-        link.provider === 'github' && link.external_type === 'github_issue',
-    ) ?? null;
+  const githubIssueLink = findGitHubIssueLink(detail);
+  const linkedGitHubIssueNumber =
+    githubIssueLink?.number ?? githubIssue?.summary.number ?? null;
+  const canWriteGitHub = Boolean(linkedRepoId && linkedGitHubIssueNumber);
+  const canSyncActivity = Boolean(linkedRepoId && linkedGitHubIssueNumber);
+  const issueTitle = githubIssue?.summary.title ?? current.title;
   const issueBody = githubIssue?.body ?? current.description;
   const issueComments = githubIssue?.comments ?? [];
-  const issueLabels = githubIssue?.summary.labels ?? [];
-  const issueAssignees = githubIssue?.summary.assignees ?? [];
-  const issueStatus = projectWorkItemIssueStatus(current.status);
+  const localIssueLabels = useMemo(
+    () => projectWorkItemLabelList(current.labels_json),
+    [current.labels_json],
+  );
+  const issueLabels = useMemo(
+    () => githubIssue?.summary.labels ?? localIssueLabels,
+    [githubIssue?.summary.labels, localIssueLabels],
+  );
+  const hasGitHubIssue = Boolean(githubIssueLink || githubIssue);
+  const canEditLabels = !hasGitHubIssue || canWriteGitHub;
+  const issueBodyText = issueBody ?? '';
+  const issueLabelKey = issueLabels.join('\u0000');
+  const issueStatus = current.status;
+  const localCreatorIdentity = defaultIssueUserIdentity(githubAccount ?? null);
+  const creatorName = githubIssue?.summary.author ?? localCreatorIdentity.name;
+  const creatorAvatarUrl =
+    githubIssue?.summary.author_avatar_url ??
+    (githubIssue ? null : localCreatorIdentity.avatarUrl);
+  const creatorFallback = githubIssue ? 'initials' : localCreatorIdentity.fallback;
+  const creatorDate = githubIssue?.summary.created_at ?? current.created_at;
+  const linkedSessionLinks = (detail?.execution_links ?? []).flatMap((link) =>
+    link.session_id ? [{ linkId: link.id, sessionId: link.session_id }] : [],
+  );
+  const linkedSessionIds = linkedSessionLinks.map((link) => link.sessionId);
+  const linkedSessionIdSet = new Set(linkedSessionIds);
+  const sessionMenuOptions: SessionMenuOption[] = projectSessions
+    .filter((session) => !linkedSessionIdSet.has(session.id))
+    .map((session, index) => ({
+      value: session.id,
+      label: session.title?.trim() || session.id,
+      shortcut: index < 9 ? String(index + 1) : '',
+    }));
+
+  useEffect(() => {
+    setLabelDraft(issueLabels.join(', '));
+  }, [issue.workItemId, issueLabelKey, issueLabels]);
+
+  useEffect(() => {
+    setDescriptionDraft(issueBodyText);
+  }, [issue.workItemId, issueBodyText]);
+
+  const patchCurrentWorkItem = (updated: ProjectWorkItem) => {
+    setDetail((existing) =>
+      existing ? { ...existing, work_item: updated } : existing,
+    );
+    onWorkItemChange?.(updated);
+    onIssueSync?.({
+      workItem: updated,
+      labels: githubIssue ? issueLabels : undefined,
+    });
+  };
+
+  useEffect(() => {
+    if (!detail) return;
+    onIssueSync?.({
+      workItem: current,
+      labels: githubIssue ? issueLabels : undefined,
+    });
+  }, [current, detail, githubIssue, issueLabels, onIssueSync]);
+
+  const runAction = async (name: string, task: () => Promise<void>) => {
+    setAction(name);
+    setActionError('');
+    try {
+      await task();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setAction(null);
+    }
+  };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    setSelectedFiles(files);
+    if (files.length > 0) {
+      onAction(`${files.length} attachment${files.length === 1 ? '' : 's'} selected`);
+    }
+  };
+
+  const handleSubmitDescription = async () => {
+    if (!linkedRepoId || !linkedGitHubIssueNumber) {
+      onAction('Connect a GitHub issue to sync description');
+      return;
+    }
+    await runAction('description', async () => {
+      const body = descriptionDraft;
+      const summary = await projectGithubApi.updateIssueBody(
+        projectId,
+        linkedRepoId,
+        linkedGitHubIssueNumber,
+        body,
+      );
+      const updated = await projectWorkItemsApi.update(projectId, current.id, {
+        description: body,
+      });
+      setDetail((existing) =>
+        existing
+          ? {
+              ...existing,
+              github_issue_detail: {
+                summary,
+                body,
+                comments: existing.github_issue_detail?.comments ?? [],
+              },
+            }
+          : existing,
+      );
+      patchCurrentWorkItem(updated);
+      onAction('Description synced to GitHub');
+    });
+  };
+
+  const handleSaveDescriptionDraft = async () => {
+    const body = descriptionDraft;
+    if (body === issueBodyText) return;
+    setActionError('');
+    try {
+      const updated = await projectWorkItemsApi.update(projectId, current.id, {
+        description: body,
+      });
+      setDetail((existing) =>
+        existing
+          ? {
+              ...existing,
+              work_item: updated,
+              github_issue_detail: existing.github_issue_detail
+                ? {
+                    ...existing.github_issue_detail,
+                    body,
+                  }
+                : existing.github_issue_detail,
+            }
+          : existing,
+      );
+      onWorkItemChange?.(updated);
+      onIssueSync?.({
+        workItem: updated,
+        labels: githubIssue ? issueLabels : undefined,
+      });
+      onAction('Description saved');
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
+  };
+
+  const handleSyncActivity = async () => {
+    if (!linkedRepoId || !linkedGitHubIssueNumber) {
+      onAction('Connect a GitHub issue to sync activity');
+      return;
+    }
+    await runAction('activity-sync', async () => {
+      const githubDetail = await projectGithubApi.refreshIssue(
+        projectId,
+        linkedRepoId,
+        linkedGitHubIssueNumber,
+      );
+      setDetail((existing) =>
+        existing
+          ? { ...existing, github_issue_detail: githubDetail }
+          : existing,
+      );
+      onAction('Activity synced from GitHub');
+    });
+  };
+
+  const handleSubmitComment = async () => {
+    const body = composeIssueCommentBody(commentText, selectedFiles);
+    if (!body || !linkedRepoId || !linkedGitHubIssueNumber) return;
+    await runAction('comment', async () => {
+      await projectGithubApi.commentIssue(
+        projectId,
+        linkedRepoId,
+        linkedGitHubIssueNumber,
+        body,
+      );
+      setCommentText('');
+      setSelectedFiles([]);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      const githubDetail = await projectGithubApi.refreshIssue(
+        projectId,
+        linkedRepoId,
+        linkedGitHubIssueNumber,
+      );
+      setDetail((existing) =>
+        existing
+          ? { ...existing, github_issue_detail: githubDetail }
+          : existing,
+      );
+      onAction('Comment synced to GitHub');
+    });
+  };
+
+  const handleStatusChange = async (nextStatus: IssueDetailStatus) => {
+    if (nextStatus === issueStatus) return;
+    await runAction(`status-${nextStatus}`, async () => {
+      if (linkedRepoId && linkedGitHubIssueNumber) {
+        const githubSummary = await projectGithubApi.updateIssueState(
+          projectId,
+          linkedRepoId,
+          linkedGitHubIssueNumber,
+          issueStatusSyncsToClosed(nextStatus) ? 'closed' : 'open',
+        );
+        setDetail((existing) =>
+          existing
+            ? {
+                ...existing,
+                github_issue_detail: {
+                  summary: githubSummary,
+                  body: existing.github_issue_detail?.body ?? current.description,
+                  comments: existing.github_issue_detail?.comments ?? [],
+                },
+              }
+            : existing,
+        );
+      }
+      const updated = await projectWorkItemsApi.update(projectId, current.id, {
+        status: nextStatus,
+      });
+      patchCurrentWorkItem(updated);
+      onAction(`Issue status updated to ${statusLabel(nextStatus)}`);
+    });
+  };
+
+  const handlePriorityChange = async (priority: ProjectWorkItemPriority) => {
+    if (priority === current.priority) return;
+    await runAction(`priority-${priority}`, async () => {
+      const updated = await projectWorkItemsApi.update(projectId, current.id, {
+        priority,
+      });
+      patchCurrentWorkItem(updated);
+      onAction(`Priority updated to ${titleCaseToken(priority)}`);
+    });
+  };
+
+  const handleStatusMenuSelect = (status: IssueDetailStatus) => {
+    setOpenPropertyMenu(null);
+    setStatusQuery('');
+    setLabelQuery('');
+    void handleStatusChange(status);
+  };
+
+  const handlePriorityMenuSelect = (priority: PriorityMenuValue) => {
+    setOpenPropertyMenu(null);
+    setPriorityQuery('');
+    setLabelQuery('');
+    if (priority === 'none') {
+      onAction('Project work items require a priority');
+      return;
+    }
+    void handlePriorityChange(priority);
+  };
+
+  const handleSaveLabels = async (labels: string[]) => {
+    await runAction('labels', async () => {
+      if (hasGitHubIssue) {
+        if (!linkedRepoId || !linkedGitHubIssueNumber) return;
+        const nextLabels = await projectGithubApi.updateIssueLabels(
+          projectId,
+          linkedRepoId,
+          linkedGitHubIssueNumber,
+          labels,
+        );
+        setDetail((existing) =>
+          existing?.github_issue_detail
+            ? {
+                ...existing,
+                github_issue_detail: {
+                  ...existing.github_issue_detail,
+                  summary: {
+                    ...existing.github_issue_detail.summary,
+                    labels: nextLabels,
+                  },
+                },
+              }
+            : existing,
+        );
+        onIssueSync?.({ workItem: current, labels: nextLabels });
+        onAction('Labels synced to GitHub');
+        return;
+      }
+
+      const updated = await projectWorkItemsApi.update(projectId, current.id, {
+        labels_json: JSON.stringify(labels),
+      });
+      patchCurrentWorkItem(updated);
+      onAction('Labels updated');
+    });
+  };
+
+  const handleLabelMenuSelect = (label: string) => {
+    const nextLabels = toggleLabel(labelDraftToList(labelDraft), label);
+    setLabelDraft(nextLabels.join(', '));
+    setLabelQuery('');
+    if (!canEditLabels) {
+      onAction('Connect a GitHub issue to sync labels');
+      return;
+    }
+    void handleSaveLabels(nextLabels);
+  };
+
+  useEffect(() => {
+    if (!openPropertyMenu) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenPropertyMenu(null);
+        setStatusQuery('');
+        setPriorityQuery('');
+        setLabelQuery('');
+        setSessionQuery('');
+        return;
+      }
+
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (openPropertyMenu === 'status') {
+          const option = filterMenuOptions(statusMenuOptions, statusQuery)[0];
+          if (option) handleStatusMenuSelect(option.value);
+          return;
+        }
+        if (openPropertyMenu === 'priority') {
+          const option = filterMenuOptions(priorityMenuOptions, priorityQuery)[0];
+          if (option) handlePriorityMenuSelect(option.value);
+          return;
+        }
+        if (openPropertyMenu === 'session') {
+          const option = filterMenuOptions(sessionMenuOptions, sessionQuery)[0];
+          if (option) handleAssignSession(option.value);
+          return;
+        }
+        const option = filterMenuOptions(
+          buildLabelMenuOptions(labelDraftToList(labelDraft)),
+          labelQuery,
+        )[0];
+        if (option) handleLabelMenuSelect(option.value);
+        return;
+      }
+
+      if (openPropertyMenu === 'status') {
+        const option = statusMenuOptions.find(
+          (candidate) => candidate.shortcut === event.key,
+        );
+        if (option) {
+          event.preventDefault();
+          handleStatusMenuSelect(option.value);
+        }
+        return;
+      }
+
+      if (openPropertyMenu === 'priority') {
+        const option = priorityMenuOptions.find(
+          (candidate) => candidate.shortcut === event.key,
+        );
+        if (option) {
+          event.preventDefault();
+          handlePriorityMenuSelect(option.value);
+        }
+        return;
+      }
+
+      if (openPropertyMenu === 'session') {
+        const option = sessionMenuOptions.find(
+          (candidate) => candidate.shortcut === event.key,
+        );
+        if (option) {
+          event.preventDefault();
+          handleAssignSession(option.value);
+        }
+        return;
+      }
+
+      const option = buildLabelMenuOptions(labelDraftToList(labelDraft)).find(
+        (candidate) => candidate.shortcut === event.key,
+      );
+      if (option) {
+        event.preventDefault();
+        handleLabelMenuSelect(option.value);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  });
+
+  const linkSession = async (sessionId: string) => {
+    const executionLink = await projectWorkItemsApi.linkExecution(
+      projectId,
+      current.id,
+      {
+        session_id: sessionId,
+        workflow_execution_id: null,
+        workflow_step_id: null,
+        run_id: null,
+        link_type: 'discussed_in',
+      },
+    );
+    setDetail((existing) =>
+      existing
+        ? {
+            ...existing,
+            execution_links: [...existing.execution_links, executionLink],
+          }
+        : existing,
+    );
+  };
+
+  const handleAssignSession = async (sessionId: string) => {
+    if (!sessionId || linkedSessionIdSet.has(sessionId)) return;
+    await runAction(`assign-session-${sessionId}`, async () => {
+      await linkSession(sessionId);
+      setOpenPropertyMenu(null);
+      setSessionQuery('');
+      onAction('Session linked to issue');
+    });
+  };
+
+  const handleCreateSession = () => {
+    onAction('Create session from issue detail is coming soon');
+  };
+
+  const handleUnlinkSession = async (linkId: string) => {
+    await runAction(`unlink-session-${linkId}`, async () => {
+      await projectWorkItemsApi.unlinkExecution(projectId, current.id, linkId);
+      setDetail((existing) =>
+        existing
+          ? {
+              ...existing,
+              execution_links: existing.execution_links.filter(
+                (link) => link.id !== linkId,
+              ),
+            }
+          : existing,
+      );
+      onAction('Session unlinked from issue');
+    });
+  };
+
+  const commentBody = composeIssueCommentBody(commentText, selectedFiles);
+  const labelList = labelDraftToList(labelDraft);
+  const labelMenuOptions = buildLabelMenuOptions(labelList);
+  const filteredLabelOptions = filterMenuOptions(labelMenuOptions, labelQuery);
+  const filteredSessionOptions = filterMenuOptions(
+    sessionMenuOptions,
+    sessionQuery,
+  );
+  const filteredStatusOptions = filterMenuOptions(
+    statusMenuOptions,
+    statusQuery,
+  );
+  const filteredPriorityOptions = filterMenuOptions(
+    priorityMenuOptions,
+    priorityQuery,
+  );
 
   return (
     <>
       <IssueDetailHeader
-        issue={{ ...issue, title: current.title, status: issueStatus }}
+        issue={{ ...issue, title: issueTitle, status: issueStatus }}
         projectName={projectName}
         onBack={onBack}
         onAction={onAction}
@@ -159,243 +771,363 @@ export function IssueDetailPage({
         tr={tr}
       />
 
-      <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#0c0c0d]">
-        <div className="grid min-w-[820px] grid-cols-[minmax(0,1fr)_242px] gap-8 px-[15px] pb-14 pt-[6px]">
+      <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--surface-1)] text-[var(--ink)]">
+        <div className="grid min-w-[820px] grid-cols-[minmax(0,1fr)_268px] gap-8 px-[15px] pb-14 pt-[6px]">
           <section className="min-w-0 pl-2 pr-1 pt-6">
-            <h2 className="truncate text-[23px] font-bold leading-tight text-[#fbfbfc]">
-              {current.title}
+            <h2 className="text-[23px] font-bold leading-tight text-[var(--ink)]">
+              {issueTitle}
             </h2>
+            <div className="mt-2 flex items-center gap-2 text-[12px] font-medium text-[var(--ink-subtle)]">
+              <IssueAvatar
+                avatarUrl={creatorAvatarUrl}
+                name={creatorName}
+                fallback={creatorFallback}
+                size="normal"
+              />
+              <span className="min-w-0 truncate">
+                {creatorName} opened this issue on {formatSimpleDate(creatorDate)}
+              </span>
+            </div>
 
-            {detailLoading && (
-              <p className="mt-4 text-[13px] font-semibold text-[#777b83]">
-                Loading issue detail...
-              </p>
-            )}
             {detailError && (
-              <div className="mt-4 rounded-[10px] border border-[#55343a] bg-[#28181b] px-4 py-[10px] text-[13px] font-semibold text-[#ffb4bf]">
-                {detailError}
-              </div>
+              <InlineError className="mt-4">{detailError}</InlineError>
+            )}
+            {actionError && (
+              <InlineError className="mt-4">{actionError}</InlineError>
             )}
 
-            {issueBody ? (
-              <div className="mt-[26px] whitespace-pre-wrap rounded-[10px] border border-[#242528] bg-[#131415] p-[15px] text-[14px] leading-relaxed text-[#d6d8de]">
-                {issueBody}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileChange}
+            />
+
+            {detailLoading ? (
+              <div className="mt-[22px] rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] font-medium leading-relaxed text-[var(--ink-tertiary)]">
+                Loading description...
               </div>
             ) : (
-              <button
-                type="button"
-                className="mt-8 block text-left text-[16px] font-medium leading-none text-[#60636a] transition hover:text-[#a7aab1]"
-                onClick={() => onAction(`Description focused for ${issue.id}`)}
-              >
-                Add description...
-              </button>
+              <textarea
+                value={descriptionDraft}
+                placeholder="Add a description..."
+                className="mt-[22px] min-h-[126px] w-full resize-y rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-muted)] outline-none transition placeholder:text-[var(--ink-tertiary)] focus:border-[var(--hairline-strong)]"
+                onChange={(event) => setDescriptionDraft(event.target.value)}
+                onBlur={() => void handleSaveDescriptionDraft()}
+              />
             )}
 
-            <div className="mt-5 flex items-center gap-[18px] text-[#9ca0a7]">
-              <DetailPlainButton
-                icon={SmilePlus}
-                label="Add reaction"
-                onClick={() => onAction(`Reaction opened for ${issue.id}`)}
-              />
-              <DetailPlainButton
-                icon={Paperclip}
-                label="Attach file"
-                onClick={() => onAction(`Attachment opened for ${issue.id}`)}
-              />
+            <div className="mt-3 flex items-center gap-[18px] text-[var(--ink-subtle)]">
+              <button
+                type="button"
+                disabled={action === 'description' || !canWriteGitHub}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45"
+                aria-label="Sync description to GitHub"
+                title="Sync description to GitHub"
+                onClick={() => void handleSubmitDescription()}
+              >
+                <CloudUpload
+                  aria-hidden="true"
+                  className="h-[15px] w-[15px]"
+                  strokeWidth={2.2}
+                />
+              </button>
             </div>
 
             <button
               type="button"
-              className="mt-[22px] flex items-center gap-2 text-[13px] font-medium leading-none text-[#b0b3ba] transition hover:text-[#f2f2f3]"
+              className="mt-[22px] flex items-center gap-2 text-[13px] font-medium leading-none text-[var(--ink-subtle)] transition hover:text-[var(--ink)]"
               onClick={() => onAction(`Sub-issues opened for ${issue.id}`)}
             >
               <Plus aria-hidden="true" className="h-[14px] w-[14px]" />
               <span>Add sub-issues</span>
             </button>
 
-            <div className="mt-3 border-t border-[#242528] pt-5">
+            <div className="mt-3 border-t border-[var(--hairline)] pt-5">
               <div className="mb-6 flex items-center justify-between">
-                <h3 className="text-[17px] font-bold leading-none text-[#fbfbfc]">
+                <h3 className="text-[17px] font-bold leading-none text-[var(--ink)]">
                   Activity
                 </h3>
-                <div className="flex items-center gap-6">
-                  <button
-                    type="button"
-                    className="text-[13px] font-semibold leading-none text-[#a3a7af] transition hover:text-[#f2f2f3]"
-                    onClick={() => onAction(`Unsubscribed from ${issue.id}`)}
-                  >
-                    Unsubscribe
-                  </button>
-                  <IssueAvatar size="large" />
-                </div>
+                <button
+                  type="button"
+                  disabled={action === 'activity-sync' || !canSyncActivity}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45"
+                  aria-label="Sync comments from GitHub"
+                  title="Sync comments from GitHub"
+                  onClick={() => void handleSyncActivity()}
+                >
+                  <RefreshCw
+                    aria-hidden="true"
+                    className={`h-[18px] w-[18px] ${
+                      action === 'activity-sync' ? 'animate-spin' : ''
+                    }`}
+                    strokeWidth={2.2}
+                  />
+                </button>
               </div>
 
-              <div className="flex items-center gap-3 pl-[10px] text-[13px] font-medium leading-none text-[#aeb1b8]">
-                <IssueAvatar />
+              <div className="flex items-center gap-3 pl-[10px] text-[13px] font-medium leading-none text-[var(--ink-muted)]">
+                <IssueAvatar
+                  avatarUrl={creatorAvatarUrl}
+                  name={creatorName}
+                  fallback={creatorFallback}
+                  size="normal"
+                />
                 <span>
-                  {githubIssue?.summary.author ?? current.created_by ?? 'OpenTeams'}{' '}
-                  created the issue{' '}
-                  <span className="text-[#82858d]">
-                    · {formatSimpleDate(current.created_at)}
+                  {creatorName} created the issue{' '}
+                  <span className="text-[var(--ink-tertiary)]">
+                    {formatSimpleDate(creatorDate)}
                   </span>
                 </span>
               </div>
 
-              {issueComments.length > 0 && (
+              {issueComments.length > 0 ? (
                 <div className="mt-5 space-y-3">
                   {issueComments.map((comment) => (
-                    <div
-                      key={comment.id}
-                      className="rounded-[10px] border border-[#242528] bg-[#151617] p-[15px]"
+                    <article
+                      key={String(comment.id)}
+                      className="flex gap-3 rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px]"
                     >
-                      <p className="text-[13px] font-semibold text-[#8f939b]">
-                        {comment.author ?? 'unknown'} ·{' '}
-                        {formatSimpleDate(comment.created_at)}
-                      </p>
-                      <p className="mt-2 whitespace-pre-wrap text-[14px] leading-relaxed text-[#d8d9de]">
-                        {comment.body}
-                      </p>
-                    </div>
+                      <IssueAvatar
+                        avatarUrl={commentAvatarUrl(comment, githubAccount ?? null)}
+                        name={comment.author ?? 'unknown'}
+                        size="large"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[13px] font-semibold text-[var(--ink-subtle)]">
+                          {comment.author ?? 'unknown'}{' '}
+                          <span className="font-medium text-[var(--ink-tertiary)]">
+                            {formatSimpleDate(comment.created_at)}
+                          </span>
+                        </p>
+                        <p className="mt-2 whitespace-pre-wrap text-[14px] leading-relaxed text-[var(--ink-muted)]">
+                          {commentBodyText(comment.body)}
+                        </p>
+                      </div>
+                    </article>
                   ))}
                 </div>
+              ) : (
+                <p className="mt-5 rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[13px] font-medium text-[var(--ink-tertiary)]">
+                  No comments yet.
+                </p>
               )}
 
-              <div className="mt-6 flex h-[76px] items-end rounded-[9px] border border-[#232427] bg-[#161617] px-[15px] pb-3 pt-[15px]">
-                <button
-                  type="button"
-                  className="self-start text-left text-[16px] font-medium leading-none text-[#666a72] transition hover:text-[#a6aab2]"
-                  onClick={() => onAction(`Comment focused for ${issue.id}`)}
-                >
-                  Leave a comment...
-                </button>
-                <div className="ml-auto flex items-center gap-4">
+              <div className="mt-6 rounded-[9px] border border-[var(--hairline)] bg-[var(--surface-2)] p-[12px]">
+                <textarea
+                  value={commentText}
+                  placeholder="Leave a comment..."
+                  className="min-h-[82px] w-full resize-y bg-transparent text-[14px] leading-relaxed text-[var(--ink-muted)] outline-none placeholder:text-[var(--ink-tertiary)]"
+                  onChange={(event) => setCommentText(event.target.value)}
+                  onFocus={() => onAction(`Comment focused for ${issue.id}`)}
+                />
+                {selectedFiles.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedFiles.map((file) => (
+                      <span
+                        key={`${file.name}-${file.size}-${file.lastModified}`}
+                        className="inline-flex max-w-[260px] items-center gap-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-1 text-[12px] font-semibold text-[var(--ink-subtle)]"
+                      >
+                        <Paperclip
+                          aria-hidden="true"
+                          className="h-[12px] w-[12px] shrink-0"
+                        />
+                        <span className="truncate">
+                          {file.name} ({formatFileSize(file.size)})
+                        </span>
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      className="inline-flex h-6 items-center rounded-full px-2 text-[12px] font-semibold text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+                      onClick={() => {
+                        setSelectedFiles([]);
+                        if (fileInputRef.current) fileInputRef.current.value = '';
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+                <div className="mt-3 flex items-center justify-between gap-3">
                   <button
                     type="button"
-                    className="text-[#83868e] transition hover:text-[#f2f2f3]"
-                    aria-label="Attach to comment"
-                    onClick={() =>
-                      onAction(`Comment attachment opened for ${issue.id}`)
-                    }
+                    className="inline-flex items-center gap-2 text-[13px] font-semibold text-[var(--ink-subtle)] transition hover:text-[var(--ink)]"
+                    onClick={() => fileInputRef.current?.click()}
                   >
-                    <Paperclip
-                      aria-hidden="true"
-                      className="h-[15px] w-[15px]"
-                      strokeWidth={2.2}
-                    />
+                    <Paperclip aria-hidden="true" className="h-[14px] w-[14px]" />
+                    Attach
                   </button>
                   <button
                     type="button"
-                    className="flex h-7 w-7 items-center justify-center rounded-full bg-[#25262a] text-[#a1a4ab] transition hover:bg-[#303136] hover:text-[#f4f4f5] active:scale-95"
-                    aria-label="Send comment"
-                    onClick={() => onAction(`Comment submitted for ${issue.id}`)}
+                    disabled={
+                      action === 'comment' || !commentBody || !canWriteGitHub
+                    }
+                    className="flex h-8 items-center gap-2 rounded-[8px] bg-[var(--primary)] px-3 text-[13px] font-bold text-[var(--on-primary)] transition hover:bg-[var(--primary-hover)] active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-[var(--surface-4)] disabled:text-[var(--ink-tertiary)]"
+                    onClick={() => void handleSubmitComment()}
                   >
                     <Send
                       aria-hidden="true"
                       className="h-[14px] w-[14px]"
                       strokeWidth={2.4}
                     />
+                    {action === 'comment' ? 'Sending...' : 'Comment'}
                   </button>
                 </div>
               </div>
             </div>
           </section>
 
-          <aside className="min-w-0">
-            <div className="mb-[7px] flex justify-end gap-2">
-              <DetailRoundButton
-                icon={Link2}
-                label="Copy issue link"
-                onClick={() => onAction(`Copied link for ${issue.id}`)}
-              />
-              <DetailRoundButton
-                label="Copy issue ID"
-                onClick={() => onAction(`Copied ID for ${issue.id}`)}
-              >
-                <span className="text-[9px] font-black leading-none">ID</span>
-              </DetailRoundButton>
-              <DetailRoundButton
-                icon={GitBranch}
-                label="Create branch"
-                onClick={() => onAction(`Branch opened for ${issue.id}`)}
-              />
-              <div className="flex h-7 items-center rounded-full border border-[#2a2b2e] bg-[#202124] text-[#9fa2a9]">
-                <button
-                  type="button"
-                  className="flex h-full w-9 items-center justify-center rounded-l-full transition hover:bg-[#292a2e] hover:text-[#f4f4f5]"
-                  aria-label="Issue actions"
-                  onClick={() => onAction(`Issue actions opened for ${issue.id}`)}
-                >
-                  <MousePointer2
-                    aria-hidden="true"
-                    className="h-[14px] w-[14px]"
-                    strokeWidth={2.2}
-                  />
-                </button>
-                <span className="h-4 w-px bg-[#303136]" />
-                <button
-                  type="button"
-                  className="flex h-full w-7 items-center justify-center rounded-r-full transition hover:bg-[#292a2e] hover:text-[#f4f4f5]"
-                  aria-label="More issue actions"
-                  onClick={() =>
-                    onAction(`More issue actions opened for ${issue.id}`)
-                  }
-                >
-                  <ChevronDown
-                    aria-hidden="true"
-                    className="h-[14px] w-[14px]"
-                    strokeWidth={2.4}
-                  />
-                </button>
-              </div>
-            </div>
-
+          <aside className="min-w-0 pt-4">
             <DetailPanel title="Properties">
-              <DetailPropertyRow
-                iconNode={<StatusIcon status={issueStatus} size="row" />}
-              >
-                <span className="font-bold text-[#e3e4e8]">
-                  {statusLabel(issueStatus)}
-                </span>
-              </DetailPropertyRow>
-              <DetailPropertyRow prefix="---">
-                {titleCaseToken(current.priority)}
-              </DetailPropertyRow>
-              <DetailPropertyRow icon={Users}>
-                {issueAssignees.length > 0
-                  ? issueAssignees.join(', ')
-                  : 'Unassigned'}
-              </DetailPropertyRow>
-              <DetailPropertyRow icon={Clock3}>Add to cycle</DetailPropertyRow>
+              <div ref={propertyMenuRef} className="relative space-y-3">
+                <StatusDropdown
+                  disabled={Boolean(action?.startsWith('status-'))}
+                  open={openPropertyMenu === 'status'}
+                  options={filteredStatusOptions}
+                  query={statusQuery}
+                  value={issueStatus}
+                  onOpenChange={(open) => {
+                    setOpenPropertyMenu(open ? 'status' : null);
+                    setStatusQuery('');
+                    setPriorityQuery('');
+                    setLabelQuery('');
+                    setSessionQuery('');
+                  }}
+                  onQueryChange={setStatusQuery}
+                  onSelect={handleStatusMenuSelect}
+                />
+                <PriorityDropdown
+                  disabled={Boolean(action?.startsWith('priority-'))}
+                  open={openPropertyMenu === 'priority'}
+                  options={filteredPriorityOptions}
+                  query={priorityQuery}
+                  value={current.priority}
+                  onOpenChange={(open) => {
+                    setOpenPropertyMenu(open ? 'priority' : null);
+                    setPriorityQuery('');
+                    setStatusQuery('');
+                    setLabelQuery('');
+                    setSessionQuery('');
+                  }}
+                  onQueryChange={setPriorityQuery}
+                  onSelect={handlePriorityMenuSelect}
+                />
+              </div>
             </DetailPanel>
 
             <DetailPanel title="Labels">
-              {issueLabels.length > 0 ? (
-                issueLabels.map((label) => (
-                  <DetailPropertyRow key={label} icon={Tag}>
-                    {label}
-                  </DetailPropertyRow>
-                ))
-              ) : (
-                <DetailPropertyRow icon={Tag}>No labels</DetailPropertyRow>
-              )}
+              <LabelDropdown
+                menuRef={labelMenuRef}
+                disabled={action === 'labels' || !canEditLabels}
+                labels={labelList}
+                open={openPropertyMenu === 'labels'}
+                options={filteredLabelOptions}
+                query={labelQuery}
+                saving={action === 'labels'}
+                onOpenChange={(open) => {
+                  setOpenPropertyMenu(open ? 'labels' : null);
+                  setLabelQuery('');
+                  setStatusQuery('');
+                  setPriorityQuery('');
+                  setSessionQuery('');
+                }}
+                onQueryChange={setLabelQuery}
+                onSelect={handleLabelMenuSelect}
+              />
             </DetailPanel>
 
             <DetailPanel title="Project">
-              <DetailPropertyRow icon={Box}>
-                {titleCaseToken(current.source)}
-              </DetailPropertyRow>
-              {githubIssueLink?.number && (
-                <DetailPropertyRow icon={Github}>
-                  GitHub #{githubIssueLink.number}
-                </DetailPropertyRow>
+              {linkedSessionLinks.length > 0 ? (
+                <div className="space-y-2">
+                  {linkedSessionLinks.map(({ linkId, sessionId }) => {
+                    const unlinking = action === `unlink-session-${linkId}`;
+                    return (
+                      <div
+                        key={linkId}
+                        className="flex w-full items-center gap-[10px] text-left text-[14px] font-semibold leading-none text-[#979aa1]"
+                      >
+                        <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center text-[#979aa1]">
+                          <Box
+                            aria-hidden="true"
+                            className="h-[16px] w-[16px]"
+                            strokeWidth={2.2}
+                          />
+                        </span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {sessionTitle(projectSessions, sessionId)}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={unlinking}
+                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label={`Unlink ${sessionTitle(projectSessions, sessionId)}`}
+                          title="Unlink session"
+                          onClick={() => void handleUnlinkSession(linkId)}
+                        >
+                          <X
+                            aria-hidden="true"
+                            className="h-[12px] w-[12px]"
+                            strokeWidth={2.4}
+                          />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <SessionDropdown
+                  menuRef={sessionMenuRef}
+                  disabled={
+                    sessionsLoading || Boolean(action?.startsWith('assign-session-'))
+                  }
+                  loading={sessionsLoading}
+                  open={openPropertyMenu === 'session'}
+                  options={filteredSessionOptions}
+                  query={sessionQuery}
+                  onOpenChange={(open) => {
+                    setOpenPropertyMenu(open ? 'session' : null);
+                    setSessionQuery('');
+                    setStatusQuery('');
+                    setPriorityQuery('');
+                    setLabelQuery('');
+                  }}
+                  onQueryChange={setSessionQuery}
+                  onSelect={(sessionId) => void handleAssignSession(sessionId)}
+                />
+                {linkedSessionLinks.length === 0 && (
+                  <button
+                    type="button"
+                    className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-full bg-[var(--primary)] px-2.5 text-[12px] font-bold leading-none text-[var(--on-primary)] transition hover:bg-[var(--primary-hover)] active:scale-[0.98]"
+                    onClick={handleCreateSession}
+                  >
+                    <Plus
+                      aria-hidden="true"
+                      className="h-[14px] w-[14px] shrink-0"
+                      strokeWidth={2.4}
+                    />
+                    <span className="min-w-0 truncate">Create session</span>
+                  </button>
+                )}
+              </div>
+            </DetailPanel>
+
+            <DetailPanel title="External link">
+              {linkedGitHubIssueNumber && (
+                <DetailStaticRow icon={Github}>
+                  GitHub Issue #{linkedGitHubIssueNumber}
+                </DetailStaticRow>
               )}
-              {githubIssueLink?.url && (
+              {(githubIssue?.summary.url ?? githubIssueLink?.url) && (
                 <a
-                  href={githubIssueLink.url}
+                  href={(githubIssue?.summary.url ?? githubIssueLink?.url) ?? '#'}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-[14px] inline-flex text-[13px] font-bold text-[#8d97ff] transition hover:text-[#b8bfff]"
+                  className="inline-flex items-center gap-2 text-[13px] font-bold text-[#8d97ff] transition hover:text-[#b8bfff]"
                 >
+                  <Link2 aria-hidden="true" className="h-[14px] w-[14px]" />
                   Open GitHub issue
                 </a>
               )}
@@ -427,12 +1159,12 @@ function IssueDetailHeader({
   tr: IssueDetailTranslator;
 }) {
   return (
-    <header className="flex h-[46px] shrink-0 items-center justify-between border-b border-[#1e1f20] bg-[#101112] px-6">
+    <header className="flex h-[49px] shrink-0 items-center justify-between border-b border-[var(--hairline)] bg-[var(--surface-1)] px-[29px]">
       <div className="flex min-w-0 items-center gap-[7px]">
         <ProjectBreadcrumbAvatar name={projectName} />
         <button
           type="button"
-          className="truncate text-[15px] font-semibold leading-none text-[#f2f2f3] transition hover:text-white"
+          className="truncate text-[16px] font-semibold leading-none text-[var(--ink)] transition hover:text-[var(--ink)]"
           onClick={() => onAction('Project breadcrumb selected')}
         >
           {projectName}
@@ -444,7 +1176,7 @@ function IssueDetailHeader({
         />
         <button
           type="button"
-          className="truncate text-[15px] font-semibold leading-none text-[#f2f2f3] transition hover:text-white"
+          className="truncate text-[16px] font-semibold leading-none text-[var(--ink)] transition hover:text-[var(--ink)]"
           onClick={onBack}
         >
           Issues
@@ -454,17 +1186,17 @@ function IssueDetailHeader({
           className="h-[15px] w-[15px] shrink-0 text-[#8f9298]"
           strokeWidth={2.4}
         />
-        <h1 className="flex min-w-0 items-baseline gap-1 text-[15px] font-semibold leading-none text-[#f2f2f3]">
+        <h1 className="flex min-w-0 items-baseline gap-1 text-[16px] font-semibold leading-none text-[var(--ink)]">
           <IssueDisplayId
             id={issue.id}
             maxWidthPx={105}
-            className="shrink-0 text-[#f2f2f3]"
+            className="shrink-0 text-[var(--ink)]"
           />
           <span className="min-w-0 truncate">{issue.title}</span>
         </h1>
         <button
           type="button"
-          className="ml-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[#8a8d93] transition hover:bg-[#191a1b] hover:text-[#f2f2f3]"
+          className="ml-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
           aria-label="More issue options"
           onClick={() => onAction(`More options opened for ${issue.id}`)}
         >
@@ -472,35 +1204,32 @@ function IssueDetailHeader({
         </button>
       </div>
 
-      <div className="flex shrink-0 items-center gap-[14px] text-[#8f9298]">
-        <HeaderIntegrationControls
-          linkedProviderId={linkedProviderId}
-          linkedRepoName={linkedRepoName}
-          onOpen={onOpenIntegrations}
-          tr={tr}
-        />
-        <span className="font-mono text-[15px] font-medium leading-none">
-          <span className="text-[#a7aab1]">1</span> / 11
-        </span>
-        <button
-          type="button"
-          className="flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[#191a1b] hover:text-[#f2f2f3]"
-          aria-label="Next issue"
-          onClick={() => onAction('Next issue selected')}
-        >
-          <ArrowDown aria-hidden="true" className="h-[15px] w-[15px]" />
-        </button>
-        <span className="h-9 w-px bg-[#242528]" />
-        <button
-          type="button"
-          className="flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[#191a1b] hover:text-[#f2f2f3]"
-          aria-label="Previous issue"
-          onClick={() => onAction('Previous issue selected')}
-        >
-          <ArrowUp aria-hidden="true" className="h-[15px] w-[15px]" />
-        </button>
-      </div>
+      <HeaderIntegrationControls
+        linkedProviderId={linkedProviderId}
+        linkedRepoName={linkedRepoName}
+        onOpen={onOpenIntegrations}
+        tr={tr}
+      />
     </header>
+  );
+}
+
+function InlineError({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-[10px] border border-[#55343a] bg-[#28181b] px-4 py-[10px] text-[13px] font-semibold text-[#ffb4bf]',
+        className,
+      )}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -530,12 +1259,10 @@ function DetailRoundButton({
   icon: Icon,
   label,
   onClick,
-  children,
 }: {
-  icon?: LucideIcon;
+  icon: LucideIcon;
   label: string;
   onClick: () => void;
-  children?: ReactNode;
 }) {
   return (
     <button
@@ -545,11 +1272,7 @@ function DetailRoundButton({
       title={label}
       onClick={onClick}
     >
-      {Icon ? (
-        <Icon aria-hidden="true" className="h-[14px] w-[14px]" strokeWidth={2.2} />
-      ) : (
-        children
-      )}
+      <Icon aria-hidden="true" className="h-[14px] w-[14px]" strokeWidth={2.2} />
     </button>
   );
 }
@@ -561,71 +1284,794 @@ function DetailPanel({
   title: string;
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(true);
+  const contentId = `issue-detail-panel-${title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')}`;
+
   return (
-    <section className="mb-[9px] rounded-[10px] border border-[#242528] bg-[#161617] px-4 py-[15px]">
+    <section className="mb-[9px] rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-2)] px-4 py-[15px]">
       <button
         type="button"
-        className="mb-[18px] flex items-center gap-2 text-[15px] font-medium leading-none text-[#aeb2ba] transition hover:text-[#f2f2f3]"
+        className={cn(
+          'flex w-full items-center gap-2 text-left text-[15px] font-medium leading-none text-[var(--ink-subtle)] transition hover:text-[var(--ink)]',
+          open && 'mb-[18px]',
+        )}
+        aria-expanded={open}
+        aria-controls={contentId}
+        aria-label={`${open ? 'Collapse' : 'Expand'} ${title}`}
+        onClick={() => setOpen((current) => !current)}
       >
-        <span>{title}</span>
+        <span className="min-w-0 flex-1 truncate">{title}</span>
         <ChevronDown
           aria-hidden="true"
-          className="h-[12px] w-[12px]"
+          className={cn(
+            'h-[12px] w-[12px] shrink-0 transition-transform',
+            !open && '-rotate-90',
+          )}
           fill="#9da1a9"
           strokeWidth={0}
         />
       </button>
-      <div className="space-y-4">{children}</div>
+      <div id={contentId} hidden={!open} className="space-y-4">
+        {children}
+      </div>
     </section>
   );
 }
 
-function DetailPropertyRow({
-  icon: Icon,
-  iconNode,
-  prefix,
-  children,
+function StatusDropdown({
+  disabled,
+  open,
+  options,
+  query,
+  value,
+  onOpenChange,
+  onQueryChange,
+  onSelect,
 }: {
-  icon?: LucideIcon;
-  iconNode?: ReactNode;
-  prefix?: string;
-  children: ReactNode;
+  disabled: boolean;
+  open: boolean;
+  options: StatusMenuOption[];
+  query: string;
+  value: IssueDetailStatus;
+  onOpenChange: (open: boolean) => void;
+  onQueryChange: (query: string) => void;
+  onSelect: (status: IssueDetailStatus) => void;
 }) {
   return (
-    <button
-      type="button"
-      className="flex w-full items-center gap-[10px] text-left text-[14px] font-semibold leading-none text-[#979aa1] transition hover:text-[#f2f2f3]"
-    >
-      <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center text-[#979aa1]">
-        {iconNode}
-        {Icon && (
-          <Icon
-            aria-hidden="true"
-            className="h-[16px] w-[16px]"
-            strokeWidth={2.2}
+    <div className="relative">
+      <button
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="inline-flex h-7 max-w-full items-center gap-2 rounded-full px-1.5 text-[14px] font-normal leading-none text-[var(--ink)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={() => onOpenChange(!open)}
+      >
+        <StatusMenuIcon status={value} />
+        <span className="min-w-0 truncate">{statusLabel(value)}</span>
+      </button>
+
+      {open && (
+        <CommandMenuShell>
+          <CommandSearchRow
+            placeholder="Change status..."
+            shortcut="S"
+            value={query}
+            onChange={onQueryChange}
           />
-        )}
-        {prefix && (
-          <span className="font-mono text-[15px] font-bold leading-none">
-            {prefix}
-          </span>
-        )}
-      </span>
-      <span>{children}</span>
-    </button>
+          <div className="space-y-0.5 px-1.5 py-1.5" role="listbox">
+            {options.length > 0 ? (
+              options.map((option, index) => {
+                const selected = option.value === value;
+                const active = index === 0;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    className={cn(
+                      'flex h-8 w-full items-center gap-2.5 rounded-[8px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)]',
+                      active && 'bg-[var(--surface-4)]',
+                    )}
+                    onClick={() => onSelect(option.value)}
+                  >
+                    <StatusMenuIcon
+                      status={option.value}
+                      active={active}
+                      inMenu
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {option.label}
+                    </span>
+                    <span className="ml-auto flex w-9 shrink-0 items-center justify-between text-[var(--ink-subtle)]">
+                      {selected ? (
+                        <Check
+                          aria-hidden="true"
+                          className="h-[14px] w-[14px]"
+                          strokeWidth={3}
+                        />
+                      ) : (
+                        <span aria-hidden="true" className="h-[14px] w-[14px]" />
+                      )}
+                      <span className="text-[13px] font-semibold">
+                        {option.shortcut}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <CommandNoMatches />
+            )}
+          </div>
+        </CommandMenuShell>
+      )}
+    </div>
   );
 }
 
-function IssueAvatar({ size = 'normal' }: { size?: 'normal' | 'large' }) {
+function PriorityDropdown({
+  disabled,
+  open,
+  options,
+  query,
+  value,
+  onOpenChange,
+  onQueryChange,
+  onSelect,
+}: {
+  disabled: boolean;
+  open: boolean;
+  options: PriorityMenuOption[];
+  query: string;
+  value: ProjectWorkItemPriority;
+  onOpenChange: (open: boolean) => void;
+  onQueryChange: (query: string) => void;
+  onSelect: (priority: PriorityMenuValue) => void;
+}) {
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="inline-flex h-7 max-w-full items-center gap-2 rounded-full px-1.5 text-[14px] font-normal leading-none text-[var(--ink-subtle)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={() => onOpenChange(!open)}
+      >
+        <PriorityMenuIcon priority={value} selected={value === 'urgent'} />
+        <span className="min-w-0 truncate">{priorityLabel(value)}</span>
+      </button>
+
+      {open && (
+        <CommandMenuShell>
+          <CommandSearchRow
+            placeholder="Set priority to..."
+            shortcut="P"
+            value={query}
+            onChange={onQueryChange}
+          />
+          <div className="space-y-0.5 px-1.5 py-1.5" role="listbox">
+            {options.length > 0 ? (
+              options.map((option) => {
+                const selected = option.value === value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    className="flex h-8 w-full items-center gap-2.5 whitespace-nowrap rounded-[8px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)]"
+                    onClick={() => onSelect(option.value)}
+                  >
+                    <PriorityMenuIcon priority={option.value} />
+                    <span className="min-w-0 flex-1 truncate">
+                      {option.label}
+                    </span>
+                    <span className="ml-auto flex w-9 shrink-0 items-center justify-between text-[var(--ink-subtle)]">
+                      {selected ? (
+                        <Check
+                          aria-hidden="true"
+                          className="h-[14px] w-[14px]"
+                          strokeWidth={3}
+                        />
+                      ) : (
+                        <span aria-hidden="true" className="h-[14px] w-[14px]" />
+                      )}
+                      <span className="text-[13px] font-semibold">
+                        {option.shortcut}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <CommandNoMatches />
+            )}
+          </div>
+        </CommandMenuShell>
+      )}
+    </div>
+  );
+}
+
+function CommandMenuShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="absolute right-0 top-full z-50 mt-1 w-[248px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[13px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
+      {children}
+    </div>
+  );
+}
+
+function CommandSearchRow({
+  placeholder,
+  shortcut,
+  value,
+  onChange,
+}: {
+  placeholder: string;
+  shortcut: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex h-10 items-center gap-2.5 border-b border-[var(--hairline)] px-3.5">
+      <input
+        autoFocus
+        value={value}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 bg-transparent text-[13px] font-medium leading-none text-[var(--ink)] caret-[var(--primary)] outline-none placeholder:text-[var(--ink-tertiary)]"
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1 text-[12px] font-medium leading-none text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+        {shortcut}
+      </kbd>
+    </div>
+  );
+}
+
+function CommandNoMatches() {
+  return (
+    <div className="px-3 py-2.5 text-[13px] font-semibold text-[var(--ink-tertiary)]">
+      No matches
+    </div>
+  );
+}
+
+function StatusMenuIcon({
+  status,
+  active = false,
+  inMenu = false,
+}: {
+  status: IssueDetailStatus;
+  active?: boolean;
+  inMenu?: boolean;
+}) {
+  const ringBackground = active ? 'var(--surface-4)' : 'var(--surface-1)';
+  const terminalBackground = inMenu ? '#7f8790' : '#acbac8';
+
+  if (status === 'blocked') {
+    return (
+      <span
+        aria-hidden="true"
+        className="h-[14px] w-[14px] shrink-0 rounded-full"
+        style={{
+          background:
+            'repeating-conic-gradient(#a9aab0 0deg 13deg, transparent 13deg 30deg)',
+          WebkitMask:
+            'radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3.4px))',
+          mask: 'radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3.4px))',
+        }}
+      />
+    );
+  }
+
+  if (status === 'open') {
+    return (
+      <span
+        aria-hidden="true"
+        className="h-[14px] w-[14px] shrink-0 rounded-full border-2 border-[#d9d9de]"
+      />
+    );
+  }
+
+  if (status === 'in_progress') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative h-[14px] w-[14px] shrink-0 rounded-full border-2 border-[#f0c400]"
+      >
+        <span className="absolute left-1/2 top-[2px] h-[4.5px] w-0.5 -translate-x-1/2 rounded-full bg-[#f0c400]" />
+        <span className="absolute left-1/2 top-1/2 h-0.5 w-1 -translate-y-1/2 rounded-full bg-[#f0c400]" />
+      </span>
+    );
+  }
+
+  if (status === 'ready_to_merge') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative h-[14px] w-[14px] shrink-0 overflow-hidden rounded-full border-2 border-[#4fc38b]"
+      >
+        <span className="absolute bottom-[1.5px] right-[1.5px] top-[1.5px] w-1 rounded-r-full bg-[#4fc38b]" />
+        <span
+          className="absolute inset-[3px] rounded-full"
+          style={{ backgroundColor: ringBackground }}
+        />
+      </span>
+    );
+  }
+
+  if (status === 'merging') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative h-[14px] w-[14px] shrink-0 rounded-full border-2 border-[#4fc38b]"
+      >
+        <span
+          className="absolute left-[2.5px] top-[2px] h-[6.5px] w-[6.5px] rounded-full border-l-[3px] border-t-[3px] border-[#4fc38b]"
+          style={{ backgroundColor: ringBackground }}
+        />
+      </span>
+    );
+  }
+
+  if (status === 'done') {
+    return (
+      <span
+        aria-hidden="true"
+        className="flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-full bg-[#6671e8] text-[#141519]"
+      >
+        <Check className="h-[9px] w-[9px]" strokeWidth={3.7} />
+      </span>
+    );
+  }
+
+  if (status === 'cancelled') {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-full"
+        style={{ backgroundColor: terminalBackground }}
+      >
+        <span className="absolute h-[2.4px] w-[7.4px] rotate-45 rounded-full bg-white" />
+        <span className="absolute h-[2.4px] w-[7.4px] -rotate-45 rounded-full bg-white" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      aria-hidden="true"
+      className="relative flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-full"
+      style={{ backgroundColor: terminalBackground }}
+    >
+      <span className="absolute h-[2.3px] w-[7.2px] -translate-y-[1.7px] -rotate-45 rounded-full bg-white" />
+      <span className="absolute h-[2.3px] w-[7.2px] translate-y-[1.7px] -rotate-45 rounded-full bg-white" />
+    </span>
+  );
+}
+
+function PriorityMenuIcon({
+  priority,
+  selected = false,
+}: {
+  priority: PriorityMenuValue;
+  selected?: boolean;
+}) {
+  const iconFillClass = 'bg-[#a6a6aa]';
+  const urgentFillClass = selected ? 'bg-[#ff5a36]' : iconFillClass;
+
+  if (priority === 'none') {
+    return (
+      <span
+        aria-hidden="true"
+        className="inline-flex h-[14px] w-[14px] shrink-0 flex-nowrap items-center justify-center gap-[2px]"
+      >
+        {[0, 1, 2].map((bar) => (
+          <span
+            key={bar}
+            className={cn('h-0.5 w-[3px] rounded-full', iconFillClass)}
+          />
+        ))}
+      </span>
+    );
+  }
+
+  if (priority === 'urgent') {
+    return (
+      <span
+        aria-hidden="true"
+        className={cn(
+          'flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[2px] text-[12px] font-black leading-none text-white',
+          urgentFillClass,
+        )}
+      >
+        !
+      </span>
+    );
+  }
+
+  const bars =
+    priority === 'low'
+      ? [5]
+      : priority === 'medium'
+        ? [5, 8]
+        : [5, 8, 12];
+
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-[14px] w-[14px] shrink-0 items-end justify-start gap-0.5"
+    >
+      {bars.map((height) => (
+        <span
+          key={height}
+          className={cn('w-[3px] rounded-full', iconFillClass)}
+          style={{ height }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function LabelDropdown({
+  menuRef,
+  disabled,
+  labels,
+  open,
+  options,
+  query,
+  saving,
+  onOpenChange,
+  onQueryChange,
+  onSelect,
+}: {
+  menuRef: { current: HTMLDivElement | null };
+  disabled: boolean;
+  labels: string[];
+  open: boolean;
+  options: LabelMenuOption[];
+  query: string;
+  saving: boolean;
+  onOpenChange: (open: boolean) => void;
+  onQueryChange: (query: string) => void;
+  onSelect: (label: string) => void;
+}) {
+  const hasLabels = labels.length > 0;
+
+  return (
+    <div ref={menuRef} className="relative">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {labels.map((label) => (
+          <LabelChip
+            key={label}
+            disabled={disabled}
+            label={label}
+            onRemove={() => onSelect(label)}
+          />
+        ))}
+        <button
+          type="button"
+          disabled={disabled}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={saving ? 'Saving labels' : 'Add label'}
+          title={saving ? 'Saving labels' : 'Add label'}
+          className={cn(
+            'inline-flex h-7 max-w-full items-center rounded-full bg-[var(--surface-4)] text-[12px] font-bold leading-none text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
+            hasLabels ? 'w-7 justify-center px-0' : 'gap-1.5 px-2.5',
+          )}
+          onClick={() => onOpenChange(!open)}
+        >
+          {hasLabels ? (
+            <Plus
+              aria-hidden="true"
+              className="h-[14px] w-[14px] shrink-0"
+              strokeWidth={2.4}
+            />
+          ) : (
+            <>
+              <Tag
+                aria-hidden="true"
+                className="h-[13px] w-[13px] shrink-0"
+                strokeWidth={2.3}
+              />
+              <span className="min-w-0 truncate">
+                {saving ? 'Saving...' : 'Add label'}
+              </span>
+            </>
+          )}
+        </button>
+      </div>
+
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-2 w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[16px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
+          <LabelSearchRow
+            placeholder="Add labels..."
+            shortcut="L"
+            value={query}
+            onChange={onQueryChange}
+          />
+          <div className="space-y-1 px-3 py-3" role="listbox">
+            {options.length > 0 ? (
+              options.map((option) => {
+                const selected = labels.some((label) =>
+                  labelMatches(label, option.value),
+                );
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    disabled={disabled}
+                    role="option"
+                    aria-selected={selected}
+                    className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[7px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => onSelect(option.value)}
+                  >
+                    <LabelColorDot color={option.color} />
+                    <span className="min-w-0 flex-1 truncate">
+                      {option.label}
+                    </span>
+                    <span className="ml-auto flex w-10 shrink-0 items-center justify-between text-[var(--ink-subtle)]">
+                      {selected ? (
+                        <Check
+                          aria-hidden="true"
+                          className="h-[13px] w-[13px]"
+                          strokeWidth={3}
+                        />
+                      ) : (
+                        <span aria-hidden="true" className="h-[13px] w-[13px]" />
+                      )}
+                      {option.shortcut ? (
+                        <span className="text-[12px] font-semibold">
+                          {option.shortcut}
+                        </span>
+                      ) : (
+                        <span aria-hidden="true" className="w-2" />
+                      )}
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <CommandNoMatches />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionDropdown({
+  menuRef,
+  disabled,
+  loading,
+  open,
+  options,
+  query,
+  onOpenChange,
+  onQueryChange,
+  onSelect,
+}: {
+  menuRef: { current: HTMLDivElement | null };
+  disabled: boolean;
+  loading: boolean;
+  open: boolean;
+  options: SessionMenuOption[];
+  query: string;
+  onOpenChange: (open: boolean) => void;
+  onQueryChange: (query: string) => void;
+  onSelect: (sessionId: string) => void;
+}) {
+  return (
+    <div ref={menuRef} className="relative">
+      <button
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-full bg-[var(--surface-4)] px-2.5 text-[12px] font-bold leading-none text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={() => onOpenChange(!open)}
+      >
+        <Box
+          aria-hidden="true"
+          className="h-[13px] w-[13px] shrink-0"
+          strokeWidth={2.3}
+        />
+        <span className="min-w-0 truncate">
+          {loading ? 'Loading sessions...' : 'Link session'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-2 w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[16px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
+          <LabelSearchRow
+            placeholder="Link session..."
+            shortcut="S"
+            value={query}
+            onChange={onQueryChange}
+          />
+          <div
+            className="max-h-[220px] space-y-1 overflow-y-auto px-3 py-3 ot-scroll-area-styled"
+            role="listbox"
+          >
+            {options.length > 0 ? (
+              options.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[7px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)]"
+                  onClick={() => onSelect(option.value)}
+                >
+                  <Box
+                    aria-hidden="true"
+                    className="h-[13px] w-[13px] shrink-0 text-[var(--ink-subtle)]"
+                    strokeWidth={2.3}
+                  />
+                  <span className="min-w-0 flex-1 truncate" title={option.label}>
+                    {option.label}
+                  </span>
+                  {option.shortcut ? (
+                    <span className="ml-auto shrink-0 text-[12px] font-semibold text-[var(--ink-subtle)]">
+                      {option.shortcut}
+                    </span>
+                  ) : (
+                    <span aria-hidden="true" className="w-2 shrink-0" />
+                  )}
+                </button>
+              ))
+            ) : (
+              <CommandNoMatches />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LabelSearchRow({
+  placeholder,
+  shortcut,
+  value,
+  onChange,
+}: {
+  placeholder: string;
+  shortcut: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex h-12 items-center gap-2.5 border-b border-[var(--hairline)] px-4">
+      <input
+        autoFocus
+        value={value}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 bg-transparent text-[13px] font-medium leading-none text-[var(--ink)] caret-[var(--primary)] outline-none placeholder:text-[var(--ink-tertiary)]"
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 text-[12px] font-medium leading-none text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+        {shortcut}
+      </kbd>
+    </div>
+  );
+}
+
+function DetailStaticRow({
+  icon: Icon,
+  children,
+}: {
+  icon: LucideIcon;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex w-full items-center gap-[10px] text-left text-[14px] font-semibold leading-none text-[#979aa1]">
+      <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center text-[#979aa1]">
+        <Icon aria-hidden="true" className="h-[16px] w-[16px]" strokeWidth={2.2} />
+      </span>
+      <span className="min-w-0 truncate">{children}</span>
+    </div>
+  );
+}
+
+function LabelChip({
+  disabled,
+  label,
+  onRemove,
+}: {
+  disabled: boolean;
+  label: string;
+  onRemove: () => void;
+}) {
+  return (
+    <span className="inline-flex h-7 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--surface-4)] px-2.5 text-[12px] font-bold leading-none text-[var(--ink-muted)]">
+      <LabelColorDot color={labelColor(label)} />
+      <span className="min-w-0 truncate">{labelDisplayName(label)}</span>
+      <button
+        type="button"
+        disabled={disabled}
+        className="rounded-full text-[var(--ink-tertiary)] transition hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+        aria-label={`Remove ${label}`}
+        onClick={onRemove}
+      >
+        <X aria-hidden="true" className="h-[10px] w-[10px]" />
+      </button>
+    </span>
+  );
+}
+
+function LabelColorDot({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="h-2 w-2 shrink-0 rounded-full"
+      style={{ backgroundColor: color }}
+    />
+  );
+}
+
+function IssueAvatar({
+  avatarUrl,
+  name,
+  fallback = 'initials',
+  size = 'normal',
+}: {
+  avatarUrl?: string | null;
+  name: string;
+  fallback?: 'initials' | 'user';
+  size?: 'normal' | 'large';
+}) {
+  const className = cn(
+    'shrink-0 rounded-full border border-[#33353a] bg-[#202124]',
+    size === 'large' ? 'h-8 w-8' : 'h-4 w-4',
+  );
+
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt=""
+        referrerPolicy="no-referrer"
+        className={cn(className, 'object-cover')}
+      />
+    );
+  }
+
+  if (fallback === 'user') {
+    return (
+      <span
+        aria-hidden="true"
+        className={cn(
+          className,
+          'flex items-center justify-center text-[#9ca0a7]',
+        )}
+      >
+        <User
+          aria-hidden="true"
+          className={size === 'large' ? 'h-[18px] w-[18px]' : 'h-[11px] w-[11px]'}
+          strokeWidth={2.4}
+        />
+      </span>
+    );
+  }
+
   return (
     <span
       aria-hidden="true"
       className={cn(
-        'flex shrink-0 items-center justify-center rounded-full border border-[#2e8cff] bg-[radial-gradient(circle_at_36%_30%,#ffd6a4_0_18%,#f06b35_19%_46%,#1779ff_47%_100%)] text-[8px] font-black text-white shadow-[0_0_0_1px_rgba(255,255,255,0.12)_inset]',
-        size === 'large' ? 'h-5 w-5' : 'h-4 w-4',
+        className,
+        'flex items-center justify-center bg-[linear-gradient(135deg,#30323a,#5e6ad2)] font-mono font-black text-white',
+        size === 'large' ? 'text-[11px]' : 'text-[8px]',
       )}
     >
-      M
+      {accountInitials(name)}
     </span>
   );
 }
@@ -642,10 +2088,10 @@ function HeaderIntegrationControls({
   tr: IssueDetailTranslator;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-1.5 text-[#9b9da3]">
+    <div className="flex shrink-0 items-center gap-1.5 text-[var(--ink-tertiary)]">
       {linkedProviderId && (
         <span
-          className="relative flex h-6 w-6 items-center justify-center text-[#f2f2f3]"
+          className="relative flex h-6 w-6 items-center justify-center text-[var(--ink)]"
           aria-label={tr(
             'issue.linkDialog.header.linkedTo',
             'Linked to {repoName}',
@@ -670,12 +2116,12 @@ function HeaderIntegrationControls({
             providerId={linkedProviderId}
             className="h-[15px] w-[15px]"
           />
-          <span className="absolute bottom-[3px] right-[2px] h-[6px] w-[6px] rounded-full border border-[#101112] bg-[#39d353] shadow-[0_0_0_1px_rgba(57,211,83,0.28)]" />
+          <span className="absolute bottom-[3px] right-[2px] h-[6px] w-[6px] rounded-full border border-[var(--surface-1)] bg-[#39d353] shadow-[0_0_0_1px_rgba(57,211,83,0.28)]" />
         </span>
       )}
       <button
         type="button"
-        className="flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[#191a1b] hover:text-[#f2f2f3]"
+        className="flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
         aria-label={tr(
           'issue.linkDialog.openButton',
           'Link external project tool',
@@ -686,47 +2132,6 @@ function HeaderIntegrationControls({
         <Link2 aria-hidden="true" className="h-[14px] w-[14px]" />
       </button>
     </div>
-  );
-}
-
-function StatusIcon({
-  status,
-  size,
-}: {
-  status: IssueDetailStatus;
-  size: 'header' | 'row';
-}) {
-  const iconSize = size === 'header' ? 'h-[17px] w-[17px]' : 'h-[18px] w-[18px]';
-
-  if (status === 'done') {
-    return (
-      <span
-        className={cn(
-          'flex shrink-0 items-center justify-center rounded-full bg-[#5e6ad2] text-[#111216]',
-          iconSize,
-        )}
-      >
-        <Check aria-hidden="true" className="h-3 w-3" strokeWidth={3} />
-      </span>
-    );
-  }
-
-  if (status === 'backlog') {
-    return (
-      <CircleDashed
-        aria-hidden="true"
-        className={cn('shrink-0 text-[#a6a9b0]', iconSize)}
-        strokeWidth={2.4}
-      />
-    );
-  }
-
-  return (
-    <Circle
-      aria-hidden="true"
-      className={cn('shrink-0 text-[#d7d9de]', iconSize)}
-      strokeWidth={2.4}
-    />
   );
 }
 
@@ -819,18 +2224,188 @@ function IssueDisplayId({
   );
 }
 
-function projectWorkItemIssueStatus(
-  status: ProjectWorkItem['status'],
-): IssueDetailStatus {
-  if (status === 'done' || status === 'cancelled') return 'done';
-  if (status === 'blocked') return 'backlog';
-  return 'todo';
+export function composeIssueCommentBody(
+  comment: string,
+  attachments: ReadonlyArray<IssueCommentAttachment>,
+) {
+  const body = comment.trim();
+  if (attachments.length === 0) return body;
+  const attachmentLines = attachments.map(
+    (file) => `- ${file.name} (${formatFileSize(file.size)})`,
+  );
+  const attachmentBlock = `Attachments:\n${attachmentLines.join('\n')}`;
+  return body ? `${body}\n\n${attachmentBlock}` : attachmentBlock;
+}
+
+export function labelDraftToList(value: string) {
+  const seen = new Set<string>();
+  return value
+    .split(',')
+    .map((label) => label.trim())
+    .filter((label) => {
+      const key = label.toLowerCase();
+      if (!label || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+export function projectWorkItemLabelList(value?: string | null) {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((label): label is string => typeof label === 'string')
+      .map((label) => label.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function buildLabelMenuOptions(selectedLabels: string[]): LabelMenuOption[] {
+  const values: string[] = [];
+  const seen = new Set<string>();
+
+  [...COMMON_GITHUB_LABELS, ...selectedLabels].forEach((label) => {
+    const key = labelKey(label);
+    if (seen.has(key)) return;
+    seen.add(key);
+    values.push(label);
+  });
+
+  return values.map((value, index) => ({
+    value,
+    label: labelDisplayName(value),
+    color: labelColor(value),
+    shortcut: index < 9 ? String(index + 1) : '',
+  }));
+}
+
+function toggleLabel(labels: string[], label: string) {
+  return labels.some((item) => labelMatches(item, label))
+    ? labels.filter((item) => !labelMatches(item, label))
+    : [...labels, label];
+}
+
+function labelMatches(left: string, right: string) {
+  return labelKey(left) === labelKey(right);
+}
+
+function labelKey(label: string) {
+  return label.trim().toLowerCase();
+}
+
+function labelDisplayName(label: string) {
+  const normalized = labelKey(label);
+  if (normalized === 'enhancement') return 'Improvement';
+  return label
+    .trim()
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function labelColor(label: string) {
+  const normalized = labelKey(label);
+  if (labelColorByName[normalized]) return labelColorByName[normalized];
+
+  const palette = [
+    '#f25f67',
+    '#b987ff',
+    '#5aaef7',
+    '#8ddfcb',
+    '#f3c86b',
+    '#f59fb7',
+    '#7edc8f',
+  ];
+  const hash = Array.from(normalized).reduce(
+    (total, char) => total + char.charCodeAt(0),
+    0,
+  );
+  return palette[hash % palette.length];
+}
+
+export function findGitHubIssueLink(
+  detail: ProjectWorkItemDetailResponse | null,
+) {
+  return (
+    detail?.external_links.find(
+      (link) =>
+        link.provider === 'github' && link.external_type === 'github_issue',
+    ) ?? null
+  );
+}
+
+export function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function statusLabel(status: IssueDetailStatus) {
-  if (status === 'backlog') return 'Backlog';
+  if (status === 'open') return 'Todo';
+  if (status === 'in_progress') return 'In Progress';
+  if (status === 'blocked') return 'Backlog';
+  if (status === 'ready_to_merge') return 'Ready to Merge';
+  if (status === 'merging') return 'Merging';
   if (status === 'done') return 'Done';
-  return 'Todo';
+  if (status === 'cancelled') return 'Canceled';
+  return 'Duplicate';
+}
+
+function priorityLabel(priority: ProjectWorkItemPriority) {
+  return (
+    priorityMenuOptions.find((option) => option.value === priority)?.label ??
+    titleCaseToken(priority)
+  );
+}
+
+export function defaultIssueUserIdentity(account: GitHubAccount | null): {
+  name: string;
+  avatarUrl: string | null;
+  fallback: 'initials' | 'user';
+} {
+  if (account) {
+    return {
+      name: account.login,
+      avatarUrl: account.avatar_url,
+      fallback: account.avatar_url ? 'initials' : 'user',
+    };
+  }
+  return { name: 'you', avatarUrl: null, fallback: 'user' };
+}
+
+function commentAvatarUrl(
+  comment: { author: string | null; author_avatar_url?: string | null },
+  account: GitHubAccount | null,
+) {
+  if (comment.author_avatar_url) return comment.author_avatar_url;
+  if (account && comment.author === account.login) return account.avatar_url;
+  return null;
+}
+
+function commentBodyText(body: unknown) {
+  const text = typeof body === 'string' ? body : '';
+  return text.trim() ? text : 'No comment body.';
+}
+
+function filterMenuOptions<TOption extends { label: string }>(
+  options: TOption[],
+  query: string,
+) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return options;
+  return options.filter((option) =>
+    option.label.toLowerCase().includes(normalizedQuery),
+  );
+}
+
+function issueStatusSyncsToClosed(status: IssueDetailStatus) {
+  return status === 'done' || status === 'cancelled' || status === 'duplicate';
 }
 
 function titleCaseToken(value: string) {
@@ -847,6 +2422,21 @@ function formatSimpleDate(value: string | Date) {
     month: 'short',
     day: 'numeric',
   });
+}
+
+function accountInitials(login: string) {
+  return login
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('')
+    .padEnd(2, login[0]?.toUpperCase() ?? 'G');
+}
+
+function sessionTitle(sessions: BackendChatSession[], sessionId: string) {
+  const session = sessions.find((candidate) => candidate.id === sessionId);
+  return session?.title?.trim() || sessionId;
 }
 
 function errorMessage(error: unknown) {

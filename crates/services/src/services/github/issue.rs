@@ -84,6 +84,8 @@ impl GitHubIssueService {
                 detail.summary = self
                     .update_cached_issue(pool, integration.repo_id, detail.summary)
                     .await?;
+                self.cache_issue_detail(pool, integration.repo_id, &detail)
+                    .await?;
                 Ok(detail)
             }
             Err(err) => {
@@ -102,14 +104,14 @@ impl GitHubIssueService {
                     let summary = GitHubIssueSummary {
                         number,
                         node_id: link.external_id,
-                        title: link
-                            .metadata_json
-                            .unwrap_or_else(|| format!("GitHub issue #{number}")),
+                        title: cached_issue_title(link.metadata_json.as_deref(), number),
                         state: link.state.unwrap_or_else(|| "unknown".to_string()),
                         url: link.url.unwrap_or_default(),
                         author: None,
+                        author_avatar_url: None,
                         labels: Vec::new(),
                         assignees: Vec::new(),
+                        created_at: link.created_at,
                         updated_at: chrono::Utc::now(),
                         last_synced_at: link.last_synced_at,
                         stale: true,
@@ -229,14 +231,14 @@ impl GitHubIssueService {
                 Some(GitHubIssueSummary {
                     number,
                     node_id: link.external_id,
-                    title: link
-                        .metadata_json
-                        .unwrap_or_else(|| format!("GitHub issue #{number}")),
+                    title: cached_issue_title(link.metadata_json.as_deref(), number),
                     state: link.state.unwrap_or_else(|| "unknown".to_string()),
                     url: link.url.unwrap_or_default(),
                     author: None,
+                    author_avatar_url: None,
                     labels: Vec::new(),
                     assignees: Vec::new(),
+                    created_at: link.created_at,
                     updated_at: chrono::Utc::now(),
                     last_synced_at: link.last_synced_at,
                     stale: true,
@@ -261,7 +263,7 @@ impl GitHubIssueService {
             Some(issue.number),
             Some(issue.url.clone()),
             Some(issue.state.clone()),
-            Some(issue.title.clone()),
+            None,
             issue.last_synced_at,
             false,
         )
@@ -272,6 +274,29 @@ impl GitHubIssueService {
             issue.stale = false;
         }
         Ok(issue)
+    }
+
+    async fn cache_issue_detail(
+        &self,
+        pool: &SqlitePool,
+        repo_id: Uuid,
+        detail: &GitHubIssueDetail,
+    ) -> Result<()> {
+        ProjectWorkItemExternalLink::update_cache_by_external(
+            pool,
+            "github",
+            Some(repo_id),
+            ProjectExternalType::GithubIssue,
+            &detail.summary.number.to_string(),
+            Some(detail.summary.number),
+            Some(detail.summary.url.clone()),
+            Some(detail.summary.state.clone()),
+            Some(serde_json::to_string(detail)?),
+            detail.summary.last_synced_at,
+            detail.summary.stale,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn audit(
@@ -317,6 +342,17 @@ fn owner_repo(integration: &RepoIntegration) -> Result<(String, String)> {
             .clone()
             .ok_or_else(|| anyhow!("GitHub repo name is missing"))?,
     ))
+}
+
+fn cached_issue_title(metadata_json: Option<&str>, number: i64) -> String {
+    let fallback = || format!("GitHub issue #{number}");
+    let Some(metadata_json) = metadata_json else {
+        return fallback();
+    };
+    if let Ok(detail) = serde_json::from_str::<GitHubIssueDetail>(metadata_json) {
+        return detail.summary.title;
+    }
+    metadata_json.trim().to_string()
 }
 
 #[cfg(test)]

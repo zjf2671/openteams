@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import {
   issueDisplayIdFontSizePx,
   issueSourceProviderId,
@@ -6,7 +7,15 @@ import {
   projectWorkItemIssueStatus,
   projectWorkItemsToIssueGroups,
 } from './IssuePage';
-import type { ProjectWorkItem } from '@/types';
+import {
+  composeIssueCommentBody,
+  defaultIssueUserIdentity,
+  findGitHubIssueLink,
+  formatFileSize,
+  labelDraftToList,
+  projectWorkItemLabelList,
+} from './IssueDetailPage';
+import type { ProjectWorkItem, ProjectWorkItemDetailResponse } from '@/types';
 
 let failures = 0;
 
@@ -37,19 +46,205 @@ const item = (
   updated_at: '2026-06-07T00:00:00Z',
 });
 
+const issueDetailSource = readFileSync(
+  new URL('./IssueDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const apiSource = readFileSync(new URL('../lib/api.ts', import.meta.url), 'utf8');
+const projectGithubRouteSource = readFileSync(
+  new URL('../../../crates/server/src/routes/project_github.rs', import.meta.url),
+  'utf8',
+);
+const projectWorkItemServiceSource = readFileSync(
+  new URL(
+    '../../../crates/services/src/services/project/work_item.rs',
+    import.meta.url,
+  ),
+  'utf8',
+);
+const githubIssueServiceSource = readFileSync(
+  new URL(
+    '../../../crates/services/src/services/github/issue.rs',
+    import.meta.url,
+  ),
+  'utf8',
+);
+const detailPanelUsages =
+  issueDetailSource.match(/<DetailPanel title=/g)?.length ?? 0;
+const sourceBetween = (start: string, end: string) =>
+  issueDetailSource.slice(
+    issueDetailSource.indexOf(start),
+    issueDetailSource.indexOf(end),
+  );
+
+check(
+  'issue detail right panels use collapsible detail panels',
+  detailPanelUsages >= 4 &&
+    issueDetailSource.includes('const [open, setOpen] = useState(true)') &&
+    issueDetailSource.includes('aria-expanded={open}') &&
+    issueDetailSource.includes(
+      'onClick={() => setOpen((current) => !current)}',
+    ),
+  { detailPanelUsages },
+);
+
+check(
+  'issue detail project panel links sessions from a label-style dropdown',
+  issueDetailSource.includes('function SessionDropdown') &&
+    issueDetailSource.includes("placeholder=\"Link session...\"") &&
+    issueDetailSource.includes('max-h-[220px]') &&
+    issueDetailSource.includes('options={filteredSessionOptions}') &&
+    issueDetailSource.includes('linkedSessionLinks.length === 0 &&') &&
+    issueDetailSource.includes(
+      'Create session from issue detail is coming soon',
+    ) &&
+    !issueDetailSource.includes('projectApi.createSession(projectId') &&
+    !issueDetailSource.includes('<select'),
+  issueDetailSource,
+);
+
+const statusMutationSource = sourceBetween(
+  'const handleStatusChange',
+  'const handlePriorityChange',
+);
+const labelMutationSource = sourceBetween(
+  'const handleSaveLabels',
+  'const handleLabelMenuSelect',
+);
+const sessionLinkSource = sourceBetween(
+  'const linkSession',
+  'const handleAssignSession',
+);
+const sessionUnlinkSource = sourceBetween(
+  'const handleUnlinkSession',
+  'const commentBody',
+);
+
+check(
+  'issue detail right-side mutations patch local detail without reloading',
+  !statusMutationSource.includes('await loadDetail()') &&
+    !labelMutationSource.includes('await loadDetail()') &&
+    !sessionLinkSource.includes('await loadDetail()') &&
+    !sessionUnlinkSource.includes('await loadDetail()') &&
+    statusMutationSource.includes('summary: githubSummary') &&
+    labelMutationSource.includes('labels: nextLabels') &&
+    sessionLinkSource.includes(
+      'execution_links: [...existing.execution_links, executionLink]',
+    ) &&
+    sessionUnlinkSource.includes(
+      'execution_links: existing.execution_links.filter',
+    ),
+  {
+    statusMutationSource,
+    labelMutationSource,
+    sessionLinkSource,
+    sessionUnlinkSource,
+  },
+);
+
+check(
+  'issue detail loads cached local work item detail without github request',
+  sourceBetween('const loadDetail', 'useEffect(() => {').includes(
+    'includeGithubDetail: false',
+  ) &&
+    !sourceBetween('const loadDetail', 'useEffect(() => {').includes(
+      'projectGithubApi.getIssue(',
+    ) &&
+    issueDetailSource.includes('setDetailLoading(false);') &&
+    apiSource.includes('options?: { includeGithubDetail?: boolean }') &&
+    apiSource.includes('include_github_detail: options?.includeGithubDetail'),
+  { issueDetailSource, apiSource },
+);
+
+check(
+  'issue detail edits description and syncs description/comment explicitly',
+  issueDetailSource.includes('const [descriptionDraft, setDescriptionDraft]') &&
+    issueDetailSource.includes('handleSaveDescriptionDraft') &&
+    issueDetailSource.includes('onBlur={() => void handleSaveDescriptionDraft()}') &&
+    issueDetailSource.includes('projectGithubApi.updateIssueBody') &&
+    issueDetailSource.includes('projectGithubApi.refreshIssue') &&
+    issueDetailSource.includes('Sync description to GitHub') &&
+    issueDetailSource.includes('Sync comments from GitHub') &&
+    issueDetailSource.includes('handleSyncActivity') &&
+    issueDetailSource.includes('value={descriptionDraft}') &&
+    issueDetailSource.includes('<CloudUpload') &&
+    issueDetailSource.includes('<RefreshCw'),
+  issueDetailSource,
+);
+
+const activitySyncButtonSource = sourceBetween(
+  'disabled={action === \'activity-sync\' || !canSyncActivity}',
+  'onClick={() => void handleSyncActivity()}',
+);
+check(
+  'issue detail activity sync does not require a comment draft',
+  issueDetailSource.includes(
+    "const canSyncActivity = Boolean(linkedRepoId && linkedGitHubIssueNumber)",
+  ) &&
+    activitySyncButtonSource.includes("action === 'activity-sync'") &&
+    !activitySyncButtonSource.includes('commentBody'),
+  activitySyncButtonSource,
+);
+
+const externalLinkPanelStart = issueDetailSource.indexOf(
+  '<DetailPanel title="External link">',
+);
+const externalLinkPanelEnd = issueDetailSource.indexOf(
+  '</DetailPanel>',
+  externalLinkPanelStart,
+);
+const externalLinkPanelSource = issueDetailSource.slice(
+  externalLinkPanelStart,
+  externalLinkPanelEnd,
+);
+check(
+  'issue detail external link shows github icon with issue number only',
+  externalLinkPanelSource.includes('<DetailStaticRow icon={Github}>') &&
+    externalLinkPanelSource.includes('GitHub Issue #{linkedGitHubIssueNumber}') &&
+    !externalLinkPanelSource.includes('<DetailStaticRow icon={Box}>') &&
+    !externalLinkPanelSource.includes('titleCaseToken(current.source)'),
+  externalLinkPanelSource,
+);
+
+check(
+  'project work item detail serves cached github issue content',
+  projectWorkItemServiceSource.includes('github_issue_detail') &&
+    projectWorkItemServiceSource.includes('cached_github_issue_detail') &&
+    projectGithubRouteSource.includes('include_github_detail') &&
+    projectGithubRouteSource.includes('update_github_issue_detail_cache') &&
+    projectGithubRouteSource.includes('update_linked_github_issue_body_cache') &&
+    projectGithubRouteSource.includes('update_github_issue_summary_cache') &&
+    projectGithubRouteSource.includes('update_github_issue_labels_cache') &&
+    githubIssueServiceSource.includes('cache_issue_detail') &&
+    githubIssueServiceSource.includes('Some(serde_json::to_string(detail)?)'),
+  { projectWorkItemServiceSource, projectGithubRouteSource, githubIssueServiceSource },
+);
+
 check('open work items map to todo', projectWorkItemIssueStatus('open') === 'todo');
 check(
-  'in progress work items map to todo',
-  projectWorkItemIssueStatus('in_progress') === 'todo',
+  'in progress work items map to in progress',
+  projectWorkItemIssueStatus('in_progress') === 'in_progress',
 );
 check(
   'blocked work items map to backlog',
   projectWorkItemIssueStatus('blocked') === 'backlog',
 );
+check(
+  'ready to merge work items keep their issue status',
+  projectWorkItemIssueStatus('ready_to_merge') === 'ready_to_merge',
+);
+check(
+  'merging work items keep their issue status',
+  projectWorkItemIssueStatus('merging') === 'merging',
+);
 check('done work items map to done', projectWorkItemIssueStatus('done') === 'done');
 check(
-  'cancelled work items map to done',
-  projectWorkItemIssueStatus('cancelled') === 'done',
+  'cancelled work items map to canceled issue status',
+  projectWorkItemIssueStatus('cancelled') === 'cancelled',
+);
+check(
+  'duplicate work items map to duplicate issue status',
+  projectWorkItemIssueStatus('duplicate') === 'duplicate',
 );
 
 const groups = projectWorkItemsToIssueGroups(
@@ -73,6 +268,56 @@ check(
     'active',
     'OpenTeams',
   ).every((group) => group.id !== 'done'),
+);
+
+const syncedGroups = projectWorkItemsToIssueGroups(
+  [item('44444444-4444-4444-8444-444444444444', 'open')],
+  'all',
+  'OpenTeams',
+  {
+    '44444444-4444-4444-8444-444444444444': {
+      status: 'done',
+      priority: 'urgent',
+      externalLabels: [{ name: 'bug', color: 'red' }],
+    },
+  },
+);
+check(
+  'issue row overrides sync status into groups',
+  syncedGroups[0]?.id === 'done',
+  syncedGroups,
+);
+check(
+  'issue row shows only synced labels in row chips',
+  syncedGroups[0]?.items[0]?.labels
+    ?.map((label) => label.name)
+    .join(',') === 'bug',
+  syncedGroups[0]?.items[0]?.labels,
+);
+
+const localLabelGroups = projectWorkItemsToIssueGroups(
+  [
+    {
+      ...item('55555555-5555-4555-8555-555555555555', 'open'),
+      labels_json: JSON.stringify(['bug', 'feature']),
+    },
+  ],
+  'all',
+  'OpenTeams',
+);
+check(
+  'local work item labels render as issue row chips',
+  localLabelGroups[0]?.items[0]?.labels
+    ?.map((label) => label.name)
+    .join(',') === 'bug,feature',
+  localLabelGroups[0]?.items[0]?.labels,
+);
+check(
+  'issue row labels do not include derived type or priority chips',
+  groups[0]?.items[0]?.labels?.some((label) =>
+    ['Task', 'Bug', 'Medium', 'Urgent'].includes(label.name),
+  ) === false,
+  groups[0]?.items[0]?.labels,
 );
 check(
   'github imported work items do not duplicate source as a label',
@@ -126,6 +371,60 @@ check(
   'long issue ids continue shrinking instead of wrapping',
   issueDisplayIdFontSizePx('PWI-11111122223333') <
     issueDisplayIdFontSizePx('PWI-111111'),
+);
+check('file sizes render bytes', formatFileSize(512) === '512 B');
+check('file sizes render kibibytes', formatFileSize(1536) === '1.5 KB');
+check(
+  'comment body appends attachment names and sizes',
+  composeIssueCommentBody('Please review', [
+    { name: 'trace.log', size: 1536 },
+  ]) === 'Please review\n\nAttachments:\n- trace.log (1.5 KB)',
+);
+check(
+  'label draft trims and dedupes case-insensitively',
+  labelDraftToList('bug, feature, Bug, enhancement').join(',') ===
+    'bug,feature,enhancement',
+);
+check(
+  'project work item labels parse from json arrays',
+  projectWorkItemLabelList('["bug"," feature "]').join(',') ===
+    'bug,feature',
+);
+
+const detailWithGithubLink = {
+  external_links: [
+    {
+      provider: 'github',
+      external_type: 'github_issue',
+      number: 42,
+      url: 'https://github.com/openteams/app/issues/42',
+    },
+  ],
+} as ProjectWorkItemDetailResponse;
+
+check(
+  'issue detail helper finds github issue external link',
+  findGitHubIssueLink(detailWithGithubLink)?.number === 42,
+);
+
+check(
+  'local issue default identity uses you without github auth',
+  defaultIssueUserIdentity(null).name === 'you' &&
+    defaultIssueUserIdentity(null).fallback === 'user',
+);
+
+const authorizedIdentity = defaultIssueUserIdentity({
+  login: 'octocat',
+  id: 1,
+  avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4',
+  html_url: 'https://github.com/octocat',
+  scopes: [],
+  connected_at: '2026-06-07T00:00:00Z',
+});
+check(
+  'local issue default identity switches to github account after auth',
+  authorizedIdentity.name === 'octocat' &&
+    authorizedIdentity.avatarUrl === 'https://avatars.githubusercontent.com/u/1?v=4',
 );
 
 if (failures > 0) process.exit(1);

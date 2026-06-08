@@ -272,6 +272,11 @@ check(
   source,
 );
 check(
+  "closing tabs does not show a success toast",
+  !source.includes("toast.closedTab"),
+  source,
+);
+check(
   "frame-filling pages use the rounded content frame directly",
   source.includes('activeAppPage === "providers"') &&
     source.includes('activeAppPage === "agents"') &&

@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ChevronRight, ShieldCheck, Star } from "lucide-react";
+import { ChevronRight, ShieldCheck, Star, Trash2, X } from "lucide-react";
 import type { DropdownSelectOption } from "@/components/DropdownSelect";
 import { ProjectBreadcrumbAvatar } from "@/components/ProjectBreadcrumbAvatar";
 import { useWorkspace } from "@/context/WorkspaceContext";
@@ -46,7 +46,11 @@ import {
   trimOrNull,
   type ProjectMemberWithExecution,
 } from "./team/teamUtils";
-import { ProjectMemberType } from "../../../shared/types";
+import {
+  ProjectMemberType,
+  type BaseCodingAgent as ProjectBaseCodingAgent,
+  type MemberExecutionConfig as ProjectMemberExecutionConfig,
+} from "../../../shared/types";
 
 const createRunnerOptions = (
   runners: AgentRuntimeStatus[],
@@ -140,6 +144,85 @@ function TeamHeader({
   );
 }
 
+function TeamRemoveMemberDialog({
+  memberName,
+  removing,
+  t,
+  onCancel,
+  onConfirm,
+}: {
+  memberName: string;
+  removing: boolean;
+  t: TranslateFn;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="team-remove-member-title"
+    >
+      <div className="w-full max-w-[380px] rounded-[12px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] p-4 shadow-2xl">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-red-500/10 text-red-400">
+            <Trash2 aria-hidden="true" className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2
+              id="team-remove-member-title"
+              className="text-[15px] font-semibold text-[var(--ink)]"
+            >
+              {t("teamPage.dialog.removeMemberTitle")}
+            </h2>
+            <p className="mt-1 text-[13px] leading-relaxed text-[var(--ink-subtle)]">
+              {t("teamPage.dialog.removeMemberDesc", {
+                name: memberName,
+              })}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={removing}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label={t("teamPage.action.cancel")}
+            title={t("teamPage.action.cancel")}
+          >
+            <X aria-hidden="true" className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-[8px] border border-red-500/15 bg-red-500/5 px-3 py-2 text-[12px] leading-relaxed text-red-300">
+          {t("teamPage.dialog.removeMemberWarning")}
+        </div>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={removing}
+            className="h-9 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-4 text-[13px] font-medium text-[var(--ink-muted)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("teamPage.action.cancel")}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={removing}
+            className="h-9 rounded-[8px] bg-red-500 px-4 text-[13px] font-semibold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {removing
+              ? t("teamPage.action.removing")
+              : t("teamPage.action.remove")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const isObjectRecord = (value: unknown): value is Record<string, JsonValue> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 
@@ -200,6 +283,26 @@ const sameStringSet = (left: string[], right: string[]) => {
   return leftSorted.every((value, index) => value === rightSorted[index]);
 };
 
+const noticeAutoDismissMs = 4200;
+
+const createUniqueAgentName = (
+  runnerType: BaseCodingAgent,
+  agents: BackendChatAgent[],
+) => {
+  const baseName = `${getRunnerLabel(runnerType)} Agent`;
+  const existingNames = new Set(
+    agents.map((agent) => agent.name.trim().toLowerCase()).filter(Boolean),
+  );
+  if (!existingNames.has(baseName.toLowerCase())) return baseName;
+
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${baseName} ${index}`;
+    if (!existingNames.has(candidate.toLowerCase())) return candidate;
+  }
+
+  return `${baseName} ${Date.now()}`;
+};
+
 export function TeamPage() {
   const {
     projects,
@@ -235,9 +338,9 @@ export function TeamPage() {
   const [roleDefinition, setRoleDefinition] = useState("");
   const [saving, setSaving] = useState(false);
   const [memberSuccess, setMemberSuccess] = useState(false);
-  const [switchingLeadMemberId, setSwitchingLeadMemberId] = useState<
-    string | null
-  >(null);
+  const [memberPendingRemoval, setMemberPendingRemoval] =
+    useState<ProjectMemberWithExecution | null>(null);
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [mcpConfig, setMcpConfig] = useState<McpConfig | null>(null);
@@ -291,6 +394,20 @@ export function TeamPage() {
   );
   const runtimeOptions = useMemo(
     () => createRunnerOptions(runners),
+    [runners],
+  );
+  const addableRuntimeOptions = useMemo(
+    () =>
+      runners
+        .filter((runner) => getRuntimeDisplayState(runner) === "available")
+        .map((runner) => ({
+          label: getRunnerLabel(runner.runner_type),
+          modelName:
+            runtimeConfiguredModel(runner) ||
+            runner.discovered_models[0] ||
+            null,
+          runnerType: runner.runner_type,
+        })),
     [runners],
   );
   const selectedRuntime = useMemo(
@@ -419,6 +536,15 @@ export function TeamPage() {
   }, [mcpSuccess]);
 
   useEffect(() => {
+    if (!notice) return;
+    const timeoutId = window.setTimeout(
+      () => setNotice(null),
+      noticeAutoDismissMs,
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
+
+  useEffect(() => {
     if (memberDirty && memberSuccess) setMemberSuccess(false);
   }, [memberDirty, memberSuccess]);
 
@@ -513,56 +639,6 @@ export function TeamPage() {
       cancelled = true;
     };
   }, [runnerType, selectedMember]);
-
-  const setLeadMember = async (member: ProjectMemberWithExecution) => {
-    if (!selectedProjectId) return;
-    setSelectedMemberId(member.id);
-    if (member.role === "lead") return;
-
-    const agent = agents.find((item) => item.id === member.agent_id);
-    const membersToUpdate = currentProjectMembers.filter(
-      (item) => item.id === member.id || item.role === "lead",
-    );
-    setSaving(true);
-    setSwitchingLeadMemberId(member.id);
-    setError(null);
-    setNotice(null);
-    try {
-      const updatedMembers = await Promise.all(
-        membersToUpdate.map((item) =>
-          projectApi.updateMember(selectedProjectId, item.id, {
-            role: item.id === member.id ? "lead" : nonLeadRole,
-            display_order: null,
-            default_workspace_path: null,
-            is_default: null,
-            allowed_skill_ids: null,
-            execution_config: null,
-          } as never),
-        ),
-      );
-      setMembers((current) =>
-        current.map((item) => {
-          const updated = updatedMembers.find(
-            (updatedMember) => updatedMember.id === item.id,
-          );
-          return updated ? (updated as ProjectMemberWithExecution) : item;
-        }),
-      );
-      setSelectedMemberId(member.id);
-      setNotice(
-        t("teamPage.notice.mainAgentChanged", {
-          name: memberName(member, agent),
-        }),
-      );
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : t("teamPage.error.switchLead"),
-      );
-    } finally {
-      setSaving(false);
-      setSwitchingLeadMemberId(null);
-    }
-  };
 
   const saveMember = async () => {
     if (!selectedProjectId || !selectedMember) return;
@@ -774,28 +850,130 @@ export function TeamPage() {
     setNotice(null);
   };
 
+  const addProjectMemberForAgent = async (
+    agent: BackendChatAgent,
+    executionConfig: ProjectMemberExecutionConfig = {},
+  ) => {
+    if (!selectedProjectId) return;
+    const newMember = await projectApi.addMember(selectedProjectId, {
+      member_type: ProjectMemberType.agent,
+      user_id: null,
+      agent_id: agent.id,
+      member_name: trimOrNull(agent.name),
+      role: nonLeadRole,
+      display_order: members.length as unknown as bigint,
+      default_workspace_path: null,
+      allowed_skill_ids: [],
+      execution_config: executionConfig ?? {},
+      is_default: true,
+    });
+    const memberWithExec = newMember as ProjectMemberWithExecution;
+    setMembers((current) => [...current, memberWithExec]);
+    setSelectedMemberId(memberWithExec.id);
+    await Promise.all([
+      activeSessionId
+        ? sessionAgentsApi
+            .list(activeSessionId)
+            .then((activeSessionAgents) =>
+              setSessionAgents(activeSessionAgents),
+            )
+            .catch(() => undefined)
+        : Promise.resolve(),
+      refreshMembers().catch(() => undefined),
+      refreshMessages().catch(() => undefined),
+    ]);
+    setNotice(
+      t("teamPage.notice.memberAdded", {
+        name: agent.name || t("teamPage.fallback.agent"),
+      }),
+    );
+  };
+
   const addMember = async (agentId: string) => {
+    const agent = agents.find((item) => item.id === agentId);
+    if (!selectedProjectId || !agent) return;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await addProjectMemberForAgent(agent);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : t("teamPage.error.addMember"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const createMemberFromRuntime = async (runnerType: BaseCodingAgent) => {
     if (!selectedProjectId) return;
     setSaving(true);
     setError(null);
     setNotice(null);
     try {
-      const agent = agents.find((item) => item.id === agentId);
-      const newMember = await projectApi.addMember(selectedProjectId, {
-        member_type: ProjectMemberType.agent,
-        user_id: null,
-        agent_id: agentId,
-        member_name: trimOrNull(agent?.name ?? ""),
-        role: nonLeadRole,
-        display_order: members.length as unknown as bigint,
-        default_workspace_path: null,
-        allowed_skill_ids: [],
-        execution_config: {},
-        is_default: true,
+      const runtime = runners.find((item) => item.runner_type === runnerType);
+      const modelName =
+        (runtime ? runtimeConfiguredModel(runtime) : "") ||
+        runtime?.discovered_models[0] ||
+        null;
+      const agent = await chatAgentsApi.create({
+        name: createUniqueAgentName(runnerType, agents),
+        runner_type: runnerType,
+        system_prompt: null,
+        tools_enabled: {},
+        model_name: modelName,
       });
-      const memberWithExec = newMember as ProjectMemberWithExecution;
-      setMembers((current) => [...current, memberWithExec]);
-      setSelectedMemberId(memberWithExec.id);
+      setAgents((current) =>
+        current.some((item) => item.id === agent.id)
+          ? current
+          : [...current, agent],
+      );
+      await addProjectMemberForAgent(agent, {
+        runner_type: runnerType as unknown as ProjectBaseCodingAgent,
+        model_name: modelName,
+        thinking_effort: null,
+        model_variant: null,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : t("teamPage.error.addMember"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const requestRemoveMember = (member: ProjectMemberWithExecution) => {
+    setMemberPendingRemoval(member);
+    setError(null);
+    setNotice(null);
+  };
+
+  const removeMember = async () => {
+    if (!selectedProjectId || !memberPendingRemoval) return;
+    const member = memberPendingRemoval;
+    const agent = agents.find((item) => item.id === member.agent_id);
+    const removedName = memberName(member, agent);
+    setSaving(true);
+    setRemovingMemberId(member.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await projectApi.removeMember(selectedProjectId, member.id);
+      const nextMembers = members.filter((item) => item.id !== member.id);
+      setMembers(nextMembers);
+      setSelectedMemberId((current) => {
+        if (current !== member.id) return current;
+        return (
+          nextMembers.find(
+            (item) =>
+              item.project_id === selectedProjectId &&
+              item.member_type === "agent",
+          )?.id ?? ""
+        );
+      });
+      setMemberPendingRemoval(null);
       await Promise.all([
         activeSessionId
           ? sessionAgentsApi
@@ -809,18 +987,26 @@ export function TeamPage() {
         refreshMessages().catch(() => undefined),
       ]);
       setNotice(
-        t("teamPage.notice.memberAdded", {
-          name: agent?.name ?? t("teamPage.fallback.agent"),
+        t("teamPage.notice.memberRemoved", {
+          name: removedName,
         }),
       );
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : t("teamPage.error.addMember"),
+        err instanceof Error ? err.message : t("teamPage.error.removeMember"),
       );
     } finally {
       setSaving(false);
+      setRemovingMemberId(null);
     }
   };
+
+  const pendingRemovalAgent = memberPendingRemoval
+    ? agents.find((item) => item.id === memberPendingRemoval.agent_id)
+    : null;
+  const pendingRemovalName = memberPendingRemoval
+    ? memberName(memberPendingRemoval, pendingRemovalAgent)
+    : "";
 
   if (!selectedProjectId) {
     return (
@@ -845,8 +1031,10 @@ export function TeamPage() {
             <TeamAddMemberButton
               agents={agents}
               members={currentProjectMembers}
+              runtimeOptions={addableRuntimeOptions}
               saving={saving}
               onAddMember={addMember}
+              onCreateMember={createMemberFromRuntime}
               t={t}
             />
           ) : null
@@ -863,8 +1051,17 @@ export function TeamPage() {
               </div>
             )}
             {notice && (
-              <div className="rounded-[8px] border border-[var(--success)]/30 bg-[var(--success)]/10 p-3 text-[14px] text-[var(--success)]">
-                {notice}
+              <div className="flex items-start gap-2 rounded-[8px] border border-[var(--success)]/30 bg-[var(--success)]/10 p-3 text-[14px] text-[var(--success)]">
+                <span className="min-w-0 flex-1">{notice}</span>
+                <button
+                  type="button"
+                  onClick={() => setNotice(null)}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[var(--success)] opacity-70 transition hover:bg-[var(--success)]/10 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--success)]/35"
+                  aria-label="Close notification"
+                  title="Close notification"
+                >
+                  <X aria-hidden="true" className="h-3.5 w-3.5" />
+                </button>
               </div>
             )}
           </div>
@@ -880,9 +1077,8 @@ export function TeamPage() {
               saving={saving}
               selectedMemberId={selectedMemberId}
               sessionAgentLookup={sessionAgentLookup}
-              switchingLeadMemberId={switchingLeadMemberId}
+              onRemoveMember={requestRemoveMember}
               onSelectMember={setSelectedMemberId}
-              onSetLeadMember={(member) => void setLeadMember(member)}
               t={t}
             />
           </aside>
@@ -942,6 +1138,17 @@ export function TeamPage() {
         </div>
         )}
       </div>
+      {memberPendingRemoval && (
+        <TeamRemoveMemberDialog
+          memberName={pendingRemovalName}
+          removing={removingMemberId === memberPendingRemoval.id}
+          t={t}
+          onCancel={() => {
+            if (!removingMemberId) setMemberPendingRemoval(null);
+          }}
+          onConfirm={() => void removeMember()}
+        />
+      )}
     </div>
   );
 }

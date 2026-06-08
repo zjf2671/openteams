@@ -48,6 +48,7 @@ import type {
   GitHubOAuthStartResponse,
   GitHubOAuthStatusResponse,
   GitHubOperationAudit,
+  GitHubOperationResult,
   GitHubPrPreview,
   GitHubRepositorySummary,
   InstalledNativeSkill,
@@ -58,10 +59,12 @@ import type {
   PauseAllResponse,
   ProjectDeliveryRecord,
   ProjectDeliveryStatsSummary,
+  ProjectExecutionLinkType,
   ProjectIssueIntegrationsResponse,
   ProjectRepoIntegration,
   ProjectWorkItem,
   ProjectWorkItemDetailResponse,
+  ProjectWorkItemExecutionLink,
   ProfilesContent,
   ResolveActionResponse,
   ResumeExecutionResponse,
@@ -1249,56 +1252,70 @@ export const projectGithubApi = {
     repoIntegrationId: string,
     number: number,
     body: string,
-  ): Promise<GitHubIssueDetail> => {
+  ): Promise<GitHubOperationResult> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/github/issues/${encodeURIComponent(
         repoIntegrationId,
       )}/${number}/comments`,
       { method: "POST", body: jsonBody({ body }) },
     );
-    return handleApiResponse<GitHubIssueDetail, GitHubErrorData>(r);
+    return handleApiResponse<GitHubOperationResult, GitHubErrorData>(r);
+  },
+  updateIssueBody: async (
+    projectId: string,
+    repoIntegrationId: string,
+    number: number,
+    body: string,
+  ): Promise<GitHubIssueSummary> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/github/issues/${encodeURIComponent(
+        repoIntegrationId,
+      )}/${number}/body`,
+      { method: "PUT", body: jsonBody({ body }) },
+    );
+    return handleApiResponse<GitHubIssueSummary, GitHubErrorData>(r);
   },
   updateIssueState: async (
     projectId: string,
     repoIntegrationId: string,
     number: number,
     state: "open" | "closed",
-  ): Promise<GitHubIssueDetail> => {
+  ): Promise<GitHubIssueSummary> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/github/issues/${encodeURIComponent(
         repoIntegrationId,
       )}/${number}/state`,
       { method: "PUT", body: jsonBody({ state }) },
     );
-    return handleApiResponse<GitHubIssueDetail, GitHubErrorData>(r);
+    return handleApiResponse<GitHubIssueSummary, GitHubErrorData>(r);
   },
   updateIssueLabels: async (
     projectId: string,
     repoIntegrationId: string,
     number: number,
     labels: string[],
-  ): Promise<GitHubIssueDetail> => {
+  ): Promise<string[]> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/github/issues/${encodeURIComponent(
         repoIntegrationId,
       )}/${number}/labels`,
       { method: "PUT", body: jsonBody({ labels }) },
     );
-    return handleApiResponse<GitHubIssueDetail, GitHubErrorData>(r);
+    return handleApiResponse<string[], GitHubErrorData>(r);
   },
   updateIssueAssignees: async (
     projectId: string,
     repoIntegrationId: string,
     number: number,
     assignees: string[],
-  ): Promise<GitHubIssueDetail> => {
+  ): Promise<GitHubIssueSummary> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/github/issues/${encodeURIComponent(
         repoIntegrationId,
       )}/${number}/assignees`,
       { method: "PUT", body: jsonBody({ assignees }) },
     );
-    return handleApiResponse<GitHubIssueDetail, GitHubErrorData>(r);
+    return handleApiResponse<GitHubIssueSummary, GitHubErrorData>(r);
   },
   listBranches: async (
     projectId: string,
@@ -1421,11 +1438,14 @@ export const projectWorkItemsApi = {
   get: async (
     projectId: string,
     workItemId: string,
+    options?: { includeGithubDetail?: boolean },
   ): Promise<ProjectWorkItemDetailResponse> => {
     const r = await makeRequest(
       `/api/projects/${encodeURIComponent(projectId)}/work-items/${encodeURIComponent(
         workItemId,
-      )}`,
+      )}${qs({
+        include_github_detail: options?.includeGithubDetail,
+      })}`,
       { cache: "no-store" },
     );
     return handleApiResponse<ProjectWorkItemDetailResponse, GitHubErrorData>(r);
@@ -1452,6 +1472,38 @@ export const projectWorkItemsApi = {
       { method: "PUT", body: jsonBody(data) },
     );
     return handleApiResponse<ProjectWorkItem, GitHubErrorData>(r);
+  },
+  linkExecution: async (
+    projectId: string,
+    workItemId: string,
+    data: {
+      session_id: string | null;
+      workflow_execution_id: string | null;
+      workflow_step_id: string | null;
+      run_id: string | null;
+      link_type: ProjectExecutionLinkType;
+    },
+  ): Promise<ProjectWorkItemExecutionLink> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/work-items/${encodeURIComponent(
+        workItemId,
+      )}/execution-links`,
+      { method: "POST", body: jsonBody(data) },
+    );
+    return handleApiResponse<ProjectWorkItemExecutionLink, GitHubErrorData>(r);
+  },
+  unlinkExecution: async (
+    projectId: string,
+    workItemId: string,
+    linkId: string,
+  ): Promise<void> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/work-items/${encodeURIComponent(
+        workItemId,
+      )}/execution-links/${encodeURIComponent(linkId)}`,
+      { method: "DELETE" },
+    );
+    await handleApiResponse<void, GitHubErrorData>(r);
   },
 };
 

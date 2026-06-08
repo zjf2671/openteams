@@ -25,6 +25,7 @@ import {
   Activity,
   BookOpen,
   Bot,
+  Box,
   FileText,
   Github,
   Menu,
@@ -406,7 +407,7 @@ function WorkspaceLayout() {
           (candidate) => candidate.id === tab.sessionId,
         );
         if (!session) return null;
-        return { tab, label: session.title, Icon: Network };
+        return { tab, label: session.title, Icon: Box };
       }
       if (tab.kind === "diff") {
         const fileName = tab.filePath.split("/").pop() ?? tab.filePath;
@@ -591,17 +592,6 @@ function WorkspaceLayout() {
     closeMobileSidebar();
   };
 
-  const getTabLabel = (tab: WorkspaceTab) => {
-    if (tab.kind === "page") return getPageTabLabel(tab.page);
-    if (tab.kind === "diff") {
-      return tab.filePath.split("/").pop() ?? tab.filePath;
-    }
-    return (
-      sessions.find((session) => session.id === tab.sessionId)?.title ??
-      tab.sessionId
-    );
-  };
-
   const handleCloseTab = (closingTab: WorkspaceTab) => {
     if (openTabs.length <= 1) {
       showToast(t("toast.keepOneTab"));
@@ -621,8 +611,6 @@ function WorkspaceLayout() {
         setActiveSessionId(nextActiveTab.sessionId);
       }
     }
-
-    showToast(t("toast.closedTab", { label: getTabLabel(closingTab) }));
   };
 
   const handlePrimarySidebarAction = (action: SidebarPrimaryAction) => {

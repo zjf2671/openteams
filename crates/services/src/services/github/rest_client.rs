@@ -44,8 +44,11 @@ pub struct GitHubIssueSummary {
     pub state: String,
     pub url: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
+    #[ts(type = "Date")]
+    pub created_at: DateTime<Utc>,
     #[ts(type = "Date")]
     pub updated_at: DateTime<Utc>,
     #[ts(type = "Date | null")]
@@ -59,6 +62,7 @@ pub struct GitHubIssueComment {
     pub id: i64,
     pub body: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     #[ts(type = "Date")]
     pub created_at: DateTime<Utc>,
 }
@@ -222,6 +226,23 @@ impl GitHubRestClient {
                 Method::PATCH,
                 &format!("/repos/{owner}/{repo}/issues/{number}"),
                 Some(&serde_json::json!({ "state": state })),
+            )
+            .await?;
+        Ok(raw.into())
+    }
+
+    pub async fn update_issue_body(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        body: &str,
+    ) -> Result<GitHubIssueSummary, GitHubRestError> {
+        let raw: GitHubIssueRaw = self
+            .request(
+                Method::PATCH,
+                &format!("/repos/{owner}/{repo}/issues/{number}"),
+                Some(&serde_json::json!({ "body": body })),
             )
             .await?;
         Ok(raw.into())
@@ -462,6 +483,7 @@ struct GitHubIssueRaw {
     user: Option<GitHubUserRaw>,
     labels: Vec<GitHubLabelRaw>,
     assignees: Vec<GitHubUserRaw>,
+    created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     body: Option<String>,
     pull_request: Option<serde_json::Value>,
@@ -475,7 +497,7 @@ struct GitHubIssueSearchResponse {
 #[derive(Debug, Deserialize)]
 struct GitHubIssueCommentRaw {
     id: i64,
-    body: String,
+    body: Option<String>,
     user: Option<GitHubUserRaw>,
     created_at: DateTime<Utc>,
 }
@@ -538,6 +560,7 @@ struct GitHubPullRequestRefRaw {
 #[derive(Debug, Deserialize)]
 struct GitHubUserRaw {
     login: String,
+    avatar_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -547,15 +570,21 @@ struct GitHubLabelRaw {
 
 impl From<GitHubIssueRaw> for GitHubIssueSummary {
     fn from(value: GitHubIssueRaw) -> Self {
+        let (author, author_avatar_url) = value
+            .user
+            .map(|user| (Some(user.login), user.avatar_url))
+            .unwrap_or((None, None));
         Self {
             number: value.number,
             node_id: value.node_id,
             title: value.title,
             state: value.state,
             url: value.html_url,
-            author: value.user.map(|user| user.login),
+            author,
+            author_avatar_url,
             labels: value.labels.into_iter().map(|label| label.name).collect(),
             assignees: value.assignees.into_iter().map(|user| user.login).collect(),
+            created_at: value.created_at,
             updated_at: value.updated_at,
             last_synced_at: Some(Utc::now()),
             stale: false,
@@ -570,10 +599,15 @@ fn github_issue_raw_is_issue(value: &GitHubIssueRaw) -> bool {
 
 impl From<GitHubIssueCommentRaw> for GitHubIssueComment {
     fn from(value: GitHubIssueCommentRaw) -> Self {
+        let (author, author_avatar_url) = value
+            .user
+            .map(|user| (Some(user.login), user.avatar_url))
+            .unwrap_or((None, None));
         Self {
             id: value.id,
-            body: value.body,
-            author: value.user.map(|user| user.login),
+            body: value.body.unwrap_or_default(),
+            author,
+            author_avatar_url,
             created_at: value.created_at,
         }
     }
@@ -731,8 +765,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        GitHubIssueRaw, GitHubLabelRaw, GitHubRestClient, GitHubUserRaw, authenticated_repos_path,
-        github_issue_raw_is_issue, issue_list_path, next_link_path, pull_requests_path,
+        GitHubIssueCommentRaw, GitHubIssueRaw, GitHubLabelRaw, GitHubRestClient, GitHubUserRaw,
+        authenticated_repos_path, github_issue_raw_is_issue, issue_list_path, next_link_path,
+        pull_requests_path,
     };
 
     #[test]
@@ -812,11 +847,13 @@ mod tests {
             html_url: "https://github.com/o/r/issues/1".to_string(),
             user: Some(GitHubUserRaw {
                 login: "octo".to_string(),
+                avatar_url: Some("https://avatars.githubusercontent.com/u/1?v=4".to_string()),
             }),
             labels: vec![GitHubLabelRaw {
                 name: "bug".to_string(),
             }],
             assignees: vec![],
+            created_at: Utc::now(),
             updated_at: Utc::now(),
             body: None,
             pull_request: None,
@@ -830,6 +867,7 @@ mod tests {
             user: None,
             labels: vec![],
             assignees: vec![],
+            created_at: Utc::now(),
             updated_at: Utc::now(),
             body: None,
             pull_request: Some(json!({ "url": "https://api.github.com/repos/o/r/pulls/2" })),
@@ -837,5 +875,26 @@ mod tests {
 
         assert!(github_issue_raw_is_issue(&issue));
         assert!(!github_issue_raw_is_issue(&pull_request));
+    }
+
+    #[test]
+    fn issue_comment_null_body_maps_to_empty_body() {
+        let comment: super::GitHubIssueComment = GitHubIssueCommentRaw {
+            id: 1,
+            body: None,
+            user: Some(GitHubUserRaw {
+                login: "octo".to_string(),
+                avatar_url: Some("https://avatars.githubusercontent.com/u/1?v=4".to_string()),
+            }),
+            created_at: Utc::now(),
+        }
+        .into();
+
+        assert_eq!(comment.body, "");
+        assert_eq!(comment.author.as_deref(), Some("octo"));
+        assert_eq!(
+            comment.author_avatar_url.as_deref(),
+            Some("https://avatars.githubusercontent.com/u/1?v=4"),
+        );
     }
 }

@@ -26,8 +26,11 @@ pub enum ProjectWorkItemStatus {
     Open,
     InProgress,
     Blocked,
+    ReadyToMerge,
+    Merging,
     Done,
     Cancelled,
+    Duplicate,
 }
 
 #[derive(Debug, Clone, Type, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -60,6 +63,7 @@ pub struct ProjectWorkItem {
     pub status: ProjectWorkItemStatus,
     pub title: String,
     pub description: Option<String>,
+    pub labels_json: Option<String>,
     pub priority: ProjectWorkItemPriority,
     pub source: ProjectWorkItemSource,
     pub created_by: Option<String>,
@@ -77,6 +81,9 @@ pub struct CreateProjectWorkItem {
     pub status: Option<ProjectWorkItemStatus>,
     pub title: String,
     pub description: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub labels_json: Option<String>,
     pub priority: ProjectWorkItemPriority,
     pub source: ProjectWorkItemSource,
     pub created_by: Option<String>,
@@ -88,6 +95,7 @@ pub struct UpdateProjectWorkItem {
     pub status: Option<ProjectWorkItemStatus>,
     pub title: Option<String>,
     pub description: Option<String>,
+    pub labels_json: Option<String>,
     pub priority: Option<ProjectWorkItemPriority>,
 }
 
@@ -101,9 +109,9 @@ impl ProjectWorkItem {
         sqlx::query_as::<_, Self>(
             r#"
             INSERT INTO project_work_items (
-                id, project_id, type, status, title, description, priority, source, created_by
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-            RETURNING id, project_id, type, status, title, description, priority, source,
+                id, project_id, type, status, title, description, labels_json, priority, source, created_by
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            RETURNING id, project_id, type, status, title, description, labels_json, priority, source,
                       created_by, created_at, updated_at
             "#,
         )
@@ -113,6 +121,7 @@ impl ProjectWorkItem {
         .bind(input.status.unwrap_or(ProjectWorkItemStatus::Open))
         .bind(input.title)
         .bind(input.description)
+        .bind(input.labels_json)
         .bind(input.priority)
         .bind(input.source)
         .bind(input.created_by)
@@ -126,7 +135,7 @@ impl ProjectWorkItem {
     ) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as::<_, Self>(
             r#"
-            SELECT id, project_id, type, status, title, description, priority, source,
+            SELECT id, project_id, type, status, title, description, labels_json, priority, source,
                    created_by, created_at, updated_at
             FROM project_work_items
             WHERE project_id = ?1
@@ -141,7 +150,7 @@ impl ProjectWorkItem {
     pub async fn find_by_id(pool: &SqlitePool, id: Uuid) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as::<_, Self>(
             r#"
-            SELECT id, project_id, type, status, title, description, priority, source,
+            SELECT id, project_id, type, status, title, description, labels_json, priority, source,
                    created_by, created_at, updated_at
             FROM project_work_items
             WHERE id = ?1
@@ -167,10 +176,11 @@ impl ProjectWorkItem {
                 status = ?3,
                 title = ?4,
                 description = ?5,
-                priority = ?6,
+                labels_json = ?6,
+                priority = ?7,
                 updated_at = datetime('now', 'subsec')
             WHERE id = ?1
-            RETURNING id, project_id, type, status, title, description, priority, source,
+            RETURNING id, project_id, type, status, title, description, labels_json, priority, source,
                       created_by, created_at, updated_at
             "#,
         )
@@ -179,6 +189,7 @@ impl ProjectWorkItem {
         .bind(input.status.unwrap_or(existing.status))
         .bind(input.title.unwrap_or(existing.title))
         .bind(input.description.or(existing.description))
+        .bind(input.labels_json.or(existing.labels_json))
         .bind(input.priority.unwrap_or(existing.priority))
         .fetch_one(pool)
         .await
@@ -202,6 +213,10 @@ mod tests {
         project_delivery_record::{
             CreateProjectDeliveryRecord, ProjectDeliveryEventTypeV2, ProjectDeliveryRecord,
         },
+        project_work_item_execution_link::{
+            CreateProjectWorkItemExecutionLink, ProjectExecutionLinkType,
+            ProjectWorkItemExecutionLink,
+        },
         project_work_item_external_link::{
             CreateProjectWorkItemExternalLink, ProjectExternalType, ProjectWorkItemExternalLink,
         },
@@ -223,6 +238,7 @@ mod tests {
                 status TEXT NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT,
+                labels_json TEXT,
                 priority TEXT NOT NULL,
                 source TEXT NOT NULL,
                 created_by TEXT,
@@ -249,6 +265,18 @@ mod tests {
             )
             "#,
             "CREATE UNIQUE INDEX idx_test_external_unique ON project_work_item_external_links(provider, repo_id, external_type, external_id)",
+            r#"
+            CREATE TABLE project_work_item_execution_links (
+                id TEXT PRIMARY KEY,
+                project_work_item_id TEXT NOT NULL,
+                session_id TEXT,
+                workflow_execution_id TEXT,
+                workflow_step_id TEXT,
+                run_id TEXT,
+                link_type TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
             r#"
             CREATE TABLE project_delivery_records (
                 id TEXT PRIMARY KEY,
@@ -298,6 +326,7 @@ mod tests {
                 status: None,
                 title: "Fix issue".to_string(),
                 description: None,
+                labels_json: None,
                 priority: ProjectWorkItemPriority::High,
                 source: ProjectWorkItemSource::GithubIssue,
                 created_by: Some("tester".to_string()),
@@ -319,6 +348,7 @@ mod tests {
                 status: None,
                 title: "Open by default".to_string(),
                 description: None,
+                labels_json: None,
                 priority: ProjectWorkItemPriority::Medium,
                 source: ProjectWorkItemSource::Manual,
                 created_by: None,
@@ -336,6 +366,7 @@ mod tests {
                 status: Some(super::ProjectWorkItemStatus::Done),
                 title: "Done import".to_string(),
                 description: None,
+                labels_json: None,
                 priority: ProjectWorkItemPriority::Medium,
                 source: ProjectWorkItemSource::GithubIssue,
                 created_by: None,
@@ -372,6 +403,44 @@ mod tests {
         let duplicate = ProjectWorkItemExternalLink::create(&pool, item.id, input).await;
 
         assert!(duplicate.is_err());
+    }
+
+    #[tokio::test]
+    async fn execution_link_can_be_found_and_deleted() {
+        let pool = setup_pool().await;
+        let project_id = Uuid::new_v4();
+        let item = create_item(&pool, project_id).await;
+        let session_id = Uuid::new_v4();
+
+        let link = ProjectWorkItemExecutionLink::create(
+            &pool,
+            item.id,
+            CreateProjectWorkItemExecutionLink {
+                session_id: Some(session_id),
+                workflow_execution_id: None,
+                workflow_step_id: None,
+                run_id: None,
+                link_type: ProjectExecutionLinkType::DiscussedIn,
+            },
+        )
+        .await
+        .expect("create execution link");
+
+        let found = ProjectWorkItemExecutionLink::find_by_id(&pool, link.id)
+            .await
+            .expect("find execution link")
+            .expect("execution link exists");
+        assert_eq!(found.session_id, Some(session_id));
+
+        let deleted = ProjectWorkItemExecutionLink::delete(&pool, link.id)
+            .await
+            .expect("delete execution link");
+        assert_eq!(deleted, 1);
+
+        let missing = ProjectWorkItemExecutionLink::find_by_id(&pool, link.id)
+            .await
+            .expect("find deleted execution link");
+        assert!(missing.is_none());
     }
 
     #[tokio::test]

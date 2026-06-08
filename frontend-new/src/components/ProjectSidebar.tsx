@@ -13,6 +13,7 @@ import {
   ArrowRightLeft,
   BookOpen,
   Bot,
+  Box,
   Check,
   ChevronDown,
   ChevronRight,
@@ -24,7 +25,6 @@ import {
   Github,
   History,
   Inbox,
-  Network,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -1449,7 +1449,7 @@ export function ProjectSidebar({
                           : "border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]"
                       }`}
                     >
-                      <Network
+                      <Box
                         className={`h-3.5 w-3.5 shrink-0 ${
                           active
                             ? "text-[var(--primary)]"

@@ -44,15 +44,15 @@ export type ProjectDeliveryEvent = { id: string, project_id: string, session_id:
 
 export enum ProjectDeliveryEventType { feature = "feature", bugfix = "bugfix", test = "test" }
 
-export type ProjectWorkItem = { id: string, project_id: string, type: ProjectWorkItemType, status: ProjectWorkItemStatus, title: string, description: string | null, priority: ProjectWorkItemPriority, source: ProjectWorkItemSource, created_by: string | null, created_at: Date, updated_at: Date, };
+export type ProjectWorkItem = { id: string, project_id: string, type: ProjectWorkItemType, status: ProjectWorkItemStatus, title: string, description: string | null, labels_json: string | null, priority: ProjectWorkItemPriority, source: ProjectWorkItemSource, created_by: string | null, created_at: Date, updated_at: Date, };
 
-export type CreateProjectWorkItem = { type: ProjectWorkItemType, status?: ProjectWorkItemStatus, title: string, description: string | null, priority: ProjectWorkItemPriority, source: ProjectWorkItemSource, created_by: string | null, };
+export type CreateProjectWorkItem = { type: ProjectWorkItemType, status?: ProjectWorkItemStatus, title: string, description: string | null, labels_json?: string, priority: ProjectWorkItemPriority, source: ProjectWorkItemSource, created_by: string | null, };
 
-export type UpdateProjectWorkItem = { type: ProjectWorkItemType | null, status: ProjectWorkItemStatus | null, title: string | null, description: string | null, priority: ProjectWorkItemPriority | null, };
+export type UpdateProjectWorkItem = { type: ProjectWorkItemType | null, status: ProjectWorkItemStatus | null, title: string | null, description: string | null, labels_json: string | null, priority: ProjectWorkItemPriority | null, };
 
 export enum ProjectWorkItemType { feature = "feature", bug = "bug", task = "task", deploy = "deploy", test = "test", doc = "doc", refactor = "refactor" }
 
-export enum ProjectWorkItemStatus { open = "open", in_progress = "in_progress", blocked = "blocked", done = "done", cancelled = "cancelled" }
+export enum ProjectWorkItemStatus { open = "open", in_progress = "in_progress", blocked = "blocked", ready_to_merge = "ready_to_merge", merging = "merging", done = "done", cancelled = "cancelled", duplicate = "duplicate" }
 
 export enum ProjectWorkItemPriority { low = "low", medium = "medium", high = "high", urgent = "urgent" }
 
@@ -136,11 +136,11 @@ export type GitHubOAuthFlowStatus = "pending" | "authorized" | "denied" | "expir
 
 export type GitHubApiErrorData = { code: string, message: string, retry_after: Date | null, last_synced_at: Date | null, stale: boolean, };
 
-export type GitHubIssueSummary = { number: bigint, node_id: string, title: string, state: string, url: string, author: string | null, labels: Array<string>, assignees: Array<string>, updated_at: Date, last_synced_at: Date | null, stale: boolean, work_item_id: string | null, };
+export type GitHubIssueSummary = { number: bigint, node_id: string, title: string, state: string, url: string, author: string | null, author_avatar_url: string | null, labels: Array<string>, assignees: Array<string>, created_at: Date, updated_at: Date, last_synced_at: Date | null, stale: boolean, work_item_id: string | null, };
 
 export type GitHubIssueDetail = { summary: GitHubIssueSummary, body: string | null, comments: Array<GitHubIssueComment>, };
 
-export type GitHubIssueComment = { id: bigint, body: string, author: string | null, created_at: Date, };
+export type GitHubIssueComment = { id: bigint, body: string, author: string | null, author_avatar_url: string | null, created_at: Date, };
 
 export type GitHubPullRequestSummary = { number: bigint, title: string, state: string, url: string, head_branch: string, base_branch: string, };
 
@@ -617,6 +617,8 @@ export type DeliveryRecordsQuery = { work_item_id: string | null, repo_id: strin
 export type DeliveryStatsQuery = { period_start: string, period_end: string, };
 
 export type IssueCommentRequest = { body: string, operation_source: GitHubOperationSource, };
+
+export type IssueBodyRequest = { body: string, operation_source: GitHubOperationSource, };
 
 export type IssueStateRequest = { state: string, operation_source: GitHubOperationSource, };
 

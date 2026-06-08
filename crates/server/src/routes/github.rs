@@ -267,20 +267,20 @@ fn oauth_callback_page(response: &GitHubOAuthStatusResponse) -> String {
 <title>{}</title>
 <style>
     :root {{
-        --bg-page: #09090b;
-        --bg-card: #131315;
-        --border-light: rgba(255, 255, 255, 0.08);
-        --text-primary: rgba(255, 255, 255, 0.92);
-        --text-secondary: rgba(255, 255, 255, 0.6);
-        --text-muted: rgba(255, 255, 255, 0.4);
-        --accent-blue: #5e6ad2;
-        --accent-blue-hover: #6d79e8;
-        --success-color: #3fb950;
-        --success-bg: rgba(63, 185, 80, 0.1);
-        --success-border: rgba(63, 185, 80, 0.2);
-        --warning-color: #f5a524;
-        --warning-bg: rgba(245, 165, 36, 0.1);
-        --warning-border: rgba(245, 165, 36, 0.2);
+        --bg-page: #f6f8fa;
+        --bg-card: #ffffff;
+        --border-light: #d0d7de;
+        --text-primary: #1f2328;
+        --text-secondary: #57606a;
+        --text-muted: #6e7781;
+        --accent-blue: #2f81f7;
+        --accent-blue-hover: #218bff;
+        --success-color: #1f883d;
+        --success-bg: #dafbe1;
+        --success-border: #2ea04333;
+        --warning-color: #9a6700;
+        --warning-bg: #fff8c5;
+        --warning-border: #d29922;
         --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     }}
@@ -294,12 +294,12 @@ fn oauth_callback_page(response: &GitHubOAuthStatusResponse) -> String {
     body {{
         min-height: 100dvh;
         background-color: var(--bg-page);
+        color: var(--text-primary);
         font-family: var(--font-sans);
         display: flex;
         align-items: flex-start;
         justify-content: center;
         padding: 92px 24px 24px;
-        color: var(--text-primary);
         -webkit-font-smoothing: antialiased;
     }}
 
@@ -308,8 +308,8 @@ fn oauth_callback_page(response: &GitHubOAuthStatusResponse) -> String {
         max-width: 540px;
         background-color: var(--bg-card);
         border: 1px solid var(--border-light);
-        border-radius: 12px;
-        box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.5);
+        border-radius: 8px;
+        box-shadow: 0 1px 0 rgba(27, 31, 36, 0.04), 0 1px 3px rgba(27, 31, 36, 0.08);
         display: flex;
         flex-direction: column;
     }}
@@ -367,7 +367,7 @@ fn oauth_callback_page(response: &GitHubOAuthStatusResponse) -> String {
 
     .main-message strong {{
         font-weight: 600;
-        color: #fff;
+        color: #1f2328;
     }}
 
     .card-footer {{
@@ -378,8 +378,8 @@ fn oauth_callback_page(response: &GitHubOAuthStatusResponse) -> String {
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        border-bottom-left-radius: 12px;
-        border-bottom-right-radius: 12px;
+        border-bottom-left-radius: 8px;
+        border-bottom-right-radius: 8px;
     }}
 
     .footer-hint {{
@@ -399,20 +399,20 @@ fn oauth_callback_page(response: &GitHubOAuthStatusResponse) -> String {
         height: 32px;
         border-radius: 6px;
         cursor: pointer;
-        transition: all 0.2s ease;
-        border: 1px solid transparent;
-        background-color: var(--accent-blue);
-        color: #fff;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 2px 4px rgba(0, 0, 0, 0.2);
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+        border: 1px solid #2ea043;
+        background-color: #2ea043;
+        color: #ffffff;
+        box-shadow: none;
     }}
 
     .btn-primary:hover {{
-        background-color: var(--accent-blue-hover);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 4px 8px rgba(0, 0, 0, 0.3);
+        background-color: #2ea043;
+        border-color: #2ea043;
     }}
 
     .btn-primary:focus-visible {{
-        outline: 2px solid rgba(94, 106, 210, 0.55);
+        outline: 2px solid rgba(47, 129, 247, 0.4);
         outline-offset: 2px;
     }}
 

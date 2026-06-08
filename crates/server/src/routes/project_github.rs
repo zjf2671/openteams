@@ -4,7 +4,7 @@ use axum::{
     response::Json as ResponseJson,
     routing::{get, post, put},
 };
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use db::models::{
     github_operation_audit::{
         CreateGitHubOperationAudit, GitHubOperationAudit, GitHubOperationResult,
@@ -92,6 +92,16 @@ pub struct ImportGitHubIssueRequest {
     pub number: i64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WorkItemDetailQuery {
+    #[serde(default = "default_include_github_detail")]
+    pub include_github_detail: bool,
+}
+
+fn default_include_github_detail() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, TS)]
 pub struct DeliveryRecordsQuery {
     pub work_item_id: Option<Uuid>,
@@ -108,6 +118,13 @@ pub struct DeliveryStatsQuery {
 
 #[derive(Debug, Deserialize, TS)]
 pub struct IssueCommentRequest {
+    pub body: String,
+    #[serde(default = "default_user_ui")]
+    pub operation_source: GitHubOperationSource,
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct IssueBodyRequest {
     pub body: String,
     #[serde(default = "default_user_ui")]
     pub operation_source: GitHubOperationSource,
@@ -202,6 +219,10 @@ pub fn router() -> Router<DeploymentImpl> {
             "/projects/{project_id}/work-items/{work_item_id}/execution-links",
             post(link_execution),
         )
+        .route(
+            "/projects/{project_id}/work-items/{work_item_id}/execution-links/{link_id}",
+            axum::routing::delete(unlink_execution),
+        )
         .route("/projects/{project_id}/github/issues", get(list_issues))
         .route(
             "/projects/{project_id}/github/issues/import",
@@ -218,6 +239,10 @@ pub fn router() -> Router<DeploymentImpl> {
         .route(
             "/projects/{project_id}/github/issues/{repo_integration_id}/{number}/comments",
             post(comment_issue),
+        )
+        .route(
+            "/projects/{project_id}/github/issues/{repo_integration_id}/{number}/body",
+            put(update_issue_body),
         )
         .route(
             "/projects/{project_id}/github/issues/{repo_integration_id}/{number}/state",
@@ -493,13 +518,16 @@ async fn create_work_item(
 async fn work_item_detail(
     State(deployment): State<DeploymentImpl>,
     Path((project_id, work_item_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<WorkItemDetailQuery>,
 ) -> Result<ResponseJson<ApiResponse<ProjectWorkItemDetail>>, ApiError> {
     ensure_project(&deployment, project_id).await?;
     let mut row = ProjectWorkItemService::new()
         .detail(&deployment.db().pool, project_id, work_item_id)
         .await
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
-    enrich_work_item_github_issue_detail(&deployment, project_id, &mut row).await;
+    if query.include_github_detail {
+        enrich_work_item_github_issue_detail(&deployment, project_id, &mut row).await;
+    }
     Ok(ResponseJson(ApiResponse::success(row)))
 }
 
@@ -509,10 +537,14 @@ async fn update_work_item(
     Json(payload): Json<UpdateProjectWorkItem>,
 ) -> Result<ResponseJson<ApiResponse<ProjectWorkItem>>, ApiError> {
     ensure_project(&deployment, project_id).await?;
+    let description_cache = payload.description.clone();
     let row = ProjectWorkItemService::new()
         .update(&deployment.db().pool, project_id, work_item_id, payload)
         .await
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    if let Some(body) = description_cache {
+        update_linked_github_issue_body_cache(&deployment, row.id, body).await?;
+    }
     Ok(ResponseJson(ApiResponse::success(row)))
 }
 
@@ -552,6 +584,18 @@ async fn link_execution(
         .await
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
     Ok(ResponseJson(ApiResponse::success(row)))
+}
+
+async fn unlink_execution(
+    State(deployment): State<DeploymentImpl>,
+    Path((project_id, work_item_id, link_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    ensure_project(&deployment, project_id).await?;
+    ProjectWorkItemService::new()
+        .unlink_execution(&deployment.db().pool, project_id, work_item_id, link_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    Ok(ResponseJson(ApiResponse::success(())))
 }
 
 async fn import_github_issue(
@@ -628,6 +672,9 @@ async fn import_github_issue(
                 )),
                 title: issue_detail.summary.title.clone(),
                 description: issue_detail.body.clone(),
+                labels_json: Some(serde_json::to_string(&issue_detail.summary.labels).map_err(
+                    |err| ApiError::BadRequest(format!("Failed to encode issue labels: {err}")),
+                )?),
                 priority: work_item_priority_from_issue_labels(&issue_detail.summary.labels),
                 source: ProjectWorkItemSource::GithubIssue,
                 created_by: Some(deployment.user_id().to_string()),
@@ -649,7 +696,9 @@ async fn import_github_issue(
                 number: Some(payload.number),
                 url: Some(issue_detail.summary.url.clone()),
                 state: Some(issue_detail.summary.state.clone()),
-                metadata_json: Some(issue_detail.summary.title.clone()),
+                metadata_json: Some(serde_json::to_string(&issue_detail).map_err(|err| {
+                    ApiError::BadRequest(format!("Failed to encode issue detail cache: {err}"))
+                })?),
                 last_synced_at: issue_detail.summary.last_synced_at,
                 stale: issue_detail.summary.stale,
             },
@@ -924,12 +973,127 @@ async fn comment_issue(
     Ok(ResponseJson(ApiResponse::success(result)))
 }
 
+async fn update_issue_body(
+    State(deployment): State<DeploymentImpl>,
+    Path((project_id, repo_integration_id, number)): Path<(Uuid, Uuid, i64)>,
+    Json(payload): Json<IssueBodyRequest>,
+) -> Result<ResponseJson<GitHubApiResponse<GitHubIssueSummary>>, ApiError> {
+    ensure_project(&deployment, project_id).await?;
+    let integration = match ensure_github_project_connected(
+        &deployment,
+        project_id,
+        repo_integration_id,
+    )
+    .await?
+    {
+        Ok(integration) => integration,
+        Err(error_data) => {
+            return Ok(ResponseJson(ApiResponse::error_with_data(error_data)));
+        }
+    };
+    if !GitHubOperationApprovalService::can_execute_write(payload.operation_source.clone()) {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            github_local_error_data(
+                "github_write_pending_approval",
+                "GitHub write operation is pending user approval",
+            ),
+        )));
+    }
+
+    let audit = GitHubAuditService::new()
+        .record(
+            &deployment.db().pool,
+            CreateGitHubOperationAudit {
+                actor: Some(deployment.user_id().to_string()),
+                operation_source: payload.operation_source,
+                session_id: None,
+                workflow_execution_id: None,
+                repo_id: Some(integration.repo_id),
+                target_type: GitHubTargetType::Issue,
+                target_id: Some(number.to_string()),
+                action: "issue_body".to_string(),
+                result: GitHubOperationResult::Approved,
+                error: None,
+            },
+        )
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    let owner = integration
+        .owner
+        .clone()
+        .ok_or_else(|| ApiError::BadRequest("Repo owner missing".to_string()))?;
+    let repo = integration
+        .name
+        .clone()
+        .ok_or_else(|| ApiError::BadRequest("Repo name missing".to_string()))?;
+    let client = match github_client().await {
+        Ok(client) => client,
+        Err(err) => {
+            GitHubAuditService::new()
+                .update_result(
+                    &deployment.db().pool,
+                    audit.id,
+                    GitHubOperationResult::Failed,
+                    Some(err.to_string()),
+                )
+                .await
+                .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+            return Ok(ResponseJson(ApiResponse::error_with_data(
+                github_local_error_data("github_auth_required", err.to_string()),
+            )));
+        }
+    };
+
+    let summary = match client
+        .update_issue_body(&owner, &repo, number, &payload.body)
+        .await
+    {
+        Ok(summary) => summary,
+        Err(err) => {
+            GitHubAuditService::new()
+                .update_result(
+                    &deployment.db().pool,
+                    audit.id,
+                    GitHubOperationResult::Failed,
+                    Some(err.to_string()),
+                )
+                .await
+                .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+            return Ok(ResponseJson(ApiResponse::error_with_data(rest_error_data(
+                &err,
+            ))));
+        }
+    };
+
+    GitHubAuditService::new()
+        .update_result(
+            &deployment.db().pool,
+            audit.id,
+            GitHubOperationResult::Success,
+            None,
+        )
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    update_github_issue_detail_cache(
+        &deployment,
+        integration.repo_id,
+        number,
+        summary.clone(),
+        payload.body,
+    )
+    .await?;
+
+    Ok(ResponseJson(ApiResponse::success(summary)))
+}
+
 async fn update_issue_state(
     State(deployment): State<DeploymentImpl>,
     Path((project_id, repo_integration_id, number)): Path<(Uuid, Uuid, i64)>,
     Json(payload): Json<IssueStateRequest>,
 ) -> Result<ResponseJson<GitHubApiResponse<GitHubIssueSummary>>, ApiError> {
-    issue_write(
+    issue_write_with_after(
         deployment,
         project_id,
         repo_integration_id,
@@ -943,6 +1107,11 @@ async fn update_issue_state(
                 .update_issue_state(&owner, &repo, number, &payload.state)
                 .await
         },
+        |deployment, repo_id, number, summary| {
+            async move {
+                update_github_issue_summary_cache(&deployment, repo_id, number, summary).await
+            }
+        },
     )
     .await
 }
@@ -952,7 +1121,7 @@ async fn update_issue_labels(
     Path((project_id, repo_integration_id, number)): Path<(Uuid, Uuid, i64)>,
     Json(payload): Json<IssueLabelsRequest>,
 ) -> Result<ResponseJson<GitHubApiResponse<Vec<String>>>, ApiError> {
-    issue_write(
+    issue_write_with_after(
         deployment,
         project_id,
         repo_integration_id,
@@ -966,6 +1135,11 @@ async fn update_issue_labels(
                 .replace_labels(&owner, &repo, number, payload.labels)
                 .await
         },
+        |deployment, repo_id, number, labels| {
+            async move {
+                update_github_issue_labels_cache(&deployment, repo_id, number, labels).await
+            }
+        },
     )
     .await
 }
@@ -975,7 +1149,7 @@ async fn update_issue_assignees(
     Path((project_id, repo_integration_id, number)): Path<(Uuid, Uuid, i64)>,
     Json(payload): Json<IssueAssigneesRequest>,
 ) -> Result<ResponseJson<GitHubApiResponse<GitHubIssueSummary>>, ApiError> {
-    issue_write(
+    issue_write_with_after(
         deployment,
         project_id,
         repo_integration_id,
@@ -989,11 +1163,144 @@ async fn update_issue_assignees(
                 .replace_assignees(&owner, &repo, number, payload.assignees)
                 .await
         },
+        |deployment, repo_id, number, summary| {
+            async move {
+                update_github_issue_summary_cache(&deployment, repo_id, number, summary).await
+            }
+        },
     )
     .await
 }
 
-async fn issue_write<T, F, Fut>(
+async fn update_linked_github_issue_body_cache(
+    deployment: &DeploymentImpl,
+    work_item_id: Uuid,
+    body: String,
+) -> Result<(), ApiError> {
+    let links = ProjectWorkItemExternalLink::find_by_work_item(&deployment.db().pool, work_item_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    for link in links {
+        if link.provider != "github" || link.external_type != ProjectExternalType::GithubIssue {
+            continue;
+        }
+        let Some(repo_id) = link.repo_id else {
+            continue;
+        };
+        let Some(number) = link.number else {
+            continue;
+        };
+        let Some(mut detail) = link
+            .metadata_json
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str::<GitHubIssueDetail>(metadata).ok())
+        else {
+            continue;
+        };
+        detail.body = Some(body.clone());
+        write_github_issue_detail_cache(deployment, repo_id, number, detail).await?;
+    }
+    Ok(())
+}
+
+async fn update_github_issue_detail_cache(
+    deployment: &DeploymentImpl,
+    repo_id: Uuid,
+    number: i64,
+    summary: GitHubIssueSummary,
+    body: String,
+) -> Result<(), ApiError> {
+    let existing = existing_cached_github_issue_detail(deployment, repo_id, number).await?;
+    let comments = existing.map(|detail| detail.comments).unwrap_or_default();
+    let detail = GitHubIssueDetail {
+        summary: summary.clone(),
+        body: Some(body),
+        comments,
+    };
+    write_github_issue_detail_cache(deployment, repo_id, number, detail).await
+}
+
+async fn update_github_issue_summary_cache(
+    deployment: &DeploymentImpl,
+    repo_id: Uuid,
+    number: i64,
+    summary: GitHubIssueSummary,
+) -> Result<(), ApiError> {
+    let existing = existing_cached_github_issue_detail(deployment, repo_id, number).await?;
+    let body = existing.as_ref().and_then(|detail| detail.body.clone());
+    let comments = existing.map(|detail| detail.comments).unwrap_or_default();
+    let detail = GitHubIssueDetail {
+        summary,
+        body,
+        comments,
+    };
+    write_github_issue_detail_cache(deployment, repo_id, number, detail).await
+}
+
+async fn update_github_issue_labels_cache(
+    deployment: &DeploymentImpl,
+    repo_id: Uuid,
+    number: i64,
+    labels: Vec<String>,
+) -> Result<(), ApiError> {
+    let Some(mut detail) = existing_cached_github_issue_detail(deployment, repo_id, number).await?
+    else {
+        return Ok(());
+    };
+    detail.summary.labels = labels;
+    detail.summary.last_synced_at = Some(Utc::now());
+    detail.summary.stale = false;
+    write_github_issue_detail_cache(deployment, repo_id, number, detail).await
+}
+
+async fn existing_cached_github_issue_detail(
+    deployment: &DeploymentImpl,
+    repo_id: Uuid,
+    number: i64,
+) -> Result<Option<GitHubIssueDetail>, ApiError> {
+    let existing = ProjectWorkItemExternalLink::find_by_external(
+        &deployment.db().pool,
+        "github",
+        Some(repo_id),
+        ProjectExternalType::GithubIssue,
+        &number.to_string(),
+    )
+    .await
+    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    Ok(existing
+        .as_ref()
+        .and_then(|link| link.metadata_json.as_deref())
+        .and_then(|metadata| serde_json::from_str::<GitHubIssueDetail>(metadata).ok()))
+}
+
+async fn write_github_issue_detail_cache(
+    deployment: &DeploymentImpl,
+    repo_id: Uuid,
+    number: i64,
+    detail: GitHubIssueDetail,
+) -> Result<(), ApiError> {
+    let summary = &detail.summary;
+    ProjectWorkItemExternalLink::update_cache_by_external(
+        &deployment.db().pool,
+        "github",
+        Some(repo_id),
+        ProjectExternalType::GithubIssue,
+        &number.to_string(),
+        Some(summary.number),
+        Some(summary.url.clone()),
+        Some(summary.state.clone()),
+        Some(serde_json::to_string(&detail).map_err(|err| {
+            ApiError::BadRequest(format!("Failed to encode issue detail cache: {err}"))
+        })?),
+        summary.last_synced_at,
+        summary.stale,
+    )
+    .await
+    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    Ok(())
+}
+
+async fn issue_write_with_after<T, F, Fut, A, AFut>(
     deployment: DeploymentImpl,
     project_id: Uuid,
     repo_integration_id: Uuid,
@@ -1003,13 +1310,16 @@ async fn issue_write<T, F, Fut>(
     pending_kind: GitHubPendingOperationKind,
     pending_payload: serde_json::Value,
     operation: F,
+    after_success: A,
 ) -> Result<ResponseJson<GitHubApiResponse<T>>, ApiError>
 where
-    T: serde::Serialize,
+    T: serde::Serialize + Clone,
     F: FnOnce(GitHubRestClient, String, String) -> Fut,
     Fut: std::future::Future<
             Output = Result<T, services::services::github::rest_client::GitHubRestError>,
         >,
+    A: FnOnce(DeploymentImpl, Uuid, i64, T) -> AFut,
+    AFut: std::future::Future<Output = Result<(), ApiError>>,
 {
     ensure_project(&deployment, project_id).await?;
     let integration = match ensure_github_project_connected(
@@ -1069,6 +1379,7 @@ where
             ),
         )));
     }
+    let repo_id = integration.repo_id;
     let owner = integration
         .owner
         .ok_or_else(|| ApiError::BadRequest("Repo owner missing".to_string()))?;
@@ -1114,6 +1425,7 @@ where
             ))));
         }
     };
+    after_success(deployment.clone(), repo_id, number, result.clone()).await?;
     Ok(ResponseJson(ApiResponse::success(result)))
 }
 

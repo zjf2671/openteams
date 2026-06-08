@@ -8,7 +8,7 @@ use db::models::{
         CreateProjectWorkItemExecutionLink, ProjectWorkItemExecutionLink,
     },
     project_work_item_external_link::{
-        CreateProjectWorkItemExternalLink, ProjectWorkItemExternalLink,
+        CreateProjectWorkItemExternalLink, ProjectExternalType, ProjectWorkItemExternalLink,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -79,6 +79,7 @@ impl ProjectWorkItemService {
         }
         let external_links =
             ProjectWorkItemExternalLink::find_by_work_item(pool, work_item_id).await?;
+        let github_issue_detail = external_links.iter().find_map(cached_github_issue_detail);
         let execution_links =
             ProjectWorkItemExecutionLink::find_by_work_item(pool, work_item_id).await?;
         let delivery_records =
@@ -93,7 +94,7 @@ impl ProjectWorkItemService {
             execution_links,
             delivery_records,
             github_audits,
-            github_issue_detail: None,
+            github_issue_detail,
         })
     }
 
@@ -168,4 +169,33 @@ impl ProjectWorkItemService {
         }
         Ok(ProjectWorkItemExecutionLink::create(pool, work_item_id, input).await?)
     }
+
+    pub async fn unlink_execution(
+        &self,
+        pool: &SqlitePool,
+        project_id: Uuid,
+        work_item_id: Uuid,
+        link_id: Uuid,
+    ) -> Result<u64> {
+        let work_item = ProjectWorkItem::find_by_id(pool, work_item_id)
+            .await?
+            .ok_or_else(|| anyhow!("Project work item not found"))?;
+        if work_item.project_id != project_id {
+            return Err(anyhow!("Project work item not found"));
+        }
+        let link = ProjectWorkItemExecutionLink::find_by_id(pool, link_id)
+            .await?
+            .ok_or_else(|| anyhow!("Project work item execution link not found"))?;
+        if link.project_work_item_id != work_item_id {
+            return Err(anyhow!("Project work item execution link not found"));
+        }
+        Ok(ProjectWorkItemExecutionLink::delete(pool, link_id).await?)
+    }
+}
+
+fn cached_github_issue_detail(link: &ProjectWorkItemExternalLink) -> Option<GitHubIssueDetail> {
+    if link.provider != "github" || link.external_type != ProjectExternalType::GithubIssue {
+        return None;
+    }
+    serde_json::from_str(link.metadata_json.as_deref()?).ok()
 }

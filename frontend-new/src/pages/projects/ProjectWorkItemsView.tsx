@@ -23,8 +23,11 @@ const statuses: ProjectWorkItemStatus[] = [
   'open',
   'in_progress',
   'blocked',
+  'ready_to_merge',
+  'merging',
   'done',
   'cancelled',
+  'duplicate',
 ];
 const types: ProjectWorkItemType[] = [
   'feature',

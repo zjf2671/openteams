@@ -193,11 +193,16 @@ export function ProjectIssuePanel({ projectId }: ProjectIssuePanelProps) {
     setAction('comment');
     setError(null);
     try {
-      const detail = await projectGithubApi.commentIssue(
+      await projectGithubApi.commentIssue(
         projectId,
         writeRepoId,
         selected.summary.number,
         comment.trim(),
+      );
+      const detail = await projectGithubApi.refreshIssue(
+        projectId,
+        writeRepoId,
+        selected.summary.number,
       );
       setSelected(detail);
       setComment('');
@@ -215,13 +220,13 @@ export function ProjectIssuePanel({ projectId }: ProjectIssuePanelProps) {
     setAction(`state-${nextState}`);
     setError(null);
     try {
-      const detail = await projectGithubApi.updateIssueState(
+      const summary = await projectGithubApi.updateIssueState(
         projectId,
         writeRepoId,
         selected.summary.number,
         nextState,
       );
-      setSelected(detail);
+      setSelected((current) => (current ? { ...current, summary } : current));
       setLastWriteResult(`Issue state updated to ${nextState}; audit refreshed.`);
       await loadAudits(writeRepoId);
     } catch (err) {
@@ -236,13 +241,20 @@ export function ProjectIssuePanel({ projectId }: ProjectIssuePanelProps) {
     setAction('labels');
     setError(null);
     try {
-      const detail = await projectGithubApi.updateIssueLabels(
+      const nextLabels = await projectGithubApi.updateIssueLabels(
         projectId,
         writeRepoId,
         selected.summary.number,
         splitCsv(labels),
       );
-      setSelected(detail);
+      setSelected((current) =>
+        current
+          ? {
+              ...current,
+              summary: { ...current.summary, labels: nextLabels },
+            }
+          : current,
+      );
       setLastWriteResult('Labels updated; audit refreshed.');
       await loadAudits(writeRepoId);
     } catch (err) {
@@ -257,13 +269,13 @@ export function ProjectIssuePanel({ projectId }: ProjectIssuePanelProps) {
     setAction('assignees');
     setError(null);
     try {
-      const detail = await projectGithubApi.updateIssueAssignees(
+      const summary = await projectGithubApi.updateIssueAssignees(
         projectId,
         writeRepoId,
         selected.summary.number,
         splitCsv(assignees),
       );
-      setSelected(detail);
+      setSelected((current) => (current ? { ...current, summary } : current));
       setLastWriteResult('Assignees updated; audit refreshed.');
       await loadAudits(writeRepoId);
     } catch (err) {

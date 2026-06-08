@@ -277,6 +277,7 @@ fn generate_types_content() -> String {
         server::routes::project_github::DeliveryRecordsQuery::decl(),
         server::routes::project_github::DeliveryStatsQuery::decl(),
         server::routes::project_github::IssueCommentRequest::decl(),
+        server::routes::project_github::IssueBodyRequest::decl(),
         server::routes::project_github::IssueStateRequest::decl(),
         server::routes::project_github::IssueLabelsRequest::decl(),
         server::routes::project_github::IssueAssigneesRequest::decl(),

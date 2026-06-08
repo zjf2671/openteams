@@ -83,4 +83,26 @@ impl ProjectWorkItemExecutionLink {
         .fetch_all(pool)
         .await
     }
+
+    pub async fn find_by_id(pool: &SqlitePool, id: Uuid) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as::<_, Self>(
+            r#"
+            SELECT id, project_work_item_id, session_id, workflow_execution_id,
+                   workflow_step_id, run_id, link_type, created_at
+            FROM project_work_item_execution_links
+            WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM project_work_item_execution_links WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
 }
