@@ -27,6 +27,7 @@ import {
   type SVGProps,
 } from 'react';
 import { ProjectBreadcrumbAvatar } from '@/components/ProjectBreadcrumbAvatar';
+import { AgentMarkdown } from '@/components/AgentMarkdown';
 import {
   projectApi,
   projectGithubApi,
@@ -204,7 +205,7 @@ export function IssueDetailPage({
   const [actionError, setActionError] = useState('');
   const [commentText, setCommentText] = useState('');
   const [descriptionDraft, setDescriptionDraft] = useState('');
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [descriptionEditing, setDescriptionEditing] = useState(false);  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [labelDraft, setLabelDraft] = useState('');
   const [projectSessions, setProjectSessions] = useState<BackendChatSession[]>(
     [],
@@ -808,14 +809,32 @@ export function IssueDetailPage({
               <div className="mt-[22px] rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] font-medium leading-relaxed text-[var(--ink-tertiary)]">
                 Loading description...
               </div>
-            ) : (
+            ) : descriptionEditing ? (
               <textarea
+                autoFocus
                 value={descriptionDraft}
                 placeholder="Add a description..."
                 className="mt-[22px] min-h-[126px] w-full resize-y rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-muted)] outline-none transition placeholder:text-[var(--ink-tertiary)] focus:border-[var(--hairline-strong)]"
                 onChange={(event) => setDescriptionDraft(event.target.value)}
-                onBlur={() => void handleSaveDescriptionDraft()}
+                onBlur={() => {
+                  void handleSaveDescriptionDraft();
+                  setDescriptionEditing(false);
+                }}
               />
+            ) : descriptionDraft ? (
+              <div
+                className="mt-[22px] cursor-text rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px]"
+                onClick={() => setDescriptionEditing(true)}
+              >
+                <AgentMarkdown content={descriptionDraft} fontSize={14} />
+              </div>
+            ) : (
+              <div
+                className="mt-[22px] cursor-text rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-tertiary)]"
+                onClick={() => setDescriptionEditing(true)}
+              >
+                Add a description...
+              </div>
             )}
 
             <div className="mt-3 flex items-center gap-[18px] text-[var(--ink-subtle)]">
@@ -901,9 +920,9 @@ export function IssueDetailPage({
                             {formatSimpleDate(comment.created_at)}
                           </span>
                         </p>
-                        <p className="mt-2 whitespace-pre-wrap text-[14px] leading-relaxed text-[var(--ink-muted)]">
-                          {commentBodyText(comment.body)}
-                        </p>
+                        <div className="mt-2">
+                          <AgentMarkdown content={commentBodyText(comment.body)} fontSize={14} />
+                        </div>
                       </div>
                     </article>
                   ))}
@@ -1055,9 +1074,20 @@ export function IssueDetailPage({
                             strokeWidth={2.2}
                           />
                         </span>
-                        <span className="min-w-0 flex-1 truncate">
+                        <button
+                          type="button"
+                          className="min-w-0 flex-1 cursor-pointer truncate text-left transition hover:text-[var(--primary)]"
+                          title={sessionTitle(projectSessions, sessionId)}
+                          onClick={() => {
+                            window.dispatchEvent(
+                              new CustomEvent('openteams:navigate-session', {
+                                detail: sessionId,
+                              }),
+                            );
+                          }}
+                        >
                           {sessionTitle(projectSessions, sessionId)}
-                        </span>
+                        </button>
                         <button
                           type="button"
                           disabled={unlinking}
@@ -1655,7 +1685,7 @@ function StatusMenuIcon({
   );
 }
 
-function PriorityMenuIcon({
+export function PriorityMenuIcon({
   priority,
   selected = false,
 }: {
@@ -1762,7 +1792,7 @@ function LabelDropdown({
           aria-label={saving ? 'Saving labels' : 'Add label'}
           title={saving ? 'Saving labels' : 'Add label'}
           className={cn(
-            'inline-flex h-7 max-w-full items-center rounded-full bg-[var(--surface-4)] text-[12px] font-bold leading-none text-[var(--ink)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
+            'inline-flex h-7 max-w-full items-center rounded-full bg-[var(--surface-4)] text-[12px] font-bold leading-normal text-[var(--ink)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
             hasLabels ? 'w-7 justify-center px-0' : 'gap-1.5 px-2.5',
           )}
           onClick={() => onOpenChange(!open)}
@@ -1809,7 +1839,7 @@ function LabelDropdown({
                     disabled={disabled}
                     role="option"
                     aria-selected={selected}
-                    className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[7px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[7px] px-3 text-left text-[13px] font-bold leading-normal text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] disabled:cursor-not-allowed disabled:opacity-50"
                     onClick={() => onSelect(option.value)}
                   >
                     <LabelColorDot color={option.color} />
@@ -1954,10 +1984,10 @@ function LabelSearchRow({
         autoFocus
         value={value}
         placeholder={placeholder}
-        className="min-w-0 flex-1 bg-transparent text-[13px] font-medium leading-none text-[var(--ink)] caret-[var(--primary)] outline-none placeholder:text-[var(--ink-tertiary)]"
+        className="min-w-0 flex-1 bg-transparent text-[13px] font-medium leading-normal text-[var(--ink)] caret-[var(--primary)] outline-none placeholder:text-[var(--ink-tertiary)]"
         onChange={(event) => onChange(event.target.value)}
       />
-      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 text-[12px] font-medium leading-none text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 text-[12px] font-medium leading-normal text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
         {shortcut}
       </kbd>
     </div>
@@ -1991,7 +2021,7 @@ function LabelChip({
   onRemove: () => void;
 }) {
   return (
-    <span className="inline-flex h-7 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--surface-4)] px-2.5 text-[12px] font-bold leading-none text-[var(--ink-muted)]">
+    <span className="inline-flex h-7 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--surface-4)] px-2.5 text-[12px] font-bold leading-normal text-[var(--ink-muted)]">
       <LabelColorDot color={labelColor(label)} />
       <span className="min-w-0 truncate">{labelDisplayName(label)}</span>
       <button

@@ -2444,7 +2444,7 @@ export function WorkflowWindow({
         {!isPreview &&
           (projection.iteration_history.length > 0 ||
             canReviewCurrentRound) && (
-            <div className="absolute bottom-6 left-6 z-40 w-80">
+            <div className="absolute bottom-6 left-6 z-40">
               <WorkflowIterationFeedbackCard
                 currentRound={visibleRoundIndex}
                 completedSteps={selectedRoundStepProgress.completedSteps}

@@ -51,6 +51,7 @@ import {
 } from '@/lib/api';
 import {
   IssueDetailPage,
+  PriorityMenuIcon,
   projectWorkItemLabelList,
   type IssueDetailSyncSnapshot,
 } from '@/pages/IssueDetailPage';
@@ -2499,11 +2500,13 @@ function IssueToolbar({
           onClick={() => onAction('Filter menu opened')}
         />
         <ToolbarButton
+          disabled
           icon={SlidersHorizontal}
           label="Display settings"
           onClick={() => onAction('Display settings opened')}
         />
         <ToolbarButton
+          disabled
           icon={BarChart3}
           label="Analytics"
           onClick={() => onAction('Analytics opened')}
@@ -2685,7 +2688,7 @@ function IssueRow({
         }
       }}
       className={cn(
-        'group grid h-[48px] grid-cols-[32px_70px_25px_minmax(0,1fr)_48px_62px] items-center px-9 text-[var(--ink)] transition hover:bg-[var(--issue-row-hover-bg)]',
+        'group grid min-h-[48px] grid-cols-[32px_20px_70px_25px_minmax(0,1fr)_48px_62px] items-center gap-x-1 px-9 text-[var(--ink)] transition hover:bg-[var(--issue-row-hover-bg)]',
         selected && 'bg-[var(--issue-row-selected-bg)]',
       )}
     >
@@ -2705,6 +2708,11 @@ function IssueRow({
         />
       </button>
 
+      <PriorityMenuIcon
+        priority={issue.workItem.priority}
+        selected={issue.workItem.priority === 'urgent'}
+      />
+
       <IssueDisplayId
         id={issue.id}
         className={
@@ -2719,7 +2727,7 @@ function IssueRow({
       <div className="flex min-w-0 items-center gap-2 pr-2">
         <h3
           className={cn(
-            'min-w-0 flex-1 truncate text-[13px] font-semibold leading-none',
+            'min-w-0 flex-1 truncate text-[13px] font-semibold leading-normal',
             selected
               ? 'text-[var(--issue-row-active-ink)]'
               : 'text-[var(--ink)] group-hover:text-[var(--issue-row-active-ink)]',
@@ -2729,7 +2737,7 @@ function IssueRow({
         </h3>
 
         {issue.labels && issue.labels.length > 0 && (
-          <div className="flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
+          <div className="flex shrink-0 items-center gap-1.5">
             {issue.labels.map((label) => (
               <IssueLabel key={`${issue.id}-${label.name}`} label={label} />
             ))}
@@ -2787,7 +2795,7 @@ function IssueSourceIcon({
 
 function IssueLabel({ label }: { label: IssueLabel }) {
   return (
-    <span className="inline-flex h-[27px] min-w-0 max-w-[116px] items-center gap-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-1)] px-[10px] text-[13px] font-medium leading-none text-[var(--ink-subtle)]">
+    <span className="inline-flex h-[27px] min-w-0 max-w-[116px] items-center gap-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-1)] px-[10px] text-[13px] font-medium leading-normal text-[var(--ink-subtle)]">
       <span
         className={cn(
           'h-[11px] w-[11px] shrink-0 rounded-full',

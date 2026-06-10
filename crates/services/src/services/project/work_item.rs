@@ -40,6 +40,28 @@ impl ProjectWorkItemService {
         Ok(ProjectWorkItem::find_by_project(pool, project_id).await?)
     }
 
+    pub async fn list_by_session(
+        &self,
+        pool: &SqlitePool,
+        session_id: Uuid,
+    ) -> Result<Vec<ProjectWorkItem>> {
+        let links = ProjectWorkItemExecutionLink::find_by_session_id(pool, session_id).await?;
+        let work_item_ids: Vec<Uuid> = links
+            .into_iter()
+            .map(|link| link.project_work_item_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let mut items = Vec::new();
+        for id in work_item_ids {
+            if let Some(item) = ProjectWorkItem::find_by_id(pool, id).await? {
+                items.push(item);
+            }
+        }
+        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(items)
+    }
+
     pub async fn create(
         &self,
         pool: &SqlitePool,

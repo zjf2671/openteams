@@ -1395,6 +1395,25 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (parsed.type === 'agent_state') {
         void refreshMembers();
+
+        // When an agent transitions to a non-running state (idle/dead),
+        // clear any lingering running/thinking placeholder messages for it.
+        const nonRunningStates = ['idle', 'dead'];
+        if (nonRunningStates.includes(parsed.state)) {
+          setAllMessages((prev) => {
+            const current = prev[sid];
+            if (!current) return prev;
+            const updated = current.filter(
+              (msg) =>
+                !(
+                  msg.isAgentRunning &&
+                  msg.sessionAgentId === parsed.session_agent_id
+                ),
+            );
+            if (updated.length === current.length) return prev;
+            return { ...prev, [sid]: updated };
+          });
+        }
       }
     };
 

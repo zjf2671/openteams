@@ -204,6 +204,10 @@ pub fn router() -> Router<DeploymentImpl> {
             get(list_work_items).post(create_work_item),
         )
         .route(
+            "/projects/{project_id}/work-items/by-session/{session_id}",
+            get(list_work_items_by_session),
+        )
+        .route(
             "/projects/{project_id}/work-items/{work_item_id}",
             get(work_item_detail).put(update_work_item),
         )
@@ -499,6 +503,23 @@ async fn list_work_items(
         .list(&deployment.db().pool, project_id)
         .await
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    Ok(ResponseJson(ApiResponse::success(rows)))
+}
+
+async fn list_work_items_by_session(
+    State(deployment): State<DeploymentImpl>,
+    Path((project_id, session_id)): Path<(Uuid, Uuid)>,
+) -> Result<ResponseJson<ApiResponse<Vec<ProjectWorkItem>>>, ApiError> {
+    ensure_project(&deployment, project_id).await?;
+    let rows = ProjectWorkItemService::new()
+        .list_by_session(&deployment.db().pool, session_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    // Filter to only return items belonging to this project
+    let rows: Vec<ProjectWorkItem> = rows
+        .into_iter()
+        .filter(|item| item.project_id == project_id)
+        .collect();
     Ok(ResponseJson(ApiResponse::success(rows)))
 }
 

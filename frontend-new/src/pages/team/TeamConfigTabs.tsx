@@ -120,7 +120,7 @@ function ConfigSection({
       </div>
       <div
         className={cx(
-          "flex-1 space-y-6 rounded-[12px] bg-[var(--surface-2)] p-5",
+          "flex-1 space-y-6 rounded-[12px] bg-[var(--surface-3)] p-5",
           bodyClassName,
         )}
       >
@@ -678,7 +678,7 @@ function ConfigTab({
             onChange={(event) => setRoleDefinition(event.target.value)}
             spellCheck={false}
             placeholder={t("teamPage.systemPrompt.placeholder")}
-            className="block h-full min-h-[360px] w-full resize-none overflow-y-auto rounded-[12px] border-0 bg-[var(--surface-2)] px-5 py-5 font-mono text-[14px] leading-relaxed text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-muted)] placeholder:opacity-100 focus:ring-2 focus:ring-[var(--primary-focus)]/50"
+            className="block h-full min-h-[360px] w-full resize-none overflow-y-auto rounded-[12px] border-0 bg-[var(--surface-3)] px-5 py-5 font-mono text-[14px] leading-relaxed text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-muted)] placeholder:opacity-100 focus:ring-2 focus:ring-[var(--primary-focus)]/50"
           />
         </ConfigSection>
       </div>

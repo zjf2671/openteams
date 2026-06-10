@@ -94,7 +94,7 @@ impl WorkflowOrchestrator {
             session.id,
             ChatSenderType::System,
             None,
-            "Workflow execution".to_string(),
+            "Workflow".to_string(),
             Some(serde_json::json!({
                 "card_type": "workflow_execution"
             })),

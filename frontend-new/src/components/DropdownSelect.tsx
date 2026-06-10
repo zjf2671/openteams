@@ -250,7 +250,7 @@ export function DropdownSelect(props: DropdownSelectProps) {
                     onClick={() => handleOptionClick(option)}
                     className={`${optionClass} ${
                       active
-                        ? 'bg-[var(--surface-1)] font-medium text-[var(--ink)]'
+                        ? 'bg-[var(--primary)]/8 font-medium text-[var(--ink)]'
                         : 'text-[var(--ink)]'
                     }`}
                   >
@@ -266,7 +266,7 @@ export function DropdownSelect(props: DropdownSelectProps) {
                       )}
                     </span>
                     {active ? (
-                      <Check className="h-3.5 w-3.5 shrink-0 text-[var(--success)]" />
+                      <Check className="h-3.5 w-3.5 shrink-0 text-[var(--primary)]" />
                     ) : option.hint ? (
                       <kbd className="rounded-xs bg-[var(--surface-4)] px-1 font-mono text-[12px] text-[var(--ink-tertiary)]">
                         {option.hint}

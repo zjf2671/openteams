@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Search } from 'lucide-react';
+import { Check, ChevronDown, Circle, CircleCheck, Search } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { GitHubIssueSummary } from '@/types';
 
@@ -605,16 +605,25 @@ function IssueImportRow({
           selected && 'checked border-[var(--primary)] bg-[var(--primary)]',
         )}
       />
-      <span
-        className={cn(
-          'mr-3 h-[14px] w-[14px] shrink-0 rounded-full border-2',
-          imported
-            ? 'border-[var(--ink-tertiary)]'
-            : issue.state === 'closed'
-              ? 'border-[var(--success)]'
-              : 'border-[var(--ink-tertiary)]',
-        )}
-      />
+      {issue.state === 'closed' ? (
+        <CircleCheck
+          aria-hidden="true"
+          className={cn(
+            'mr-3 h-[14px] w-[14px] shrink-0',
+            imported ? 'text-[var(--ink-tertiary)]' : 'text-[var(--success)]',
+          )}
+          strokeWidth={2.4}
+        />
+      ) : (
+        <Circle
+          aria-hidden="true"
+          className={cn(
+            'mr-3 h-[14px] w-[14px] shrink-0',
+            imported ? 'text-[var(--ink-tertiary)]' : 'text-[var(--ink-subtle)]',
+          )}
+          strokeWidth={2.4}
+        />
+      )}
       <h3
         className={cn(
           'min-w-0 flex-1 truncate text-[13px] font-medium',

@@ -478,7 +478,7 @@ function AgentRow({
           : state === "error"
             ? "hover:bg-[var(--surface-2)]"
             : "opacity-70 hover:bg-[var(--surface-2)] hover:opacity-95",
-        !selected && "bg-[var(--surface-1)]",
+        !selected && "bg-transparent",
       )}
     >
       <div className="flex min-w-0 items-center gap-3">
@@ -1140,7 +1140,7 @@ function AgentConfigSidebar({
           <h3 className="mb-3 text-[14px] font-bold tracking-[0.05em] text-[var(--ink-subtle)] uppercase">
             {t("agents.details.runtime")}
           </h3>
-          <div className="grid gap-3 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-3">
+          <div className="grid gap-3 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-3">
             <DetailRow
               label={t("agents.details.configFile")}
               value={configPath}
@@ -1163,7 +1163,7 @@ function AgentConfigSidebar({
           <h3 className="mb-3 text-[14px] font-bold tracking-[0.05em] text-[var(--ink-subtle)] uppercase">
             {t("agents.env.title")}
           </h3>
-          <div className="overflow-hidden rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)]">
+          <div className="overflow-hidden rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)]">
             <textarea
               value={envText}
               onChange={(event) => {
@@ -1173,7 +1173,7 @@ function AgentConfigSidebar({
               rows={Math.max(4, Math.min(10, envText.split(/\r?\n/u).length))}
               spellCheck={false}
               placeholder={t("agents.env.placeholder")}
-              className="block w-full resize-y border-0 bg-[var(--surface-2)] px-4 py-3 font-mono text-[14px] text-[var(--ink)] outline-none transition-all placeholder:text-[var(--ink-tertiary)] focus:bg-[var(--surface-3)] focus:ring-1 focus:ring-inset focus:ring-[var(--primary)]"
+              className="block w-full resize-y border-0 bg-[var(--surface-1)] px-4 py-3 font-mono text-[14px] text-[var(--ink)] outline-none transition-all placeholder:text-[var(--ink-tertiary)] focus:bg-[var(--surface-3)] focus:ring-1 focus:ring-inset focus:ring-[var(--primary)]"
             />
           </div>
         </section>
@@ -1183,7 +1183,7 @@ function AgentConfigSidebar({
             {t("agents.config.title")}
           </h3>
 
-          <div className="rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-4">
+          <div className="rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-4">
             {schemaFields.length === 0 ? (
               <ModelConfigField
                 runner={runner.runner_type}

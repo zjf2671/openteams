@@ -528,6 +528,20 @@ function WorkspaceLayout() {
     replaceActiveTab(createPageTab(page, label));
   };
 
+  useEffect(() => {
+    const handleNavigateSession = (event: Event) => {
+      const sessionId = (event as CustomEvent<string>).detail;
+      if (sessionId) {
+        replaceActiveTab(createSessionTab(sessionId));
+        setActiveSessionId(sessionId);
+      }
+    };
+    window.addEventListener("openteams:navigate-session", handleNavigateSession);
+    return () => {
+      window.removeEventListener("openteams:navigate-session", handleNavigateSession);
+    };
+  });
+
   const createDiffTabId = (sessionId: string, filePath: string) =>
     `diff:${sessionId}:${filePath}`;
 

@@ -100,7 +100,7 @@ impl WorkflowOrchestrator {
         meta["workflow_card"] = serde_json::to_value(&projection)?;
 
         let updated =
-            ChatMessage::update_content_and_meta(pool, message.id, "Workflow execution", meta)
+            ChatMessage::update_content_and_meta(pool, message.id, "Workflow", meta)
                 .await?;
         chat_runner.emit_message_updated(updated.session_id, updated);
         chat_runner.emit_workflow_execution_updated(execution.session_id, execution.id);

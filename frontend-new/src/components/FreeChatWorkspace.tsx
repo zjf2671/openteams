@@ -30,8 +30,8 @@ import {
 import { ResourceStateNotice } from "@/components/ResourceState";
 import { ScrollArea } from "@/components/ScrollArea";
 import { AgentMessageContent } from "@/components/AgentMessageContent";
-import { chatMessagesApi, sessionAgentsApi } from "@/lib/api";
-import type { ChatAttachment, Member, QuotedMessageReference } from "@/types";
+import { chatMessagesApi, sessionAgentsApi, projectWorkItemsApi } from "@/lib/api";
+import type { ChatAttachment, Member, QuotedMessageReference, ProjectWorkItem } from "@/types";
 
 interface FreeChatWorkspaceProps {
   embedded?: boolean;
@@ -272,6 +272,69 @@ function SessionMemberAvatar({ member }: { member: Member }) {
   );
 }
 
+const workItemStatusConfig: Record<
+  string,
+  { dot: string; label: string }
+> = {
+  open: { dot: "bg-[#d9d9de]", label: "待办" },
+  in_progress: { dot: "bg-[#f0c400]", label: "进行中" },
+  blocked: { dot: "bg-[#f97316]", label: "阻塞" },
+  ready_to_merge: { dot: "bg-[#4fc38b]", label: "待合并" },
+  merging: { dot: "bg-[#4fc38b]", label: "合并中" },
+  done: { dot: "bg-[#6671e8]", label: "已完成" },
+  cancelled: { dot: "bg-[#acbac8]", label: "已取消" },
+  duplicate: { dot: "bg-[#acbac8]", label: "重复" },
+};
+
+function parseWorkItemLabels(labelsJson?: string | null): string[] {
+  if (!labelsJson) return [];
+  try {
+    const parsed: unknown = JSON.parse(labelsJson);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((label): label is string => typeof label === "string")
+      .map((label) => label.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function LinkedWorkItemRow({ item }: { item: ProjectWorkItem }) {
+  const statusCfg = workItemStatusConfig[item.status] ?? {
+    dot: "bg-[#d9d9de]",
+    label: item.status,
+  };
+  const labels = parseWorkItemLabels(item.labels_json);
+
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-1 rounded-md bg-[var(--surface-1)] px-2 py-1.5 text-[13px]">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${statusCfg.dot}`}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 flex-1 truncate text-[var(--ink)]">
+          {item.title}
+        </span>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1 pl-3.5">
+        <span className="shrink-0 rounded bg-[var(--surface-3)] px-1.5 py-0.5 text-[11px] text-[var(--ink-tertiary)]">
+          {statusCfg.label}
+        </span>
+        {labels.map((label) => (
+          <span
+            key={label}
+            className="shrink-0 truncate rounded bg-[var(--primary)]/10 px-1.5 py-0.5 text-[11px] text-[var(--primary)]"
+          >
+            {label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   embedded = false,
   onOpenDiffTab,
@@ -324,6 +387,9 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   const [relatedFilesWidth, setRelatedFilesWidth] = useState(
     RELATED_FILES_DEFAULT_WIDTH,
   );
+  const [linkedWorkItems, setLinkedWorkItems] = useState<ProjectWorkItem[]>([]);
+  const [linkedWorkItemsLoading, setLinkedWorkItemsLoading] = useState(false);
+  const [linkedWorkItemsError, setLinkedWorkItemsError] = useState<string | null>(null);
   const workspaceGridRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -594,6 +660,36 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     if (!workspacePath) return;
     void refreshWorkspaceChanges(activeSessionId, workspacePath, true);
   }, [activeSessionId, projects, selectedProjectId, refreshWorkspaceChanges]);
+
+  useEffect(() => {
+    if (!activeSessionId || !selectedProjectId) {
+      setLinkedWorkItems([]);
+      setLinkedWorkItemsError(null);
+      return;
+    }
+    let cancelled = false;
+    setLinkedWorkItemsLoading(true);
+    setLinkedWorkItemsError(null);
+    projectWorkItemsApi
+      .listBySession(selectedProjectId, activeSessionId)
+      .then((items) => {
+        if (!cancelled) {
+          setLinkedWorkItems(items);
+          setLinkedWorkItemsLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setLinkedWorkItemsError(
+            err instanceof Error ? err.message : String(err),
+          );
+          setLinkedWorkItemsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, selectedProjectId]);
 
   const summarizeMessage = (text: string) => {
     const normalized = text.trim().replace(/\s+/g, " ");
@@ -1620,6 +1716,47 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                 </button>
               </div>
             </div>
+
+            {/* Linked Work Items Section */}
+            <div className="shrink-0 px-3 pb-4">
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-[14px] font-semibold text-[var(--ink)]">
+                  {t("linkedWorkItems.title")}
+                </h2>
+                {linkedWorkItems.length > 0 && (
+                  <span className="rounded-full bg-[var(--surface-3)] px-2 py-0.5 font-mono text-[13px] text-[var(--ink-tertiary)]">
+                    {linkedWorkItems.length}
+                  </span>
+                )}
+              </div>
+              {linkedWorkItemsLoading && (
+                <div className="rounded-md bg-[var(--surface-1)] px-3 py-2 text-[13px] text-[var(--ink-tertiary)]">
+                  {t("linkedWorkItems.loading")}
+                </div>
+              )}
+              {linkedWorkItemsError && (
+                <div className="rounded-md bg-[var(--surface-1)] px-3 py-2 text-[13px] text-rose-500">
+                  {t("linkedWorkItems.error")}
+                </div>
+              )}
+              {!linkedWorkItemsLoading &&
+                !linkedWorkItemsError &&
+                linkedWorkItems.length === 0 && (
+                  <div className="rounded-md bg-[var(--surface-1)] px-3 py-2 text-[13px] text-[var(--ink-tertiary)]">
+                    {t("linkedWorkItems.empty")}
+                  </div>
+                )}
+              {!linkedWorkItemsLoading &&
+                !linkedWorkItemsError &&
+                linkedWorkItems.length > 0 && (
+                  <div className="space-y-1">
+                    {linkedWorkItems.map((item) => (
+                      <LinkedWorkItemRow key={item.id} item={item} />
+                    ))}
+                  </div>
+                )}
+            </div>
+
             <div className="flex h-10 shrink-0 items-center justify-between px-3">
               <h2 className="text-[14px] font-semibold text-[var(--ink)]">
                 {t("relatedFiles.title")}

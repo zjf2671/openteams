@@ -1526,6 +1526,16 @@ export const projectWorkItemsApi = {
     );
     return handleApiResponse<ProjectWorkItem[], GitHubErrorData>(r);
   },
+  listBySession: async (
+    projectId: string,
+    sessionId: string,
+  ): Promise<ProjectWorkItem[]> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/work-items/by-session/${encodeURIComponent(sessionId)}`,
+      { cache: "no-store" },
+    );
+    return handleApiResponse<ProjectWorkItem[], GitHubErrorData>(r);
+  },
   get: async (
     projectId: string,
     workItemId: string,

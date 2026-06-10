@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { motion } from 'framer-motion';
 import type { WorkflowIterationSummaryData } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import {
@@ -122,7 +123,11 @@ export function WorkflowIterationFeedbackCard({
   if (showCollapsedOnly) {
     return (
       <div
-        className="workflow-iteration-feedback-card flex items-center gap-3 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-1.5 transition-all hover:border-[var(--hairline-strong)] group"
+        onClick={allowExpand ? () => setIsCollapsed(false) : undefined}
+        className={cn(
+          "workflow-iteration-feedback-card flex items-center gap-3 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-1.5 transition-all hover:border-[var(--hairline-strong)] group w-[200px]",
+          allowExpand && "cursor-pointer"
+        )}
         title={
           t('workflow.iterationFeedback.round', {
             round: currentRound,
@@ -151,7 +156,23 @@ export function WorkflowIterationFeedbackCard({
   }
 
   return (
-    <div className="workflow-iteration-feedback-card overflow-hidden rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] transition-all duration-300 hover:border-[var(--hairline-strong)] w-full">
+    <motion.div
+      initial={{ width: 200, height: 'auto', opacity: 0.9 }}
+      animate={{ width: 320, height: 'auto', opacity: 1 }}
+      transition={{
+        width: { duration: 0.15, ease: 'easeOut' },
+        opacity: { duration: 0.1 },
+      }}
+      className="workflow-iteration-feedback-card overflow-hidden rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--hairline-strong)]"
+    >
+      <motion.div
+        initial={{ opacity: 0, height: 0 }}
+        animate={{ opacity: 1, height: 'auto' }}
+        transition={{
+          height: { duration: 0.18, ease: 'easeOut', delay: 0.12 },
+          opacity: { duration: 0.12, delay: 0.15 },
+        }}
+      >
       {/* Header/Expandable Area */}
       <button
         type="button"
@@ -434,6 +455,7 @@ export function WorkflowIterationFeedbackCard({
           </div>
         </div>
       )}
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
