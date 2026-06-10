@@ -3,7 +3,7 @@ import {
   PlayIcon,
   PauseIcon,
 } from '@phosphor-icons/react';
-import { FolderOpen } from 'lucide-react';
+import { BookOpen } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { motion } from 'framer-motion';
@@ -488,6 +488,9 @@ export function ChatWorkflowCard({
     !isPreview &&
     (executionStatus === 'completed' || projection.state === 'completed');
   const isPausedState = !isPreview && executionStatus === 'paused';
+  const shouldHideExecutionStatusLabel = stateLabel
+    .trim()
+    .toLowerCase() === 'workflow execution';
   const statusDotClassName = isFailedState
     ? 'bg-[var(--workflow-danger,#ef4444)]'
     : isCompletedState
@@ -504,6 +507,8 @@ export function ChatWorkflowCard({
         : 'bg-[var(--primary)]';
   const quietButtonClassName =
     'inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--hairline)] bg-transparent px-3 text-[12px] font-medium text-[var(--ink-muted)] transition-colors hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]';
+  const openButtonClassName =
+    'inline-flex h-8 items-center gap-1.5 rounded-md bg-transparent px-3 text-[12px] font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--ink)]';
   const primaryButtonClassName =
     'inline-flex h-8 items-center gap-1.5 rounded-md border border-[color-mix(in_srgb,var(--primary)_24%,var(--hairline))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--surface-1))] px-3 text-[12px] font-semibold text-[var(--primary)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary)_22%,var(--surface-1))] hover:text-[var(--primary-hover)]';
   const shouldShowProgressInfo =
@@ -520,12 +525,20 @@ export function ChatWorkflowCard({
             className={`h-1.5 w-1.5 rounded-full ${statusDotClassName}`}
             aria-hidden="true"
           />
-          <span>{stateLabel}</span>
-          {progressSummary && (
+          {!shouldHideExecutionStatusLabel ? (
             <>
-              <span className="text-[var(--ink-tertiary)]">•</span>
-              <span>{progressSummary}</span>
+              <span>{stateLabel}</span>
+              {progressSummary && (
+                <>
+                  <span className="text-[var(--ink-tertiary)]">•</span>
+                  <span>{progressSummary}</span>
+                </>
+              )}
             </>
+          ) : (
+            progressSummary && (
+              <span>{progressSummary}</span>
+            )
           )}
         </div>
         <div className="mt-2.5 text-[19px] font-semibold leading-snug text-[var(--ink)]">
@@ -625,8 +638,8 @@ export function ChatWorkflowCard({
       )}
 
       {shouldShowProgressInfo ? (
-        <div className="mt-4 flex flex-wrap items-stretch gap-3">
-          <div className="min-w-0 flex-1">
+        <div className="mt-4 flex flex-wrap items-start gap-3">
+          <div className="w-[200px] max-w-full shrink-0">
             <WorkflowIterationFeedbackCard
               currentRound={visibleRoundIndex}
               completedSteps={selectedRoundStepProgress.completedSteps}
@@ -649,6 +662,7 @@ export function ChatWorkflowCard({
                 canReviewCurrentRound && isViewingCurrentRound
               }
               pendingActionId={pendingActionId}
+              allowExpand={false}
               onSubmit={(payload) => {
                 if (!onSubmitIterationFeedback || !projection.execution_id) {
                   return;
@@ -661,25 +675,39 @@ export function ChatWorkflowCard({
               }}
             />
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             {onOpenWindow && !isPlanGenerationCard && (
-              <button
-                type="button"
-                onClick={onOpenWindow}
-                className={quietButtonClassName}
-              >
-                <FolderOpen className="size-3.5" />
+            <button
+              type="button"
+              onClick={onOpenWindow}
+              className={openButtonClassName}
+            >
+                <BookOpen className="size-3.5" />
                 {t('workflow.card.buttons.open', { defaultValue: 'Open' })}
               </button>
             )}
-            {canPauseExecution && projection.execution_id && onPauseAll && (
+            {canPauseExecution &&
+              projection.execution_id &&
+              onPauseAll && (
+                <button
+                  type="button"
+                  onClick={() => onPauseAll(projection.execution_id!)}
+                  className={quietButtonClassName}
+                >
+                  <PauseIcon className="size-3.5" weight="bold" />
+                  {t('workflow.card.buttons.pauseAll', {
+                    defaultValue: 'Pause All',
+                  })}
+                </button>
+              )}
+            {canResumeExecution && projection.execution_id && onResume && (
               <button
                 type="button"
-                onClick={() => onPauseAll(projection.execution_id!)}
-                className={quietButtonClassName}
+                onClick={() => onResume(projection.execution_id!, projection)}
+                className={primaryButtonClassName}
               >
-                <PauseIcon className="size-3.5" weight="bold" />
-                {t('workflow.card.buttons.pauseAll', { defaultValue: 'Pause All' })}
+                <PlayIcon className="size-3.5" weight="bold" />
+                {t('workflow.card.buttons.resume', { defaultValue: 'Resume' })}
               </button>
             )}
           </div>
@@ -698,14 +726,16 @@ export function ChatWorkflowCard({
         </div>
       )}
 
-      <div className="mt-4 flex items-center justify-end gap-2">
-        {!shouldShowProgressInfo && onOpenWindow && !isPlanGenerationCard && (
+      <div
+        className={`mt-4 flex items-center justify-end gap-2 ${shouldShowProgressInfo ? 'hidden' : ''}`}
+      >
+        {onOpenWindow && !isPlanGenerationCard && (
           <button
             type="button"
             onClick={onOpenWindow}
-            className={quietButtonClassName}
+            className={openButtonClassName}
           >
-            <FolderOpen className="size-3.5" />
+            <BookOpen className="size-3.5" />
             {t('workflow.card.buttons.open', { defaultValue: 'Open' })}
           </button>
         )}
@@ -723,8 +753,7 @@ export function ChatWorkflowCard({
               })}
             </button>
         )}
-        {!shouldShowProgressInfo &&
-          canPauseExecution &&
+        {canPauseExecution &&
           projection.execution_id &&
           onPauseAll && (
           <button

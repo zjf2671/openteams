@@ -26,6 +26,7 @@ type WorkflowIterationFeedbackCardProps = {
   executionStatus?: string | null;
   runningStepTitle?: string | null;
   isRegeneratingPlan?: boolean;
+  allowExpand?: boolean;
   iterationHistory: WorkflowIterationSummaryData[];
   roundOptions?: Array<{ roundIndex: number; status: string }>;
   selectedRoundIndex?: number | null;
@@ -42,6 +43,7 @@ export function WorkflowIterationFeedbackCard({
   executionStatus,
   runningStepTitle,
   isRegeneratingPlan = false,
+  allowExpand = true,
   roundOptions = [],
   selectedRoundIndex,
   onSelectRound,
@@ -115,12 +117,11 @@ export function WorkflowIterationFeedbackCard({
     .sort((left, right) => left.roundIndex - right.roundIndex);
   const selectedRound = selectedRoundIndex ?? currentRound;
   const canSwitchRounds = visibleRoundOptions.length > 1 && !!onSelectRound;
+  const showCollapsedOnly = isCollapsed || !allowExpand;
 
-  if (isCollapsed) {
+  if (showCollapsedOnly) {
     return (
-      <button
-        type="button"
-        onClick={() => setIsCollapsed(false)}
+      <div
         className="workflow-iteration-feedback-card flex items-center gap-3 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-1.5 transition-all hover:border-[var(--hairline-strong)] group"
         title={
           t('workflow.iterationFeedback.round', {
@@ -145,7 +146,7 @@ export function WorkflowIterationFeedbackCard({
         <span className="text-xs font-bold text-[var(--primary)]">
           {progressPercent}%
         </span>
-      </button>
+      </div>
     );
   }
 

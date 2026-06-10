@@ -899,9 +899,9 @@ function InspectorCard({
               {step.title}
             </h2>
 
-            <div className="mb-8 flex flex-wrap items-baseline gap-2 text-[10px] text-[#8A8F98] font-normal">
-              <span className="relative top-[0.5px] inline-flex items-center gap-1">
-                <Bot className="w-3 h-3 relative top-[0.5px]" /> {agentName}
+            <div className="mb-8 flex flex-wrap items-center gap-2 text-[10px] leading-[1.4] text-[#8A8F98] font-normal">
+              <span className="inline-flex items-center gap-1">
+                <Bot className="w-3 h-3" /> {agentName}
               </span>
               <span className="w-[3px] h-[3px] rounded-full bg-[#3A3B3E]"></span>
               <span>{step.step_type}</span>

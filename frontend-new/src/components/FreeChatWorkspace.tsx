@@ -1302,10 +1302,8 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
             )}
             <div
               onClick={() => inputRef.current?.focus()}
-              className={`relative rounded-md border bg-[var(--surface-1)] focus-within:border-[var(--primary)] p-3.5 transition-all flex flex-col gap-3 min-h-[95px] ${
-                isPlanMode
-                  ? "plan-mode-input-active border-[var(--primary)]"
-                  : "border-[var(--hairline-strong)]"
+              className={`relative rounded-md border border-[var(--hairline-strong)] bg-[var(--surface-1)] focus-within:border-[var(--primary)] p-3.5 transition-all flex flex-col gap-3 min-h-[95px] ${
+                isPlanMode ? "plan-mode-input-active" : ""
               }`}
             >
               <input

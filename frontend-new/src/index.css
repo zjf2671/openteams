@@ -287,9 +287,12 @@ body[data-mode="light"] .animate-shimmer::after {
   animation: spin 3s linear infinite;
 }
 
-.plan-mode-toggle-active,
-.plan-mode-input-active {
+.plan-mode-toggle-active {
   animation: planModePulse 1.8s ease-in-out infinite;
+}
+
+.plan-mode-input-active {
+  /* keep token for compatibility, no persistent animation on the plan input */
 }
 
 .plan-mode-toggle-active {
