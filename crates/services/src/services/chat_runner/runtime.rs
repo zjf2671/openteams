@@ -1113,6 +1113,10 @@ impl ChatRunner {
         }
 
         for path in output_paths {
+            let (existed_after_run, _) = Self::observed_file_metadata(workspace_path, &path);
+            if !existed_after_run {
+                continue;
+            }
             Self::upsert_workspace_observed_path(
                 &mut observed,
                 workspace_path,
@@ -1208,7 +1212,7 @@ impl ChatRunner {
         tail_log_path: PathBuf,
         raw_log_spool: Arc<Mutex<RunLogSpool>>,
         completion_status: Arc<AtomicU8>,
-        tracked_diff_baseline: Option<String>,
+        workspace_change_baseline: WorkspaceChangeBaseline,
         chain_depth: u32,
         context_compacted: bool,
         compression_warning: Option<chat::CompressionWarning>,
@@ -1460,21 +1464,21 @@ impl ChatRunner {
 
                         let _ = fs::write(&output_path, &latest_assistant).await;
 
-                        let diff_info = ChatRunner::capture_git_diff(
+                        let workspace_delta = capture_workspace_change_delta(
                             &workspace_path,
                             &run_dir,
                             session_agent_id,
                             run_index,
-                            tracked_diff_baseline.as_deref(),
+                            &workspace_change_baseline,
                         )
                         .await;
-                        let untracked_files = ChatRunner::capture_untracked_files(
-                            &workspace_path,
-                            &run_dir,
-                            session_agent_id,
-                            run_index,
-                        )
-                        .await;
+                        let diff_info = workspace_delta.diff_patch.as_ref().map(|patch| {
+                            DiffInfo {
+                                _truncated: patch.len() > 4000,
+                                observed_paths: workspace_delta.diff_paths.clone(),
+                            }
+                        });
+                        let untracked_files = workspace_delta.untracked_files;
                         let workspace_observed_paths =
                             ChatRunner::collect_workspace_observed_paths(
                                 session_id,

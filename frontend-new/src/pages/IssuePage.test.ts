@@ -179,7 +179,7 @@ const activitySyncButtonSource = sourceBetween(
 check(
   'issue detail activity sync does not require a comment draft',
   issueDetailSource.includes(
-    "const canSyncActivity = Boolean(linkedRepoId && linkedGitHubIssueNumber)",
+    'const canSyncActivity = Boolean(targetRepoIntegrationId && linkedGitHubIssueNumber)',
   ) &&
     activitySyncButtonSource.includes("action === 'activity-sync'") &&
     !activitySyncButtonSource.includes('commentBody'),

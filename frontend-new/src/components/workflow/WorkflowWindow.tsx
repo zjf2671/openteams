@@ -26,6 +26,7 @@ import type { WorkflowCardData } from '@/lib/api';
 import { chatApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { ChatMarkdown } from '@/components/ui-new/primitives/conversation/ChatMarkdown';
+import { useWorkspace } from '@/context/WorkspaceContext';
 import { getWorkflowTranscriptRefetchInterval } from '@/lib/workflowRequestPolicy';
 import { WorkflowIterationFeedbackCard } from './WorkflowIterationFeedbackCard';
 import { WorkflowGraphBoard } from './WorkflowGraphBoard';
@@ -1547,6 +1548,7 @@ export function WorkflowWindow({
   pendingActionId,
 }: WorkflowWindowProps) {
   const { t } = useTranslation('chat');
+  const { showToast } = useWorkspace();
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [isChatVisible, setIsChatVisible] = useState(false);
   const [openedReviewNotificationId, setOpenedReviewNotificationId] = useState<
@@ -1764,13 +1766,24 @@ export function WorkflowWindow({
       try {
         await onUpdateReviewSettings(projection.execution_id, overrides);
         setIsReviewSettingsOpen(false);
+        showToast(
+          t('workflow.reviewSettings.savedToast', {
+            defaultValue: 'Review settings saved.',
+          })
+        );
       } catch (error) {
         setReviewSettingsError(getReviewSettingsErrorMessage(error, t));
       } finally {
         setIsSavingReviewSettings(false);
       }
     },
-    [isReviewSettingsLocked, onUpdateReviewSettings, projection.execution_id, t]
+    [
+      isReviewSettingsLocked,
+      onUpdateReviewSettings,
+      projection.execution_id,
+      showToast,
+      t,
+    ]
   );
   const resolveStepAgentName = useCallback(
     (step?: WorkflowCardStep | null) => {

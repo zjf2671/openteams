@@ -1789,6 +1789,90 @@ async fn capture_git_diff_skips_patch_when_diff_matches_run_baseline() {
     );
 }
 
+#[tokio::test]
+async fn capture_git_diff_records_only_paths_changed_since_run_baseline() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let repo_path = tempdir.path().join("repo");
+    let git = GitService::new();
+    git.initialize_repo_with_main_branch(&repo_path)
+        .expect("init repo");
+
+    std::fs::write(repo_path.join("other_session.txt"), "base\n")
+        .expect("write other file");
+    std::fs::write(repo_path.join("current_session.txt"), "base\n")
+        .expect("write current file");
+    git.commit(&repo_path, "baseline").expect("commit baseline");
+
+    std::fs::write(repo_path.join("other_session.txt"), "other dirty\n")
+        .expect("modify other file");
+    let baseline = ChatRunner::capture_tracked_git_diff_snapshot(&repo_path).await;
+    assert!(
+        baseline
+            .as_deref()
+            .is_some_and(|diff| diff.contains("other_session.txt"))
+    );
+
+    std::fs::write(repo_path.join("current_session.txt"), "current dirty\n")
+        .expect("modify current file");
+
+    let run_dir = tempdir.path().join("run-record");
+    tokio::fs::create_dir_all(&run_dir)
+        .await
+        .expect("create run dir");
+    let session_agent_id = Uuid::new_v4();
+
+    let diff_info = ChatRunner::capture_git_diff(
+        &repo_path,
+        &run_dir,
+        session_agent_id,
+        1,
+        baseline.as_deref(),
+    )
+    .await
+    .expect("capture current-session diff");
+
+    assert_eq!(
+        diff_info.observed_paths,
+        vec!["current_session.txt".to_string()]
+    );
+
+    let patch = std::fs::read_to_string(run_dir.join(format!(
+        "{}_diff.patch",
+        ChatRunner::run_records_prefix(session_agent_id, 1)
+    )))
+    .expect("read filtered patch");
+    assert!(patch.contains("current_session.txt"));
+    assert!(!patch.contains("other_session.txt"));
+}
+
+#[tokio::test]
+async fn capture_untracked_files_can_be_filtered_against_run_baseline() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let repo_path = tempdir.path().join("repo");
+    let git = GitService::new();
+    git.initialize_repo_with_main_branch(&repo_path)
+        .expect("init repo");
+
+    std::fs::write(repo_path.join("tracked.txt"), "base\n").expect("write tracked");
+    git.commit(&repo_path, "baseline").expect("commit baseline");
+
+    std::fs::write(repo_path.join("other_session_new.txt"), "other\n")
+        .expect("write other untracked");
+    let baseline = ChatRunner::capture_untracked_file_snapshot(&repo_path).await;
+    assert_eq!(baseline, vec!["other_session_new.txt".to_string()]);
+
+    std::fs::write(repo_path.join("current_session_new.txt"), "current\n")
+        .expect("write current untracked");
+    let after = ChatRunner::capture_untracked_file_snapshot(&repo_path).await;
+    let baseline_set = baseline.iter().collect::<std::collections::HashSet<_>>();
+    let filtered = after
+        .into_iter()
+        .filter(|path| !baseline_set.contains(path))
+        .collect::<Vec<_>>();
+
+    assert_eq!(filtered, vec!["current_session_new.txt".to_string()]);
+}
+
 #[test]
 fn resolve_session_team_protocol_returns_enabled_session_content_only() {
     let now = Utc::now();

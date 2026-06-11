@@ -508,6 +508,7 @@ interface WorkspaceContextProps {
     path: string,
     includeDiff?: boolean,
   ) => Promise<void>;
+  resetWorkspaceChanges: () => void;
   /** Re-runs every auto-loaded resource. Useful as a global retry. */
   refreshAll: () => Promise<void>;
 }
@@ -587,6 +588,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const [workspaceChangesAsync, setWorkspaceChangesAsync] = useState<
     AsyncResourceState<WorkspaceChangesResponse | null>
   >(() => initialAsync(null));
+  const workspaceChangesRequestIdRef = useRef(0);
   const [chatInputModeBySessionId, setChatInputModeBySessionId] = useState<
     Record<string, ChatInputMode>
   >({});
@@ -1128,12 +1130,19 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     [],
   );
 
+  const resetWorkspaceChanges = useCallback(() => {
+    workspaceChangesRequestIdRef.current += 1;
+    setWorkspaceChangesAsync(initialAsync(null));
+  }, []);
+
   const refreshWorkspaceChanges = useCallback(
     async (
       sessionId: string,
       path: string,
       includeDiff?: boolean,
     ): Promise<void> => {
+      const requestId = workspaceChangesRequestIdRef.current + 1;
+      workspaceChangesRequestIdRef.current = requestId;
       setWorkspaceChangesAsync(beginLoad);
       try {
         const resp = await chatSessionsApi.getWorkspaceChanges(
@@ -1141,8 +1150,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           path,
           includeDiff,
         );
+        if (workspaceChangesRequestIdRef.current !== requestId) return;
         setWorkspaceChangesAsync(succeed(resp));
       } catch (err) {
+        if (workspaceChangesRequestIdRef.current !== requestId) return;
         setWorkspaceChangesAsync((prev) => fail(prev, err, null));
       }
     },
@@ -1857,6 +1868,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         workspaceChanges: workspaceChangesAsync.data,
         workspaceChangesAsync,
         refreshWorkspaceChanges,
+        resetWorkspaceChanges,
         refreshAll,
       }}
     >

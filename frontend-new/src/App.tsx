@@ -45,6 +45,12 @@ import {
   chatSessionsApi,
   projectApi,
 } from "@/lib/api";
+import {
+  ISSUE_NAVIGATION_EVENT,
+  ISSUE_NAVIGATION_TARGET_CHANGED_EVENT,
+  storeIssueNavigationTarget,
+  type IssueNavigationTarget,
+} from "@/lib/issueNavigation";
 import { mapSession } from "@/lib/mappers";
 import { mockFrontendApi } from "@/lib/mockFrontendApi";
 import { projectDisplayName } from "@/lib/projectDisplay";
@@ -536,9 +542,30 @@ function WorkspaceLayout() {
         setActiveSessionId(sessionId);
       }
     };
-    window.addEventListener("openteams:navigate-session", handleNavigateSession);
+    const handleNavigateIssue = (event: Event) => {
+      const target = (event as CustomEvent<IssueNavigationTarget>).detail;
+      if (!target?.workItemId) return;
+
+      storeIssueNavigationTarget(target);
+      if (target.projectId && target.projectId !== selectedProjectId) {
+        setSelectedProjectId(target.projectId);
+      }
+      openPageTab("issue", getPageTabLabel("issue"));
+      window.dispatchEvent(
+        new CustomEvent(ISSUE_NAVIGATION_TARGET_CHANGED_EVENT),
+      );
+    };
+    window.addEventListener(
+      "openteams:navigate-session",
+      handleNavigateSession,
+    );
+    window.addEventListener(ISSUE_NAVIGATION_EVENT, handleNavigateIssue);
     return () => {
-      window.removeEventListener("openteams:navigate-session", handleNavigateSession);
+      window.removeEventListener(
+        "openteams:navigate-session",
+        handleNavigateSession,
+      );
+      window.removeEventListener(ISSUE_NAVIGATION_EVENT, handleNavigateIssue);
     };
   });
 

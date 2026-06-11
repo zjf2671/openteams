@@ -50,6 +50,12 @@ import {
   projectWorkItemsApi,
 } from '@/lib/api';
 import {
+  ISSUE_NAVIGATION_TARGET_CHANGED_EVENT,
+  clearIssueNavigationTarget,
+  readIssueNavigationTarget,
+  type IssueNavigationTarget,
+} from '@/lib/issueNavigation';
+import {
   IssueDetailPage,
   PriorityMenuIcon,
   projectWorkItemLabelList,
@@ -528,6 +534,8 @@ export function IssuePage() {
   const [workItemsError, setWorkItemsError] = useState('');
   const [selectedIssueId, setSelectedIssueId] = useState('');
   const [activeIssue, setActiveIssue] = useState<IssueItem | null>(null);
+  const [pendingIssueTarget, setPendingIssueTarget] =
+    useState<IssueNavigationTarget | null>(() => readIssueNavigationTarget());
   const [interactionMessage, setInteractionMessage] = useState('');
   const [repoNotice, setRepoNotice] = useState<IssueNotification | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -635,6 +643,25 @@ export function IssuePage() {
   }, [selectedProjectId]);
 
   useEffect(() => {
+    const applyPendingTarget = () => {
+      const target = readIssueNavigationTarget();
+      if (target) setPendingIssueTarget(target);
+    };
+
+    applyPendingTarget();
+    window.addEventListener(
+      ISSUE_NAVIGATION_TARGET_CHANGED_EVENT,
+      applyPendingTarget,
+    );
+    return () => {
+      window.removeEventListener(
+        ISSUE_NAVIGATION_TARGET_CHANGED_EVENT,
+        applyPendingTarget,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
     if (selectedProjectId && workItemsProjectId !== selectedProjectId) {
       setSelectedIssueId('');
       setActiveIssue(null);
@@ -646,6 +673,30 @@ export function IssuePage() {
       selectedProjectName,
       issueRowOverrides,
     ).flatMap((group) => group.items);
+    const pendingTargetIssue =
+      pendingIssueTarget?.workItemId &&
+      (!pendingIssueTarget.projectId ||
+        pendingIssueTarget.projectId === selectedProjectId)
+        ? allIssues.find(
+            (issue) => issue.workItemId === pendingIssueTarget.workItemId,
+          )
+        : null;
+    if (pendingTargetIssue) {
+      setSelectedIssueId(pendingTargetIssue.id);
+      setActiveIssue(pendingTargetIssue);
+      setPendingIssueTarget(null);
+      clearIssueNavigationTarget();
+      return;
+    }
+    if (
+      pendingIssueTarget?.workItemId &&
+      (!pendingIssueTarget.projectId ||
+        pendingIssueTarget.projectId === selectedProjectId) &&
+      !workItemsLoading
+    ) {
+      setPendingIssueTarget(null);
+      clearIssueNavigationTarget();
+    }
     setSelectedIssueId((current) =>
       current && allIssues.some((issue) => issue.id === current)
         ? current
@@ -659,9 +710,11 @@ export function IssuePage() {
     );
   }, [
     issueRowOverrides,
+    pendingIssueTarget,
     selectedProjectId,
     selectedProjectName,
     workItems,
+    workItemsLoading,
     workItemsProjectId,
   ]);
 
@@ -1373,6 +1426,7 @@ export function IssuePage() {
           linkedProviderId={linkedProviderId}
           linkedRepoId={linkedRepoId}
           linkedRepoName={linkedRepoName}
+          linkedGitHubRepos={integrationState?.linked_repositories ?? []}
           githubAccount={integrationState?.github_account ?? null}
           onOpenIntegrations={handleOpenIntegrations}
           tr={tr}

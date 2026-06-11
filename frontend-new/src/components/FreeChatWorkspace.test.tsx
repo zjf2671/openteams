@@ -94,6 +94,36 @@ check(
   source,
 );
 check(
+  "uses session workspace changes mapper for related files",
+  source.includes("flattenWorkspaceChanges") &&
+    source.includes("hasRelatedFileDiff") &&
+    source.includes('statusTextTone: Record<RelatedFileStatus, string>') &&
+    source.includes('U: "text-sky-500"'),
+  source,
+);
+check(
+  "shows a manual related-files refresh action",
+  source.includes('title={t("relatedFiles.refresh")}') &&
+    source.includes("reloadRelatedFiles") &&
+    source.includes("resetWorkspaceChanges"),
+  source,
+);
+check(
+  "opens files when a related file has no inline diff",
+  source.includes("openFileInVSCode") &&
+    source.includes("openAsDiff: false") &&
+    source.includes("relatedFiles.noDiffOpenFile"),
+  source,
+);
+check(
+  "phase one related files do not expose git source-control actions",
+  !source.includes("Stage All") &&
+    !source.includes("Unstage All") &&
+    !source.includes("Discard All") &&
+    !source.includes("commit message"),
+  source,
+);
+check(
   "keeps the member invite action fixed outside the avatar rail and uses click filtering",
   memberRailIndex >= 0 &&
     memberRailCloseIndex > memberRailIndex &&

@@ -337,6 +337,80 @@ impl ChatRunner {
         Some(diff)
     }
 
+    fn diff_header_path(line: &str, workspace_path: &Path) -> Option<String> {
+        let rest = line.strip_prefix("diff --git a/")?;
+        let (old_path, new_path) = rest.split_once(" b/")?;
+        let preferred = if new_path.trim() == "/dev/null" {
+            old_path
+        } else {
+            new_path
+        };
+        normalize_workspace_observed_path(preferred, workspace_path)
+    }
+
+    fn split_git_diff_by_path(
+        diff: &str,
+        workspace_path: &Path,
+    ) -> BTreeMap<String, String> {
+        let mut patches = BTreeMap::<String, String>::new();
+        let mut current_path: Option<String> = None;
+        let mut current_patch = String::new();
+
+        for line in diff.split_inclusive('\n') {
+            if let Some(next_path) = Self::diff_header_path(line, workspace_path) {
+                if let Some(path) = current_path.take()
+                    && !current_patch.trim().is_empty()
+                {
+                    patches.insert(path, std::mem::take(&mut current_patch));
+                }
+                current_path = Some(next_path);
+            }
+
+            if current_path.is_some() {
+                current_patch.push_str(line);
+            }
+        }
+
+        if let Some(path) = current_path
+            && !current_patch.trim().is_empty()
+        {
+            patches.insert(path, current_patch);
+        }
+
+        patches
+    }
+
+    fn filter_git_diff_against_baseline(
+        diff: &str,
+        baseline_diff: Option<&str>,
+        workspace_path: &Path,
+    ) -> (String, Vec<String>) {
+        let current_patches = Self::split_git_diff_by_path(diff, workspace_path);
+        let baseline_patches = baseline_diff
+            .map(|baseline| Self::split_git_diff_by_path(baseline, workspace_path))
+            .unwrap_or_default();
+
+        let mut filtered_diff = String::new();
+        let mut observed_paths = Vec::new();
+
+        for (path, patch) in current_patches {
+            if baseline_patches
+                .get(&path)
+                .is_some_and(|baseline_patch| baseline_patch == &patch)
+            {
+                continue;
+            }
+
+            filtered_diff.push_str(&patch);
+            if !filtered_diff.ends_with('\n') {
+                filtered_diff.push('\n');
+            }
+            observed_paths.push(path);
+        }
+
+        (filtered_diff, observed_paths)
+    }
+
     #[allow(dead_code)]
     pub(super) async fn capture_git_diff(
         workspace_path: &Path,
@@ -346,7 +420,9 @@ impl ChatRunner {
         baseline_diff: Option<&str>,
     ) -> Option<DiffInfo> {
         let diff = Self::capture_tracked_git_diff_snapshot(workspace_path).await?;
-        if baseline_diff == Some(diff.as_str()) {
+        let (diff, observed_paths) =
+            Self::filter_git_diff_against_baseline(&diff, baseline_diff, workspace_path);
+        if diff.trim().is_empty() || observed_paths.is_empty() {
             return None;
         }
 
@@ -359,40 +435,16 @@ impl ChatRunner {
             return None;
         }
 
-        let mut observed_paths = BTreeMap::<String, ()>::new();
-        for line in diff.lines() {
-            let Some(rest) = line.strip_prefix("diff --git a/") else {
-                continue;
-            };
-            let Some((old_path, new_path)) = rest.split_once(" b/") else {
-                continue;
-            };
-            let preferred = if new_path == "/dev/null" {
-                old_path
-            } else {
-                new_path
-            };
-            if let Some(path) = normalize_workspace_observed_path(preferred, workspace_path) {
-                observed_paths.insert(path, ());
-            }
-        }
-
         // Consider diff truncated if it's over 4KB (for UI display purposes)
         let truncated = diff.len() > 4000;
 
         Some(DiffInfo {
             _truncated: truncated,
-            observed_paths: observed_paths.into_keys().collect(),
+            observed_paths,
         })
     }
 
-    #[allow(dead_code)]
-    pub(super) async fn capture_untracked_files(
-        workspace_path: &Path,
-        _run_dir: &Path,
-        _session_agent_id: Uuid,
-        _run_index: i64,
-    ) -> Vec<String> {
+    pub(super) async fn capture_untracked_file_snapshot(workspace_path: &Path) -> Vec<String> {
         let output = Command::new("git")
             .arg("-C")
             .arg(workspace_path)
@@ -437,7 +489,19 @@ impl ChatRunner {
             }
         }
 
+        files.sort();
+        files.dedup();
         files
+    }
+
+    #[allow(dead_code)]
+    pub(super) async fn capture_untracked_files(
+        workspace_path: &Path,
+        _run_dir: &Path,
+        _session_agent_id: Uuid,
+        _run_index: i64,
+    ) -> Vec<String> {
+        Self::capture_untracked_file_snapshot(workspace_path).await
     }
 
     pub(super) async fn build_context_snapshot(

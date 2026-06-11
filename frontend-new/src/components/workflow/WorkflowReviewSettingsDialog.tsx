@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bell, Crown, Hand, X, type LucideIcon } from 'lucide-react';
+import { Bell, ListTodo, RefreshCw, X } from 'lucide-react';
 import type { WorkflowCardData } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -63,17 +63,13 @@ function buildReviewSettingsDraft(
   ] as Array<[string, { leadReview: boolean; userReview: boolean }]>);
 }
 
-function ReviewSwitch({
-  icon: Icon,
+function ReviewToggleTag({
   label,
-  tooltip,
   checked,
   disabled = false,
   onChange,
 }: {
-  icon: LucideIcon;
   label: string;
-  tooltip: string;
   checked: boolean;
   disabled?: boolean;
   onChange: (checked: boolean) => void;
@@ -81,49 +77,53 @@ function ReviewSwitch({
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={checked}
+      aria-pressed={checked}
       disabled={disabled}
       onClick={() => {
         if (!disabled) onChange(!checked);
       }}
       className={cn(
-        'group relative flex h-9 items-center justify-between gap-2 rounded-lg border px-2.5 text-left transition-all',
+        'relative flex h-7 min-w-[54px] items-center justify-center rounded-[6px] px-2.5 text-left text-[10px] font-semibold uppercase tracking-[0.08em] transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--primary)_38%,transparent)]',
         checked
-          ? 'border-[color-mix(in_srgb,var(--primary)_30%,var(--hairline))] bg-[var(--primary-tint)]'
-          : 'border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-2)]',
-        disabled && 'cursor-not-allowed opacity-50'
+          ? 'bg-[#5e6ad2]/[0.14] text-[#f4f5ff] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
+          : null,
+        !checked &&
+          'bg-transparent text-white/40 hover:bg-white/[0.045] hover:text-white/68',
+        disabled &&
+          'cursor-not-allowed opacity-45 hover:bg-transparent hover:text-white/40'
       )}
     >
-      <span className="flex min-w-0 items-center gap-1.5">
-        <Icon
-          className={cn(
-            'h-3.5 w-3.5 shrink-0',
-            checked ? 'text-[var(--primary)]' : 'text-[var(--ink-tertiary)]'
-          )}
-        />
-        <span className="truncate text-xs font-semibold text-[var(--ink-muted)]">
-          {label}
-        </span>
-      </span>
-      <span
-        className={cn(
-          'relative h-4 w-7 shrink-0 rounded-full transition-colors',
-          checked ? 'bg-[var(--primary)]' : 'bg-[var(--surface-3)]'
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 h-3 w-3 rounded-full bg-[var(--hairline-strong)] transition-transform',
-            checked && 'bg-[var(--on-primary)]',
-            checked ? 'translate-x-3.5' : 'translate-x-0.5'
-          )}
-        />
-      </span>
-      <span className="pointer-events-none absolute left-0 top-full z-[90] mt-1 hidden max-w-[240px] rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-2.5 py-1.5 text-xs font-medium leading-4 text-[var(--ink)] group-hover:block">
-        {tooltip}
-      </span>
+      <span className="truncate">{label}</span>
     </button>
+  );
+}
+
+function ReviewSegmentedControl({
+  options,
+}: {
+  options: Array<{
+    key: string;
+    label: string;
+    checked: boolean;
+    disabled: boolean;
+    onChange: (checked: boolean) => void;
+  }>;
+}) {
+  return (
+    <div
+      role="group"
+      className="inline-flex shrink-0 flex-row items-center justify-end gap-2"
+    >
+      {options.map((option) => (
+        <ReviewToggleTag
+          key={option.key}
+          label={option.label}
+          checked={option.checked}
+          disabled={option.disabled}
+          onChange={option.onChange}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -156,7 +156,7 @@ function ReviewSettingTooltipText({
       {showTooltip && (
         <div
           className={cn(
-            'pointer-events-none absolute left-0 top-full z-[90] mt-1 max-w-[320px] rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-2.5 py-1.5 text-xs font-medium leading-4 text-[var(--ink)]',
+            'pointer-events-none absolute left-0 top-full z-[90] mt-1 max-w-[320px] rounded-md border border-white/[0.08] bg-[#111214] px-2.5 py-1.5 text-xs font-medium leading-4 text-white shadow-[0_12px_28px_rgba(0,0,0,0.32)]',
             tooltipClassName
           )}
         >
@@ -209,7 +209,7 @@ export function WorkflowReviewSettingsDialog({
           const step = stepByKey.get(node.id);
           return {
             stepId: node.id,
-            title: step?.title ?? node.data.title,
+            title: step?.title ?? node.data.title ?? node.id,
             leadReview: step?.lead_review_required ?? true,
             userReview: step?.user_review_required ?? true,
           };
@@ -223,11 +223,11 @@ export function WorkflowReviewSettingsDialog({
         const reviewStep = stepById.get(workflowLoop.review_step_id);
         if (!reviewStep) return [];
         const reviewNode = planNodeById.get(reviewStep.step_key);
+        const reviewStepTitle = reviewStep.title ?? reviewStep.step_key;
         return {
           stepId: reviewStep.step_key,
           title:
-            workflowLoop.loop_key || reviewNode?.data.title || reviewStep.title,
-          description: `${workflowLoop.member_step_ids.length} tasks / review step: ${reviewStep.title}`,
+            workflowLoop.loop_key || reviewNode?.data.title || reviewStepTitle,
           userReview: workflowLoop.user_review_required,
         };
       }),
@@ -312,15 +312,15 @@ export function WorkflowReviewSettingsDialog({
   const content = (
     <div
       className={cn(
-        'workflow-review-settings-dialog overflow-hidden rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)]',
+        "workflow-review-settings-dialog relative overflow-hidden rounded-xl border border-white/[0.10] bg-[#111214] shadow-[0_10px_30px_rgba(0,0,0,0.50),0_24px_80px_rgba(0,0,0,0.36),inset_0_0_0_1px_rgba(255,255,255,0.05),inset_0_1px_0_rgba(255,255,255,0.08)] before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.34),transparent)] before:content-['']",
         variant === 'panel'
           ? 'flex w-[400px] flex-col'
           : 'w-full max-w-[440px]',
         className
       )}
     >
-      <div className="flex items-start justify-between border-b border-[var(--hairline)] bg-[var(--surface-2)] px-5 py-4">
-        <div className="pr-4">
+      <div className="flex items-start justify-between border-b border-white/[0.08] bg-white/[0.025] px-5 py-4">
+        <div className="pl-1.5 pr-4">
           <div className="mb-1 text-sm font-semibold text-[var(--ink)]">
             {t('workflow.reviewSettings.title', {
               defaultValue: 'Review Settings',
@@ -336,30 +336,30 @@ export function WorkflowReviewSettingsDialog({
           type="button"
           onClick={onClose}
           disabled={isSubmitting}
-          className="mt-0.5 shrink-0 rounded-lg p-1.5 text-[var(--ink-tertiary)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-0.5 shrink-0 rounded-md p-1.5 text-white/35 transition-colors hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
           aria-label={t('workflow.reviewSettings.close', {
             defaultValue: 'Close review settings',
           })}
         >
-          <X className="h-4 w-4" />
+          <X className="h-4 w-4" strokeWidth={1.5} />
         </button>
       </div>
       <div className="flex max-h-[500px] flex-col gap-6 overflow-y-auto p-4">
         {taskReviewSettingsRows.length > 0 && (
           <div>
             <div className="mb-3 flex items-center justify-between">
-              <div className="font-mono text-xs font-medium uppercase tracking-wider text-[var(--ink)]">
+              <div className="font-mono text-[10px] font-medium uppercase tracking-[0.09em] text-white/70">
                 {t('workflow.reviewSettings.taskSteps', {
                   defaultValue: 'Task Steps',
                 })}
               </div>
-              <div className="text-[11px] text-[var(--ink-subtle)]">
+              <div className="ml-4 w-[124px] shrink-0 text-right font-mono text-[10px] uppercase tracking-[0.09em] text-white/35">
                 {t('workflow.reviewSettings.leadUserReview', {
-                  defaultValue: 'Lead / User review',
+                  defaultValue: 'Lead & User',
                 })}
               </div>
             </div>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col">
               {taskReviewSettingsRows.map((row) => {
                 const draft = reviewSettingsDraft[row.stepId] ?? {
                   leadReview: row.leadReview,
@@ -369,64 +369,56 @@ export function WorkflowReviewSettingsDialog({
                 return (
                   <div
                     key={row.stepId}
-                    className="flex flex-col gap-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] p-3"
+                    className="group -mx-2 flex items-center justify-between gap-6 rounded px-2 py-3.5 transition-colors duration-150 hover:bg-[#161618]"
                   >
-                    <ReviewSettingTooltipText
-                      text={row.title}
-                      className="truncate text-sm font-semibold text-[var(--ink)]"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <ReviewSwitch
-                        icon={Crown}
-                        label={t('workflow.reviewSettings.leadLabel', {
-                          defaultValue: 'Lead',
-                        })}
-                        tooltip={
-                          draft.leadReview
-                            ? t('workflow.reviewSettings.leadReviewOff', {
-                                defaultValue:
-                                  'Disable lead agent review for this task step',
-                              })
-                            : t('workflow.reviewSettings.leadReviewOn', {
-                                defaultValue:
-                                  'Enable lead agent review for this task step',
-                              })
-                        }
-                        checked={draft.leadReview}
-                        disabled={disabled || isSubmitting}
-                        onChange={(checked) =>
-                          updateReviewSettingDraft(
-                            row.stepId,
-                            'leadReview',
-                            checked
-                          )
-                        }
+                    <div className="flex min-w-0 items-center gap-2">
+                      <ListTodo
+                        className={cn(
+                          'h-3 w-3 shrink-0 transition-colors',
+                          draft.leadReview || draft.userReview
+                            ? 'fill-[rgba(94,106,210,0.10)] text-[#8b95e9]/80'
+                            : 'text-white/20'
+                        )}
+                        aria-hidden="true"
+                        strokeWidth={1.8}
                       />
-                      <ReviewSwitch
-                        icon={Hand}
-                        label={t('workflow.reviewSettings.userLabel', {
-                          defaultValue: 'User',
-                        })}
-                        tooltip={
-                          draft.userReview
-                            ? t('workflow.reviewSettings.userReviewOff', {
-                                defaultValue:
-                                  'Disable user review for this task step',
-                              })
-                            : t('workflow.reviewSettings.userReviewOn', {
-                                defaultValue:
-                                  'Enable user review for this task step',
-                              })
-                        }
-                        checked={draft.userReview}
-                        disabled={disabled || isSubmitting}
-                        onChange={(checked) =>
-                          updateReviewSettingDraft(
-                            row.stepId,
-                            'userReview',
-                            checked
-                          )
-                        }
+                      <ReviewSettingTooltipText
+                        text={row.title}
+                        className="truncate text-[13px] font-medium text-[#C1C1C1]"
+                      />
+                    </div>
+                    <div className="flex w-[124px] shrink-0 items-center justify-end">
+                      <ReviewSegmentedControl
+                        options={[
+                          {
+                            key: 'lead',
+                            label: t('workflow.reviewSettings.leadLabel', {
+                              defaultValue: 'Lead',
+                            }),
+                            checked: draft.leadReview,
+                            disabled: disabled || isSubmitting,
+                            onChange: (checked) =>
+                              updateReviewSettingDraft(
+                                row.stepId,
+                                'leadReview',
+                                checked
+                              ),
+                          },
+                          {
+                            key: 'user',
+                            label: t('workflow.reviewSettings.userLabel', {
+                              defaultValue: 'User',
+                            }),
+                            checked: draft.userReview,
+                            disabled: disabled || isSubmitting,
+                            onChange: (checked) =>
+                              updateReviewSettingDraft(
+                                row.stepId,
+                                'userReview',
+                                checked
+                              ),
+                          },
+                        ]}
                       />
                     </div>
                   </div>
@@ -439,18 +431,18 @@ export function WorkflowReviewSettingsDialog({
         {loopReviewSettingsRows.length > 0 && (
           <div>
             <div className="mb-3 flex items-center justify-between">
-              <div className="font-mono text-xs font-medium uppercase tracking-wider text-[var(--ink)]">
+              <div className="font-mono text-[10px] font-medium uppercase tracking-[0.09em] text-white/70">
                 {t('workflow.reviewSettings.workflowLoops', {
                   defaultValue: 'Workflow Loops',
                 })}
               </div>
-              <div className="text-[11px] text-[var(--ink-subtle)]">
+              <div className="ml-4 w-[124px] shrink-0 text-right font-mono text-[10px] uppercase tracking-[0.09em] text-white/35">
                 {t('workflow.reviewSettings.userReviewOnly', {
-                  defaultValue: 'User review only',
+                  defaultValue: 'User review',
                 })}
               </div>
             </div>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col">
               {loopReviewSettingsRows.map((row) => {
                 const draft = reviewSettingsDraft[row.stepId] ?? {
                   leadReview: false,
@@ -460,45 +452,43 @@ export function WorkflowReviewSettingsDialog({
                 return (
                   <div
                     key={row.stepId}
-                    className="flex flex-col gap-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] p-3"
+                    className="group -mx-2 flex items-center justify-between gap-6 rounded px-2 py-3.5 transition-colors duration-150 hover:bg-[#161618]"
                   >
-                    <div>
-                      <ReviewSettingTooltipText
-                        text={row.title}
-                        className="truncate text-sm font-semibold text-[var(--ink)]"
+                    <div className="flex min-w-0 items-center gap-2">
+                      <RefreshCw
+                        className={cn(
+                          'h-3 w-3 shrink-0 transition-colors',
+                          draft.userReview
+                            ? 'text-[#8b95e9]/80'
+                            : 'text-white/20'
+                        )}
+                        aria-hidden="true"
+                        strokeWidth={1.8}
                       />
                       <ReviewSettingTooltipText
-                        text={row.description}
-                        className="mt-0.5 line-clamp-2 text-[11px] text-[var(--ink-tertiary)]"
+                        text={row.title}
+                        className="truncate text-[13px] font-medium text-[#C1C1C1]"
                         tooltipClassName="max-w-[340px]"
                       />
                     </div>
-                    <div className="grid grid-cols-1 gap-2">
-                      <ReviewSwitch
-                        icon={Hand}
-                        label={t('workflow.reviewSettings.userLabel', {
-                          defaultValue: 'User',
-                        })}
-                        tooltip={
-                          draft.userReview
-                            ? t('workflow.reviewSettings.loopUserReviewOff', {
-                                defaultValue:
-                                  'Disable user review for this workflow loop',
-                              })
-                            : t('workflow.reviewSettings.loopUserReviewOn', {
-                                defaultValue:
-                                  'Enable user review for this workflow loop',
-                              })
-                        }
-                        checked={draft.userReview}
-                        disabled={disabled || isSubmitting}
-                        onChange={(checked) =>
-                          updateReviewSettingDraft(
-                            row.stepId,
-                            'userReview',
-                            checked
-                          )
-                        }
+                    <div className="flex w-[124px] shrink-0 items-center justify-end">
+                      <ReviewSegmentedControl
+                        options={[
+                          {
+                            key: 'user',
+                            label: t('workflow.reviewSettings.userLabel', {
+                              defaultValue: 'User',
+                            }),
+                            checked: draft.userReview,
+                            disabled: disabled || isSubmitting,
+                            onChange: (checked) =>
+                              updateReviewSettingDraft(
+                                row.stepId,
+                                'userReview',
+                                checked
+                              ),
+                          },
+                        ]}
                       />
                     </div>
                   </div>
@@ -509,17 +499,17 @@ export function WorkflowReviewSettingsDialog({
         )}
       </div>
       {error && (
-        <div className="mx-5 mb-3 flex items-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary)_28%,var(--hairline))] bg-[var(--primary-tint)] px-3 py-2 text-xs leading-5 text-[var(--primary)]">
-          <Bell className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div className="mx-5 mb-3 flex items-start gap-2 rounded-md border border-[color-mix(in_srgb,var(--primary)_32%,rgba(255,255,255,0.08))] bg-[var(--primary-tint)] px-3 py-2 text-xs leading-5 text-[var(--primary-hover)]">
+          <Bell className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
           <span>{error}</span>
         </div>
       )}
-      <div className="flex justify-end gap-2 border-t border-[var(--hairline)] bg-[var(--surface-2)] px-5 py-4">
+      <div className="flex justify-end gap-2 border-t border-white/[0.08] bg-white/[0.025] px-5 py-4">
         <button
           type="button"
           onClick={onClose}
           disabled={isSubmitting}
-          className="rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-4 py-2 text-xs font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--surface-3)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md bg-transparent px-4 py-2 text-xs font-semibold text-white/48 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t('workflow.reviewSettings.cancel', {
             defaultValue: 'Cancel',
@@ -531,7 +521,7 @@ export function WorkflowReviewSettingsDialog({
             void handleSubmit();
           }}
           disabled={disabled || isSubmitting}
-          className="rounded-lg bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md border border-[#5e6ad2] bg-[#5e6ad2] px-4 py-2 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.20)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? submittingLabel : submitLabel}
         </button>
@@ -540,11 +530,17 @@ export function WorkflowReviewSettingsDialog({
   );
 
   if (variant === 'panel') {
-    return <div className="absolute right-6 top-6 z-[70]">{content}</div>;
+    return (
+      <div className="pointer-events-none absolute inset-0 z-[200]">
+        <div className="pointer-events-auto absolute right-6 top-6">
+          {content}
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-[var(--canvas)]/60 p-4">
+    <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-[#010102] p-4">
       {content}
     </div>
   );

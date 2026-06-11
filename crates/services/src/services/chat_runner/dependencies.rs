@@ -10,6 +10,9 @@ use crate::services::{
         NativeSkillError, auto_allow_builtin_skills, ensure_builtin_skills_installed,
         list_native_skills_for_runner,
     },
+    workspace_change_capture::{
+        WorkspaceChangeBaseline, capture_workspace_change_baseline, capture_workspace_change_delta,
+    },
     workflow_analytics,
     workflow_runtime::resolve_lead_agent,
 };

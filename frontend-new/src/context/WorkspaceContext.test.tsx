@@ -175,6 +175,20 @@ check(
   source,
 );
 
+check(
+  'guards workspace change refreshes against stale responses',
+  source.includes('workspaceChangesRequestIdRef') &&
+    source.includes('workspaceChangesRequestIdRef.current !== requestId'),
+  source,
+);
+
+check(
+  'exposes resetWorkspaceChanges',
+  source.includes('resetWorkspaceChanges: () => void') &&
+    source.includes('resetWorkspaceChanges,'),
+  source,
+);
+
 if (failures > 0) {
   // eslint-disable-next-line no-console
   console.error(`\n${failures} assertion(s) FAILED`);

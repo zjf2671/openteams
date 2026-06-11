@@ -19,6 +19,154 @@ fn clear_running_step(step_id: Uuid) {
     STEP_CANCEL_REQUESTS.remove(&step_id);
 }
 
+struct WorkflowRuntimeRunRecord {
+    run_id: Uuid,
+    run_index: i64,
+    run_dir: PathBuf,
+    output_path: PathBuf,
+    meta_path: PathBuf,
+    baseline: WorkspaceChangeBaseline,
+    execution_id: Uuid,
+    workflow_agent_session_id: Option<Uuid>,
+    step_id: Uuid,
+    step_key: String,
+}
+
+async fn start_workflow_runtime_run_record(
+    db: &DBService,
+    session: &ChatSession,
+    session_agent: &ChatSessionAgent,
+    workspace_path: &PathBuf,
+    prompt: &str,
+    stream_context: Option<&WorkflowRuntimeStreamContext>,
+) -> Result<Option<WorkflowRuntimeRunRecord>, WorkflowRuntimeError> {
+    let Some(context) = stream_context else {
+        return Ok(None);
+    };
+
+    let run_id = Uuid::new_v4();
+    let run_index = ChatRun::next_run_index(&db.pool, session_agent.id).await?;
+    let run_records_dir = workspace_run_records_dir(workspace_path, session.id);
+    fs::create_dir_all(&run_records_dir).await?;
+    let run_dir = run_records_dir.join(run_records_prefix(session_agent.id, run_index));
+    fs::create_dir_all(&run_dir).await?;
+
+    let input_path = run_dir.join("input.md");
+    let output_path = run_dir.join("output.md");
+    let meta_path = run_dir.join("meta.json");
+    fs::write(&input_path, prompt).await?;
+
+    let baseline = capture_workspace_change_baseline(workspace_path).await;
+
+    ChatRun::create(
+        &db.pool,
+        &CreateChatRun {
+            session_id: session.id,
+            session_agent_id: session_agent.id,
+            workspace_path: Some(workspace_path.to_string_lossy().to_string()),
+            run_index,
+            run_dir: run_dir.to_string_lossy().to_string(),
+            input_path: Some(input_path.to_string_lossy().to_string()),
+            output_path: Some(output_path.to_string_lossy().to_string()),
+            raw_log_path: None,
+            meta_path: Some(meta_path.to_string_lossy().to_string()),
+        },
+        run_id,
+    )
+    .await?;
+
+    Ok(Some(WorkflowRuntimeRunRecord {
+        run_id,
+        run_index,
+        run_dir,
+        output_path,
+        meta_path,
+        baseline,
+        execution_id: context.execution_id,
+        workflow_agent_session_id: context.workflow_agent_session_id,
+        step_id: context.step_id,
+        step_key: context.step_key.clone(),
+    }))
+}
+
+async fn finish_workflow_runtime_run_record(
+    db: &DBService,
+    session: &ChatSession,
+    agent: &ChatAgent,
+    session_agent: &ChatSessionAgent,
+    workspace_path: &PathBuf,
+    record: Option<&WorkflowRuntimeRunRecord>,
+    assistant_output: &str,
+    error_summary: Option<&str>,
+) -> Result<(), WorkflowRuntimeError> {
+    let Some(record) = record else {
+        return Ok(());
+    };
+
+    fs::write(&record.output_path, assistant_output).await?;
+
+    let delta = capture_workspace_change_delta(
+        workspace_path,
+        &record.run_dir,
+        session_agent.id,
+        record.run_index,
+        &record.baseline,
+    )
+    .await;
+    let workspace_observed_paths =
+        build_git_observed_path_records(workspace_path, &delta.diff_paths, &delta.untracked_files);
+    let finished_at = Utc::now();
+    let mut meta = serde_json::json!({
+        "run_id": record.run_id,
+        "session_id": session.id,
+        "session_agent_id": session_agent.id,
+        "agent_id": agent.id,
+        "finished_at": finished_at.to_rfc3339(),
+        "workflow_execution_id": record.execution_id,
+        "workflow_agent_session_id": record.workflow_agent_session_id,
+        "workflow_step_id": record.step_id,
+        "workflow_step_key": record.step_key.clone(),
+        "workspace_observed_paths": workspace_observed_paths,
+    });
+
+    if let Some(error_summary) = error_summary {
+        meta["error"] = serde_json::json!({
+            "summary": error_summary,
+        });
+    }
+
+    fs::write(&record.meta_path, serde_json::to_string_pretty(&meta)?).await?;
+
+    let retention_summary = ChatRunRetentionSummary {
+        kind: Some("workflow_stub".to_string()),
+        finished_at: Some(finished_at.to_rfc3339()),
+        error_summary: error_summary.map(str::to_string),
+        error_type: error_summary.map(|_| "workflow_runtime_error".to_string()),
+        assistant_excerpt: (!assistant_output.is_empty())
+            .then(|| assistant_output.chars().take(2048).collect()),
+        total_tokens: None,
+        log_bytes_total: None,
+        log_bytes_persisted: None,
+        live_bytes_dropped: None,
+        log_truncated: Some(false),
+        log_capture_degraded: Some(false),
+        pruned_at: None,
+        prune_reason: None,
+    };
+    ChatRun::update_after_run_completion(
+        &db.pool,
+        record.run_id,
+        None,
+        ChatRunLogState::Tail,
+        false,
+        false,
+        serde_json::to_string(&retention_summary).ok(),
+    )
+    .await?;
+
+    Ok(())
+}
+
 pub async fn run_workflow_agent_prompt(
     db: &DBService,
     session: &ChatSession,
@@ -186,11 +334,25 @@ async fn run_workflow_agent_prompt_inner(
     )
     .await?;
 
+    let runtime_run_record = start_workflow_runtime_run_record(
+        db,
+        session,
+        session_agent,
+        &workspace_path,
+        prompt,
+        stream_context.as_ref(),
+    )
+    .await?;
+
     let repo_context = RepoContext::new(workspace_path.clone(), Vec::new());
     let mut env = ExecutionEnv::new(repo_context, false, String::new());
     env.insert("VK_WORKFLOW_SESSION_ID", session.id.to_string());
     env.insert("VK_WORKFLOW_AGENT_ID", agent.id.to_string());
     env.insert("VK_WORKFLOW_SESSION_AGENT_ID", session_agent.id.to_string());
+    if let Some(record) = runtime_run_record.as_ref() {
+        env.insert("VK_CHAT_RUN_ID", record.run_id.to_string());
+        env.insert("VK_WORKFLOW_RUN_ID", record.run_id.to_string());
+    }
     let (_effective_execution, mut executor) =
         build_effective_member_executor(agent, session_agent, &mut env)
             .map_err(|err| WorkflowRuntimeError::Io(std::io::Error::other(err.to_string())))?;
@@ -278,9 +440,22 @@ async fn run_workflow_agent_prompt_inner(
                 finish_workflow_runtime_stream(&msg_store, &mut workflow_stream_task).await;
                 finish_workflow_runtime_session_id_persistor(&mut session_id_task).await;
                 let history = msg_store.get_history();
-                return Err(WorkflowRuntimeError::Validation(
-                    workflow_executor_failure_message(&agent.name, "workflow 执行超时", &history),
-                ));
+                let message =
+                    workflow_executor_failure_message(&agent.name, "workflow 执行超时", &history);
+                let latest_assistant =
+                    extract_latest_assistant_from_history(&history).unwrap_or_default();
+                finish_workflow_runtime_run_record(
+                    db,
+                    session,
+                    agent,
+                    session_agent,
+                    &workspace_path,
+                    runtime_run_record.as_ref(),
+                    &latest_assistant,
+                    Some(&message),
+                )
+                .await?;
+                return Err(WorkflowRuntimeError::Validation(message));
             }
         }
 
@@ -291,6 +466,21 @@ async fn run_workflow_agent_prompt_inner(
                     clear_running_step(step_id);
                     finish_workflow_runtime_stream(&msg_store, &mut workflow_stream_task).await;
                     finish_workflow_runtime_session_id_persistor(&mut session_id_task).await;
+                    let history = msg_store.get_history();
+                    let latest_assistant =
+                        extract_latest_assistant_from_history(&history).unwrap_or_default();
+                    let message = err.to_string();
+                    finish_workflow_runtime_run_record(
+                        db,
+                        session,
+                        agent,
+                        session_agent,
+                        &workspace_path,
+                        runtime_run_record.as_ref(),
+                        &latest_assistant,
+                        Some(&message),
+                    )
+                    .await?;
                     return Err(WorkflowRuntimeError::Io(err));
                 }
                 Err(_) => terminate_child(&mut spawned).await,
@@ -308,17 +498,43 @@ async fn run_workflow_agent_prompt_inner(
     if interrupted {
         // Ensure the child is cleaned up.
         terminate_child(&mut spawned).await;
-        return Err(WorkflowRuntimeError::Interrupted(format!(
+        let history = msg_store.get_history();
+        let latest_assistant = extract_latest_assistant_from_history(&history).unwrap_or_default();
+        let message = format!(
             "workflow step 被中断：{}",
             agent.name
-        )));
+        );
+        finish_workflow_runtime_run_record(
+            db,
+            session,
+            agent,
+            session_agent,
+            &workspace_path,
+            runtime_run_record.as_ref(),
+            &latest_assistant,
+            Some(&message),
+        )
+        .await?;
+        return Err(WorkflowRuntimeError::Interrupted(message));
     }
 
     if failed_by_signal {
         let history = msg_store.get_history();
-        return Err(WorkflowRuntimeError::Validation(
-            workflow_executor_failure_message(&agent.name, "workflow 执行失败", &history),
-        ));
+        let message =
+            workflow_executor_failure_message(&agent.name, "workflow 执行失败", &history);
+        let latest_assistant = extract_latest_assistant_from_history(&history).unwrap_or_default();
+        finish_workflow_runtime_run_record(
+            db,
+            session,
+            agent,
+            session_agent,
+            &workspace_path,
+            runtime_run_record.as_ref(),
+            &latest_assistant,
+            Some(&message),
+        )
+        .await?;
+        return Err(WorkflowRuntimeError::Validation(message));
     }
 
     if let Some(exit_status) = status
@@ -326,15 +542,42 @@ async fn run_workflow_agent_prompt_inner(
     {
         // Check if the non-zero exit was caused by interrupt.
         if spawned.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
-            return Err(WorkflowRuntimeError::Interrupted(format!(
+            let history = msg_store.get_history();
+            let latest_assistant =
+                extract_latest_assistant_from_history(&history).unwrap_or_default();
+            let message = format!(
                 "workflow step 被中断：{}",
                 agent.name
-            )));
+            );
+            finish_workflow_runtime_run_record(
+                db,
+                session,
+                agent,
+                session_agent,
+                &workspace_path,
+                runtime_run_record.as_ref(),
+                &latest_assistant,
+                Some(&message),
+            )
+            .await?;
+            return Err(WorkflowRuntimeError::Interrupted(message));
         }
         let history = msg_store.get_history();
-        return Err(WorkflowRuntimeError::Validation(
-            workflow_executor_failure_message(&agent.name, "workflow 执行失败", &history),
-        ));
+        let message =
+            workflow_executor_failure_message(&agent.name, "workflow 执行失败", &history);
+        let latest_assistant = extract_latest_assistant_from_history(&history).unwrap_or_default();
+        finish_workflow_runtime_run_record(
+            db,
+            session,
+            agent,
+            session_agent,
+            &workspace_path,
+            runtime_run_record.as_ref(),
+            &latest_assistant,
+            Some(&message),
+        )
+        .await?;
+        return Err(WorkflowRuntimeError::Validation(message));
     }
 
     let history = msg_store.get_history();
@@ -350,16 +593,37 @@ async fn run_workflow_agent_prompt_inner(
         )
         .await?;
     }
-    extract_latest_assistant_from_history(&history).ok_or_else(|| {
-        WorkflowRuntimeError::Validation(
-            workflow_executor_failure_message(
-                &agent.name,
-                "workflow agent 没有返回 assistant 输出",
-                &history,
-            )
-            .to_string(),
+    let Some(latest_assistant) = extract_latest_assistant_from_history(&history) else {
+        let message = workflow_executor_failure_message(
+            &agent.name,
+            "workflow agent 没有返回 assistant 输出",
+            &history,
+        );
+        finish_workflow_runtime_run_record(
+            db,
+            session,
+            agent,
+            session_agent,
+            &workspace_path,
+            runtime_run_record.as_ref(),
+            "",
+            Some(&message),
         )
-    })
+        .await?;
+        return Err(WorkflowRuntimeError::Validation(message));
+    };
+    finish_workflow_runtime_run_record(
+        db,
+        session,
+        agent,
+        session_agent,
+        &workspace_path,
+        runtime_run_record.as_ref(),
+        &latest_assistant,
+        None,
+    )
+    .await?;
+    Ok(latest_assistant)
 }
 
 #[allow(clippy::too_many_arguments)]

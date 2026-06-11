@@ -29,6 +29,10 @@ import {
 import { ProjectBreadcrumbAvatar } from '@/components/ProjectBreadcrumbAvatar';
 import { AgentMarkdown } from '@/components/AgentMarkdown';
 import {
+  NotificationToast,
+  type NotificationToastTone,
+} from '@/components/NotificationToast';
+import {
   projectApi,
   projectGithubApi,
   projectWorkItemsApi,
@@ -36,6 +40,7 @@ import {
 import type {
   BackendChatSession,
   GitHubAccount,
+  ProjectRepoIntegration,
   ProjectWorkItem,
   ProjectWorkItemDetailResponse,
   ProjectWorkItemPriority,
@@ -76,6 +81,7 @@ export type IssueDetailPageProps = {
   linkedProviderId: RemoteProviderId | null;
   linkedRepoId?: string;
   linkedRepoName?: string;
+  linkedGitHubRepos?: ProjectRepoIntegration[];
   githubAccount?: GitHubAccount | null;
   onOpenIntegrations: () => void;
   tr: IssueDetailTranslator;
@@ -116,6 +122,13 @@ type SessionMenuOption = {
 export type IssueCommentAttachment = {
   name: string;
   size: number;
+};
+
+type IssueDetailSyncNotice = {
+  id: number;
+  title: string;
+  message: string;
+  tone: NotificationToastTone;
 };
 
 export const COMMON_GITHUB_LABELS = [
@@ -192,6 +205,7 @@ export function IssueDetailPage({
   linkedProviderId,
   linkedRepoId,
   linkedRepoName,
+  linkedGitHubRepos = [],
   githubAccount,
   onOpenIntegrations,
   tr,
@@ -205,7 +219,11 @@ export function IssueDetailPage({
   const [actionError, setActionError] = useState('');
   const [commentText, setCommentText] = useState('');
   const [descriptionDraft, setDescriptionDraft] = useState('');
-  const [descriptionEditing, setDescriptionEditing] = useState(false);  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [descriptionEditing, setDescriptionEditing] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [syncNotice, setSyncNotice] = useState<IssueDetailSyncNotice | null>(
+    null,
+  );
   const [labelDraft, setLabelDraft] = useState('');
   const [projectSessions, setProjectSessions] = useState<BackendChatSession[]>(
     [],
@@ -246,6 +264,14 @@ export function IssueDetailPage({
       setDetailLoading(false);
     }
   }, [issue.workItemId, projectId]);
+
+  useEffect(() => {
+    if (!syncNotice) return;
+    const timer = window.setTimeout(() => {
+      setSyncNotice(null);
+    }, 4200);
+    return () => window.clearTimeout(timer);
+  }, [syncNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -301,8 +327,17 @@ export function IssueDetailPage({
   const githubIssueLink = findGitHubIssueLink(detail);
   const linkedGitHubIssueNumber =
     githubIssueLink?.number ?? githubIssue?.summary.number ?? null;
-  const canWriteGitHub = Boolean(linkedRepoId && linkedGitHubIssueNumber);
-  const canSyncActivity = Boolean(linkedRepoId && linkedGitHubIssueNumber);
+  const hasGitHubIssue = Boolean(githubIssueLink || githubIssue);
+  const issueRepoIntegrationId = findIssueRepoIntegrationId(
+    linkedGitHubRepos,
+    githubIssueLink?.repo_id,
+    githubIssue?.summary?.url ?? githubIssueLink?.url,
+  );
+  const targetRepoIntegrationId = hasGitHubIssue
+    ? issueRepoIntegrationId
+    : linkedRepoId;
+  const canWriteGitHub = Boolean(targetRepoIntegrationId && linkedGitHubIssueNumber);
+  const canSyncActivity = Boolean(targetRepoIntegrationId && linkedGitHubIssueNumber);
   const issueTitle = githubIssue?.summary.title ?? current.title;
   const issueBody = githubIssue?.body ?? current.description;
   const issueComments = githubIssue?.comments ?? [];
@@ -314,7 +349,6 @@ export function IssueDetailPage({
     () => githubIssue?.summary.labels ?? localIssueLabels,
     [githubIssue?.summary.labels, localIssueLabels],
   );
-  const hasGitHubIssue = Boolean(githubIssueLink || githubIssue);
   const canEditLabels = !hasGitHubIssue || canWriteGitHub;
   const issueBodyText = issueBody ?? '';
   const issueLabelKey = issueLabels.join('\u0000');
@@ -378,6 +412,19 @@ export function IssueDetailPage({
     }
   };
 
+  const showSyncNotice = (
+    title: string,
+    message: string,
+    tone: NotificationToastTone = 'success',
+  ) => {
+    setSyncNotice({
+      id: Date.now(),
+      title,
+      message,
+      tone,
+    });
+  };
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     setSelectedFiles(files);
@@ -387,7 +434,7 @@ export function IssueDetailPage({
   };
 
   const handleSubmitDescription = async () => {
-    if (!linkedRepoId || !linkedGitHubIssueNumber) {
+    if (!targetRepoIntegrationId || !linkedGitHubIssueNumber) {
       onAction('Connect a GitHub issue to sync description');
       return;
     }
@@ -395,7 +442,7 @@ export function IssueDetailPage({
       const body = descriptionDraft;
       const summary = await projectGithubApi.updateIssueBody(
         projectId,
-        linkedRepoId,
+        targetRepoIntegrationId,
         linkedGitHubIssueNumber,
         body,
       );
@@ -416,6 +463,11 @@ export function IssueDetailPage({
       );
       patchCurrentWorkItem(updated);
       onAction('Description synced to GitHub');
+      showSyncNotice(
+        'GitHub sync complete',
+        'Description synced to GitHub.',
+        'success',
+      );
     });
   };
 
@@ -453,14 +505,14 @@ export function IssueDetailPage({
   };
 
   const handleSyncActivity = async () => {
-    if (!linkedRepoId || !linkedGitHubIssueNumber) {
+    if (!targetRepoIntegrationId || !linkedGitHubIssueNumber) {
       onAction('Connect a GitHub issue to sync activity');
       return;
     }
     await runAction('activity-sync', async () => {
       const githubDetail = await projectGithubApi.refreshIssue(
         projectId,
-        linkedRepoId,
+        targetRepoIntegrationId,
         linkedGitHubIssueNumber,
       );
       setDetail((existing) =>
@@ -469,16 +521,21 @@ export function IssueDetailPage({
           : existing,
       );
       onAction('Activity synced from GitHub');
+      showSyncNotice(
+        'GitHub sync complete',
+        'Activity synced from GitHub.',
+        'success',
+      );
     });
   };
 
   const handleSubmitComment = async () => {
     const body = composeIssueCommentBody(commentText, selectedFiles);
-    if (!body || !linkedRepoId || !linkedGitHubIssueNumber) return;
+    if (!body || !targetRepoIntegrationId || !linkedGitHubIssueNumber) return;
     await runAction('comment', async () => {
       await projectGithubApi.commentIssue(
         projectId,
-        linkedRepoId,
+        targetRepoIntegrationId,
         linkedGitHubIssueNumber,
         body,
       );
@@ -487,7 +544,7 @@ export function IssueDetailPage({
       if (fileInputRef.current) fileInputRef.current.value = '';
       const githubDetail = await projectGithubApi.refreshIssue(
         projectId,
-        linkedRepoId,
+        targetRepoIntegrationId,
         linkedGitHubIssueNumber,
       );
       setDetail((existing) =>
@@ -496,16 +553,21 @@ export function IssueDetailPage({
           : existing,
       );
       onAction('Comment synced to GitHub');
+      showSyncNotice(
+        'GitHub sync complete',
+        'Comment synced to GitHub.',
+        'success',
+      );
     });
   };
 
   const handleStatusChange = async (nextStatus: IssueDetailStatus) => {
     if (nextStatus === issueStatus) return;
     await runAction(`status-${nextStatus}`, async () => {
-      if (linkedRepoId && linkedGitHubIssueNumber) {
+      if (targetRepoIntegrationId && linkedGitHubIssueNumber) {
         const githubSummary = await projectGithubApi.updateIssueState(
           projectId,
-          linkedRepoId,
+          targetRepoIntegrationId,
           linkedGitHubIssueNumber,
           issueStatusSyncsToClosed(nextStatus) ? 'closed' : 'open',
         );
@@ -562,10 +624,10 @@ export function IssueDetailPage({
   const handleSaveLabels = async (labels: string[]) => {
     await runAction('labels', async () => {
       if (hasGitHubIssue) {
-        if (!linkedRepoId || !linkedGitHubIssueNumber) return;
+        if (!targetRepoIntegrationId || !linkedGitHubIssueNumber) return;
         const nextLabels = await projectGithubApi.updateIssueLabels(
           projectId,
-          linkedRepoId,
+          targetRepoIntegrationId,
           linkedGitHubIssueNumber,
           labels,
         );
@@ -761,6 +823,15 @@ export function IssueDetailPage({
 
   return (
     <>
+      {syncNotice && (
+        <NotificationToast
+          key={syncNotice.id}
+          title={syncNotice.title}
+          message={syncNotice.message}
+          tone={syncNotice.tone}
+          onClose={() => setSyncNotice(null)}
+        />
+      )}
       <IssueDetailHeader
         issue={{ ...issue, title: issueTitle, status: issueStatus }}
         projectName={projectName}
@@ -2366,6 +2437,33 @@ export function findGitHubIssueLink(
       (link) =>
         link.provider === 'github' && link.external_type === 'github_issue',
     ) ?? null
+  );
+}
+
+function findIssueRepoIntegrationId(
+  repos: ProjectRepoIntegration[],
+  repoId: string | null | undefined,
+  issueUrl?: string | null,
+) {
+  if (repoId) {
+    const directMatch =
+      repos.find((repo) => repo.repo_id === repoId && repo.sync_status === 'connected')
+        ?.id ?? null;
+    if (directMatch) return directMatch;
+  }
+
+  if (!issueUrl) return null;
+  const match = issueUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\//i);
+  if (!match) return null;
+  const [, owner, repoName] = match;
+  const cleanRepoName = repoName.replace(/\.git$/i, '');
+  return (
+    repos.find(
+      (repo) =>
+        repo.owner === owner &&
+        repo.name === cleanRepoName &&
+        repo.sync_status === 'connected',
+    )?.id ?? null
   );
 }
 

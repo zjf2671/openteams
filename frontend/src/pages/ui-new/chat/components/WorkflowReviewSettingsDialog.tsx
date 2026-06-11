@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bell, Crown, Hand, X, type LucideIcon } from 'lucide-react';
+import { Bell, Command, User, X, type LucideIcon } from 'lucide-react';
 import type { WorkflowCardData } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -63,7 +63,7 @@ function buildReviewSettingsDraft(
   ] as Array<[string, { leadReview: boolean; userReview: boolean }]>);
 }
 
-function ReviewSwitch({
+function ReviewToggleTag({
   icon: Icon,
   label,
   tooltip,
@@ -81,45 +81,31 @@ function ReviewSwitch({
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={checked}
+      aria-pressed={checked}
       disabled={disabled}
       onClick={() => {
         if (!disabled) onChange(!checked);
       }}
       className={cn(
-        'group relative flex h-9 items-center justify-between gap-2 rounded-lg border px-2.5 text-left transition-all',
+        'group relative flex h-7 min-w-[58px] items-center justify-center gap-1.5 rounded border px-2 text-left text-[11px] font-semibold transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5e6ad2]/40',
         checked
-          ? 'border-[#5094fb]/30 bg-[#5094fb]/5'
-          : 'border-slate-100 bg-white hover:border-slate-200 hover:bg-slate-50',
-        disabled && 'cursor-not-allowed opacity-50 hover:bg-white'
+          ? 'border-white/[0.14] bg-white/[0.07] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_0_0_1px_rgba(94,106,210,0.08)]'
+          : 'border-transparent bg-transparent text-white/30 hover:border-white/[0.08] hover:bg-white/[0.03] hover:text-white/55',
+        disabled &&
+          'cursor-not-allowed opacity-45 hover:border-transparent hover:bg-transparent hover:text-white/30'
       )}
     >
-      <span className="flex min-w-0 items-center gap-1.5">
+      <span className="flex min-w-0 items-center justify-center gap-1.5">
         <Icon
           className={cn(
             'h-3.5 w-3.5 shrink-0',
-            checked ? 'text-[#5094fb]' : 'text-slate-400'
+            checked ? 'text-[#828fff]' : 'text-current'
           )}
+          strokeWidth={1.5}
         />
-        <span className="truncate text-xs font-semibold text-slate-700">
-          {label}
-        </span>
+        <span className="truncate">{label}</span>
       </span>
-      <span
-        className={cn(
-          'relative h-4 w-7 shrink-0 rounded-full transition-colors',
-          checked ? 'bg-[#5094fb]' : 'bg-slate-200'
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
-            checked ? 'translate-x-3.5' : 'translate-x-0.5'
-          )}
-        />
-      </span>
-      <span className="pointer-events-none absolute left-0 top-full z-[90] mt-1 hidden max-w-[240px] rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium leading-4 text-slate-900 shadow-lg group-hover:block">
+      <span className="pointer-events-none absolute left-0 top-full z-[90] mt-1 hidden max-w-[240px] rounded-md border border-white/[0.08] bg-[#111214] px-2.5 py-1.5 text-xs font-medium leading-4 text-white shadow-[0_12px_28px_rgba(0,0,0,0.32)] group-hover:block">
         {tooltip}
       </span>
     </button>
@@ -155,7 +141,7 @@ function ReviewSettingTooltipText({
       {showTooltip && (
         <div
           className={cn(
-            'pointer-events-none absolute left-0 top-full z-[90] mt-1 max-w-[320px] rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium leading-4 text-slate-900 shadow-lg',
+            'pointer-events-none absolute left-0 top-full z-[90] mt-1 max-w-[320px] rounded-md border border-white/[0.08] bg-[#111214] px-2.5 py-1.5 text-xs font-medium leading-4 text-white shadow-[0_12px_28px_rgba(0,0,0,0.32)]',
             tooltipClassName
           )}
         >
@@ -208,7 +194,7 @@ export function WorkflowReviewSettingsDialog({
           const step = stepByKey.get(node.id);
           return {
             stepId: node.id,
-            title: step?.title ?? node.data.title,
+            title: step?.title ?? node.data.title ?? node.id,
             leadReview: step?.lead_review_required ?? true,
             userReview: step?.user_review_required ?? true,
           };
@@ -222,11 +208,11 @@ export function WorkflowReviewSettingsDialog({
         const reviewStep = stepById.get(workflowLoop.review_step_id);
         if (!reviewStep) return [];
         const reviewNode = planNodeById.get(reviewStep.step_key);
+        const reviewStepTitle = reviewStep.title ?? reviewStep.step_key;
         return {
           stepId: reviewStep.step_key,
           title:
-            workflowLoop.loop_key || reviewNode?.data.title || reviewStep.title,
-          description: `${workflowLoop.member_step_ids.length} tasks / review step: ${reviewStep.title}`,
+            workflowLoop.loop_key || reviewNode?.data.title || reviewStepTitle,
           userReview: workflowLoop.user_review_required,
         };
       }),
@@ -311,21 +297,21 @@ export function WorkflowReviewSettingsDialog({
   const content = (
     <div
       className={cn(
-        'workflow-review-settings-dialog overflow-hidden rounded-xl border border-slate-100/70 bg-white shadow-xl',
+        "workflow-review-settings-dialog relative overflow-hidden rounded-[10px] border border-white/[0.10] bg-[#0f1011]/95 shadow-[0_24px_80px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.12)] before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.32),transparent)] before:content-['']",
         variant === 'panel'
           ? 'flex w-[400px] flex-col'
           : 'w-full max-w-[440px]',
         className
       )}
     >
-      <div className="flex items-start justify-between border-b border-slate-100 bg-slate-50 px-5 py-4">
-        <div className="pr-4">
-          <div className="mb-1 text-sm font-semibold text-slate-900">
+      <div className="flex items-start justify-between border-b border-white/[0.08] bg-white/[0.025] px-5 py-4">
+        <div className="pl-1.5 pr-4">
+          <div className="mb-1 text-sm font-semibold text-[#f4f4f5]">
             {t('workflow.reviewSettings.title', {
               defaultValue: 'Review Settings',
             })}
           </div>
-          <div className="text-xs leading-relaxed text-slate-500">
+          <div className="text-xs leading-relaxed text-[#a1a1aa]">
             {t('workflow.reviewSettings.description', {
               defaultValue: 'Choose who should review each workflow result.',
             })}
@@ -335,30 +321,30 @@ export function WorkflowReviewSettingsDialog({
           type="button"
           onClick={onClose}
           disabled={isSubmitting}
-          className="mt-0.5 shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-0.5 shrink-0 rounded-md p-1.5 text-white/35 transition-colors hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
           aria-label={t('workflow.reviewSettings.close', {
             defaultValue: 'Close review settings',
           })}
         >
-          <X className="h-4 w-4" />
+          <X className="h-4 w-4" strokeWidth={1.5} />
         </button>
       </div>
       <div className="flex max-h-[500px] flex-col gap-6 overflow-y-auto p-4">
         {taskReviewSettingsRows.length > 0 && (
           <div>
             <div className="mb-3 flex items-center justify-between">
-              <div className="text-xs font-semibold uppercase tracking-wider text-slate-800">
+              <div className="font-mono text-[10px] font-medium uppercase tracking-[0.09em] text-white/70">
                 {t('workflow.reviewSettings.taskSteps', {
                   defaultValue: 'Task Steps',
                 })}
               </div>
-              <div className="text-[11px] text-slate-500">
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em] text-white/35">
                 {t('workflow.reviewSettings.leadUserReview', {
                   defaultValue: 'Lead / User review',
                 })}
               </div>
             </div>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col">
               {taskReviewSettingsRows.map((row) => {
                 const draft = reviewSettingsDraft[row.stepId] ?? {
                   leadReview: row.leadReview,
@@ -368,15 +354,15 @@ export function WorkflowReviewSettingsDialog({
                 return (
                   <div
                     key={row.stepId}
-                    className="flex flex-col gap-2.5 rounded-lg border border-slate-100 bg-white p-3"
+                    className="flex items-center justify-between gap-4 border-b border-dashed border-white/[0.04] py-3.5 last:border-b-0"
                   >
                     <ReviewSettingTooltipText
                       text={row.title}
-                      className="truncate text-sm font-semibold text-slate-800"
+                      className="truncate text-sm font-medium text-[#E2E8F0]"
                     />
-                    <div className="grid grid-cols-2 gap-2">
-                      <ReviewSwitch
-                        icon={Crown}
+                    <div className="flex shrink-0 flex-row items-center justify-end gap-1.5">
+                      <ReviewToggleTag
+                        icon={Command}
                         label={t('workflow.reviewSettings.leadLabel', {
                           defaultValue: 'Lead',
                         })}
@@ -401,8 +387,8 @@ export function WorkflowReviewSettingsDialog({
                           )
                         }
                       />
-                      <ReviewSwitch
-                        icon={Hand}
+                      <ReviewToggleTag
+                        icon={User}
                         label={t('workflow.reviewSettings.userLabel', {
                           defaultValue: 'User',
                         })}
@@ -438,18 +424,18 @@ export function WorkflowReviewSettingsDialog({
         {loopReviewSettingsRows.length > 0 && (
           <div>
             <div className="mb-3 flex items-center justify-between">
-              <div className="text-xs font-semibold uppercase tracking-wider text-slate-800">
+              <div className="font-mono text-[10px] font-medium uppercase tracking-[0.09em] text-white/70">
                 {t('workflow.reviewSettings.workflowLoops', {
                   defaultValue: 'Workflow Loops',
                 })}
               </div>
-              <div className="text-[11px] text-slate-500">
+              <div className="font-mono text-[10px] uppercase tracking-[0.09em] text-white/35">
                 {t('workflow.reviewSettings.userReviewOnly', {
                   defaultValue: 'User review only',
                 })}
               </div>
             </div>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col">
               {loopReviewSettingsRows.map((row) => {
                 const draft = reviewSettingsDraft[row.stepId] ?? {
                   leadReview: false,
@@ -459,22 +445,16 @@ export function WorkflowReviewSettingsDialog({
                 return (
                   <div
                     key={row.stepId}
-                    className="flex flex-col gap-2.5 rounded-lg border border-slate-100 bg-white p-3"
+                    className="flex items-center justify-between gap-4 border-b border-dashed border-white/[0.04] py-3.5 last:border-b-0"
                   >
-                    <div>
-                      <ReviewSettingTooltipText
-                        text={row.title}
-                        className="truncate text-sm font-semibold text-slate-800"
-                      />
-                      <ReviewSettingTooltipText
-                        text={row.description}
-                        className="mt-0.5 line-clamp-2 text-[11px] text-slate-400"
-                        tooltipClassName="max-w-[340px]"
-                      />
-                    </div>
-                    <div className="grid grid-cols-1 gap-2">
-                      <ReviewSwitch
-                        icon={Hand}
+                    <ReviewSettingTooltipText
+                      text={row.title}
+                      className="truncate text-sm font-medium text-[#E2E8F0]"
+                      tooltipClassName="max-w-[340px]"
+                    />
+                    <div className="flex shrink-0 flex-row items-center justify-end gap-1.5">
+                      <ReviewToggleTag
+                        icon={User}
                         label={t('workflow.reviewSettings.userLabel', {
                           defaultValue: 'User',
                         })}
@@ -508,17 +488,17 @@ export function WorkflowReviewSettingsDialog({
         )}
       </div>
       {error && (
-        <div className="mx-5 mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 shadow-sm">
-          <Bell className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div className="mx-5 mb-3 flex items-start gap-2 rounded-md border border-[#5e6ad2]/30 bg-[#5e6ad2]/10 px-3 py-2 text-xs leading-5 text-[#c7d2fe]">
+          <Bell className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
           <span>{error}</span>
         </div>
       )}
-      <div className="flex justify-end gap-2 border-t border-slate-100 bg-white px-5 py-4">
+      <div className="flex justify-end gap-2 border-t border-white/[0.08] bg-white/[0.025] px-5 py-4">
         <button
           type="button"
           onClick={onClose}
           disabled={isSubmitting}
-          className="rounded-md border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md border border-white/[0.10] bg-transparent px-4 py-2 text-xs font-semibold text-white/55 transition-colors hover:border-white/[0.18] hover:bg-white/[0.04] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t('workflow.reviewSettings.cancel', {
             defaultValue: 'Cancel',
@@ -530,7 +510,7 @@ export function WorkflowReviewSettingsDialog({
             void handleSubmit();
           }}
           disabled={disabled || isSubmitting}
-          className="rounded-md bg-[#5094fb] px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#4080e0] disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md bg-[linear-gradient(180deg,#828fff,#5e6ad2)] px-4 py-2 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_10px_24px_rgba(94,106,210,0.22)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? submittingLabel : submitLabel}
         </button>
@@ -543,7 +523,7 @@ export function WorkflowReviewSettingsDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/35 p-4">
+    <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]">
       {content}
     </div>
   );

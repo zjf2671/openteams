@@ -14,6 +14,7 @@ use db::{
     models::{
         chat_agent::ChatAgent,
         chat_message::{ChatMessage, ChatSenderType},
+        chat_run::{ChatRun, ChatRunLogState, ChatRunRetentionSummary, CreateChatRun},
         chat_session::ChatSession,
         chat_session_agent::ChatSessionAgent,
         workflow_agent_session::WorkflowAgentSession,
@@ -60,7 +61,14 @@ use super::{
     chat_runner::{ChatRunner, ChatStreamDeltaType},
     config::UiLanguage,
 };
-use crate::services::member_execution::build_effective_member_executor;
+use crate::services::{
+    member_execution::build_effective_member_executor,
+    workspace_change_capture::{
+        WorkspaceChangeBaseline, build_git_observed_path_records,
+        capture_workspace_change_baseline, capture_workspace_change_delta, run_records_prefix,
+        workspace_run_records_dir,
+    },
+};
 
 include!("dependencies.rs");
 include!("types.rs");

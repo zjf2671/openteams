@@ -49,5 +49,6 @@ pub use workflow::{
     workflow_analytics, workflow_compiler, workflow_iteration, workflow_loop_executor,
     workflow_orchestrator, workflow_review, workflow_runtime, workflow_validator,
 };
+pub mod workspace_change_capture;
 pub mod workspace_manager;
 pub mod worktree_manager;

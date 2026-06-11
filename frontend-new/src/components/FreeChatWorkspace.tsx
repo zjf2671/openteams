@@ -3,6 +3,7 @@ import React, {
   useRef,
   useEffect,
   useMemo,
+  useCallback,
   useLayoutEffect,
 } from "react";
 import { useWorkspace } from "@/context/WorkspaceContext";
@@ -26,11 +27,24 @@ import {
   Paperclip,
   Image as ImageIcon,
   FileText,
+  RefreshCw,
 } from "lucide-react";
 import { ResourceStateNotice } from "@/components/ResourceState";
 import { ScrollArea } from "@/components/ScrollArea";
 import { AgentMessageContent } from "@/components/AgentMessageContent";
 import { chatMessagesApi, sessionAgentsApi, projectWorkItemsApi } from "@/lib/api";
+import {
+  ISSUE_NAVIGATION_EVENT,
+  type IssueNavigationTarget,
+} from "@/lib/issueNavigation";
+import {
+  flattenWorkspaceChanges,
+  hasRelatedFileDiff,
+  type RelatedFileChange,
+  type RelatedFileStatus,
+} from "@/lib/sessionWorkspaceChanges";
+import { openFileInVSCode } from "@/vscode/bridge";
+import { PriorityMenuIcon } from "@/pages/IssueDetailPage";
 import type { ChatAttachment, Member, QuotedMessageReference, ProjectWorkItem } from "@/types";
 
 interface FreeChatWorkspaceProps {
@@ -43,21 +57,11 @@ interface FreeChatWorkspaceProps {
   ) => void;
 }
 
-type RelatedFileStatus = "M" | "A" | "D";
-
-interface RelatedFileChange {
-  path: string;
-  status: RelatedFileStatus;
-  additions?: number;
-  deletions?: number;
-  unified_diff?: string | null;
-  has_diff?: boolean;
-}
-
 const statusTextTone: Record<RelatedFileStatus, string> = {
   M: "text-amber-600",
   A: "text-emerald-600",
   D: "text-rose-500",
+  U: "text-sky-500",
 };
 
 const hasLineStat = (value?: number) => typeof value === "number" && value > 0;
@@ -272,67 +276,206 @@ function SessionMemberAvatar({ member }: { member: Member }) {
   );
 }
 
-const workItemStatusConfig: Record<
-  string,
-  { dot: string; label: string }
-> = {
-  open: { dot: "bg-[#d9d9de]", label: "待办" },
-  in_progress: { dot: "bg-[#f0c400]", label: "进行中" },
-  blocked: { dot: "bg-[#f97316]", label: "阻塞" },
-  ready_to_merge: { dot: "bg-[#4fc38b]", label: "待合并" },
-  merging: { dot: "bg-[#4fc38b]", label: "合并中" },
-  done: { dot: "bg-[#6671e8]", label: "已完成" },
-  cancelled: { dot: "bg-[#acbac8]", label: "已取消" },
-  duplicate: { dot: "bg-[#acbac8]", label: "重复" },
+type LinkedWorkItemIssueStatus =
+  | "todo"
+  | "in_progress"
+  | "backlog"
+  | "ready_to_merge"
+  | "merging"
+  | "done"
+  | "cancelled"
+  | "duplicate";
+
+const linkedWorkItemStatusLabel: Record<LinkedWorkItemIssueStatus, string> = {
+  todo: "Todo",
+  in_progress: "In Progress",
+  backlog: "Backlog",
+  ready_to_merge: "Ready To Merge",
+  merging: "Merging",
+  done: "Done",
+  cancelled: "Canceled",
+  duplicate: "Duplicate",
 };
 
-function parseWorkItemLabels(labelsJson?: string | null): string[] {
-  if (!labelsJson) return [];
-  try {
-    const parsed: unknown = JSON.parse(labelsJson);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((label): label is string => typeof label === "string")
-      .map((label) => label.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function LinkedWorkItemRow({ item }: { item: ProjectWorkItem }) {
-  const statusCfg = workItemStatusConfig[item.status] ?? {
-    dot: "bg-[#d9d9de]",
-    label: item.status,
-  };
-  const labels = parseWorkItemLabels(item.labels_json);
+function LinkedWorkItemRow({
+  item,
+  onOpen,
+}: {
+  item: ProjectWorkItem;
+  onOpen: (item: ProjectWorkItem) => void;
+}) {
+  const issueStatus = linkedWorkItemIssueStatus(item.status);
+  const statusLabel =
+    linkedWorkItemStatusLabel[issueStatus] ?? titleCaseStatus(item.status);
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-1 rounded-md bg-[var(--surface-1)] px-2 py-1.5 text-[13px]">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span
-          className={`h-2 w-2 shrink-0 rounded-full ${statusCfg.dot}`}
-          aria-hidden="true"
-        />
-        <span className="min-w-0 flex-1 truncate text-[var(--ink)]">
-          {item.title}
-        </span>
-      </div>
-      <div className="flex min-w-0 flex-wrap items-center gap-1 pl-3.5">
-        <span className="shrink-0 rounded bg-[var(--surface-3)] px-1.5 py-0.5 text-[11px] text-[var(--ink-tertiary)]">
-          {statusCfg.label}
-        </span>
-        {labels.map((label) => (
-          <span
-            key={label}
-            className="shrink-0 truncate rounded bg-[var(--primary)]/10 px-1.5 py-0.5 text-[11px] text-[var(--primary)]"
-          >
-            {label}
-          </span>
-        ))}
-      </div>
-    </div>
+    <button
+      type="button"
+      onClick={() => onOpen(item)}
+      className="flex w-full min-w-0 items-center gap-1.5 rounded-md bg-[var(--surface-1)] px-2 py-1.5 text-left text-[13px] transition hover:bg-[var(--surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
+      aria-label={`Open issue ${item.title}`}
+    >
+      <PriorityMenuIcon
+        priority={item.priority}
+        selected={item.priority === "urgent"}
+      />
+      <span className="min-w-0 flex-1 truncate text-[var(--ink)]">
+        {item.title}
+      </span>
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-[var(--ink-tertiary)]">
+        <LinkedWorkItemStatusIcon status={issueStatus} />
+        {statusLabel}
+      </span>
+    </button>
   );
+}
+
+function linkedWorkItemIssueStatus(
+  status: ProjectWorkItem["status"],
+): LinkedWorkItemIssueStatus {
+  if (status === "open") return "todo";
+  if (status === "blocked") return "backlog";
+  return status as LinkedWorkItemIssueStatus;
+}
+
+function LinkedWorkItemStatusIcon({
+  status,
+}: {
+  status: LinkedWorkItemIssueStatus;
+}) {
+  const dimension = 13;
+  const borderWidth = 1.7;
+  const iconSizeStyle = { height: dimension, width: dimension };
+
+  if (status === "backlog") {
+    return (
+      <span
+        aria-hidden="true"
+        className="shrink-0 rounded-full"
+        style={{
+          ...iconSizeStyle,
+          background:
+            "repeating-conic-gradient(#a9aab0 0deg 13deg, transparent 13deg 30deg)",
+          WebkitMask: `radial-gradient(farthest-side, transparent calc(100% - ${
+            borderWidth * 2
+          }px), #000 calc(100% - ${borderWidth}px))`,
+          mask: `radial-gradient(farthest-side, transparent calc(100% - ${
+            borderWidth * 2
+          }px), #000 calc(100% - ${borderWidth}px))`,
+        }}
+      />
+    );
+  }
+
+  if (status === "todo") {
+    return (
+      <span
+        aria-hidden="true"
+        className="shrink-0 rounded-full border-[#d9d9de]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      />
+    );
+  }
+
+  if (status === "in_progress") {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative shrink-0 rounded-full border-[#f0c400]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      >
+        <span
+          className="absolute left-1/2 top-[2.5px] -translate-x-1/2 rounded-full bg-[#f0c400]"
+          style={{ height: dimension * 0.32, width: borderWidth }}
+        />
+        <span
+          className="absolute left-1/2 top-1/2 -translate-y-1/2 rounded-full bg-[#f0c400]"
+          style={{ height: borderWidth, width: dimension * 0.32 }}
+        />
+      </span>
+    );
+  }
+
+  if (status === "ready_to_merge") {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative shrink-0 overflow-hidden rounded-full border-[#4fc38b]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      >
+        <span
+          className="absolute rounded-r-full bg-[#4fc38b]"
+          style={{
+            bottom: borderWidth,
+            right: borderWidth,
+            top: borderWidth,
+            width: dimension * 0.29,
+          }}
+        />
+      </span>
+    );
+  }
+
+  if (status === "merging") {
+    return (
+      <span
+        aria-hidden="true"
+        className="relative shrink-0 rounded-full border-[#4fc38b]"
+        style={{ ...iconSizeStyle, borderWidth }}
+      >
+        <span
+          className="absolute rounded-full border-l-[#4fc38b] border-t-[#4fc38b]"
+          style={{
+            borderLeftWidth: borderWidth * 1.6,
+            borderTopWidth: borderWidth * 1.6,
+            height: dimension * 0.48,
+            left: dimension * 0.19,
+            top: dimension * 0.16,
+            width: dimension * 0.48,
+          }}
+        />
+      </span>
+    );
+  }
+
+  if (status === "done") {
+    return (
+      <span
+        className="flex shrink-0 items-center justify-center rounded-full bg-[#6671e8] text-[#141519]"
+        style={iconSizeStyle}
+      >
+        <Check
+          aria-hidden="true"
+          className="h-[9px] w-[9px]"
+          strokeWidth={3.2}
+        />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      aria-hidden="true"
+      className="relative flex shrink-0 items-center justify-center rounded-full bg-[#acbac8]"
+      style={iconSizeStyle}
+    >
+      <span
+        className="absolute rotate-45 rounded-full bg-white"
+        style={{ height: borderWidth, width: dimension * 0.46 }}
+      />
+      <span
+        className="absolute -rotate-45 rounded-full bg-white"
+        style={{ height: borderWidth, width: dimension * 0.46 }}
+      />
+    </span>
+  );
+}
+
+function titleCaseStatus(status: string) {
+  return status
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
@@ -360,6 +503,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     chatMessageFontSize,
     workspaceChangesAsync,
     refreshWorkspaceChanges,
+    resetWorkspaceChanges,
     projects,
     selectedProjectId,
   } = useWorkspace();
@@ -396,48 +540,10 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const memberRailRef = useRef<HTMLDivElement>(null);
   const copiedResetTimerRef = useRef<number | null>(null);
-  const relatedFileChanges = useMemo((): RelatedFileChange[] => {
-    const changes = workspaceChangesAsync.data?.changes;
-    if (!changes) return [];
-    return [
-      ...changes.modified.map(
-        (file): RelatedFileChange => ({
-          path: file.path,
-          status: "M",
-          additions: file.additions,
-          deletions: file.deletions,
-          unified_diff: file.unified_diff,
-          has_diff: file.has_diff,
-        }),
-      ),
-      ...changes.added.map(
-        (file): RelatedFileChange => ({
-          path: file.path,
-          status: "A",
-          additions: file.additions,
-          deletions: file.deletions,
-          unified_diff: file.unified_diff,
-          has_diff: file.has_diff,
-        }),
-      ),
-      ...changes.untracked.map(
-        (file): RelatedFileChange => ({
-          path: file.path,
-          status: "A",
-          additions: file.additions,
-          deletions: file.deletions,
-          unified_diff: file.unified_diff,
-          has_diff: file.has_diff,
-        }),
-      ),
-      ...changes.deleted.map(
-        (file): RelatedFileChange => ({
-          path: file.path,
-          status: "D",
-        }),
-      ),
-    ];
-  }, [workspaceChangesAsync.data]);
+  const relatedFileChanges = useMemo(
+    () => flattenWorkspaceChanges(workspaceChangesAsync.data),
+    [workspaceChangesAsync.data],
+  );
   const sidebarMembers = members;
   const visibleSidebarMemberCount = getVisibleSidebarMemberCount(
     sidebarMembers.length,
@@ -653,13 +759,29 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     setStoppingSessionAgentIds(new Set());
   }, [activeSessionId]);
 
-  useEffect(() => {
-    if (!activeSessionId) return;
+  const reloadRelatedFiles = useCallback(() => {
+    if (!activeSessionId) {
+      resetWorkspaceChanges();
+      return;
+    }
     const project = projects.find((p) => p.id === selectedProjectId);
     const workspacePath = project?.default_workspace_path;
-    if (!workspacePath) return;
+    if (!workspacePath) {
+      resetWorkspaceChanges();
+      return;
+    }
     void refreshWorkspaceChanges(activeSessionId, workspacePath, true);
-  }, [activeSessionId, projects, selectedProjectId, refreshWorkspaceChanges]);
+  }, [
+    activeSessionId,
+    projects,
+    selectedProjectId,
+    refreshWorkspaceChanges,
+    resetWorkspaceChanges,
+  ]);
+
+  useEffect(() => {
+    reloadRelatedFiles();
+  }, [reloadRelatedFiles]);
 
   useEffect(() => {
     if (!activeSessionId || !selectedProjectId) {
@@ -690,6 +812,21 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
       cancelled = true;
     };
   }, [activeSessionId, selectedProjectId]);
+
+  const handleOpenLinkedWorkItem = (item: ProjectWorkItem) => {
+    if (!selectedProjectId) return;
+
+    const target: IssueNavigationTarget = {
+      projectId: selectedProjectId,
+      workItemId: item.id,
+    };
+
+    window.dispatchEvent(
+      new CustomEvent<IssueNavigationTarget>(ISSUE_NAVIGATION_EVENT, {
+        detail: target,
+      }),
+    );
+  };
 
   const summarizeMessage = (text: string) => {
     const normalized = text.trim().replace(/\s+/g, " ");
@@ -967,16 +1104,18 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   };
 
   const handleRelatedFileClick = (file: RelatedFileChange) => {
-    if (!onOpenDiffTab) {
-      showToast(t("diffPreviewToast", { path: file.path }));
+    if (hasRelatedFileDiff(file) && onOpenDiffTab) {
+      onOpenDiffTab(
+        activeSessionId,
+        file.path,
+        file.status,
+        file.unified_diff ?? "",
+      );
       return;
     }
-    onOpenDiffTab(
-      activeSessionId,
-      file.path,
-      file.status,
-      file.unified_diff ?? "",
-    );
+
+    openFileInVSCode(file.path, { openAsDiff: false });
+    showToast(t("relatedFiles.noDiffOpenFile"));
   };
 
   const handleRelatedFilesResizeStart = (
@@ -1751,7 +1890,11 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                 linkedWorkItems.length > 0 && (
                   <div className="space-y-1">
                     {linkedWorkItems.map((item) => (
-                      <LinkedWorkItemRow key={item.id} item={item} />
+                      <LinkedWorkItemRow
+                        key={item.id}
+                        item={item}
+                        onOpen={handleOpenLinkedWorkItem}
+                      />
                     ))}
                   </div>
                 )}
@@ -1761,9 +1904,25 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
               <h2 className="text-[14px] font-semibold text-[var(--ink)]">
                 {t("relatedFiles.title")}
               </h2>
-              <span className="rounded-full bg-[var(--surface-3)] px-2 py-0.5 font-mono text-[13px] text-[var(--ink-tertiary)]">
-                {relatedFileChanges.length}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={reloadRelatedFiles}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+                  title={t("relatedFiles.refresh")}
+                  aria-label={t("relatedFiles.refresh")}
+                >
+                  <RefreshCw
+                    aria-hidden="true"
+                    className={`h-3.5 w-3.5 ${
+                      workspaceChangesAsync.loading ? "animate-spin" : ""
+                    }`}
+                  />
+                </button>
+                <span className="rounded-full bg-[var(--surface-3)] px-2 py-0.5 font-mono text-[13px] text-[var(--ink-tertiary)]">
+                  {relatedFileChanges.length}
+                </span>
+              </div>
             </div>
 
             <ScrollArea className="flex-1 px-2 pb-2">

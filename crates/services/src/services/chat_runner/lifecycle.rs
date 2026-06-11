@@ -1016,9 +1016,8 @@ impl ChatRunner {
                     "Failed to ensure .openteams is gitignored for workspace"
                 );
             }
-            let tracked_diff_baseline =
-                Self::capture_tracked_git_diff_snapshot(PathBuf::from(&workspace_path).as_path())
-                    .await;
+            let workspace_change_baseline =
+                capture_workspace_change_baseline(PathBuf::from(&workspace_path).as_path()).await;
             let run_records_dir = Self::workspace_run_records_dir(
                 PathBuf::from(&workspace_path).as_path(),
                 session_id,
@@ -1207,7 +1206,7 @@ impl ChatRunner {
                 tail_log_path,
                 raw_log_spool,
                 completion_status.clone(),
-                tracked_diff_baseline,
+                workspace_change_baseline,
                 chain_depth,
                 context_snapshot.context_compacted,
                 context_snapshot.compression_warning.clone(),
