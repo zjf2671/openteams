@@ -158,8 +158,20 @@ check(
   source,
 );
 check(
+  "passes selected project into create-agent modal",
+  source.includes("projectId={selectedProjectId}"),
+  source,
+);
+check(
   "passes project lead agent into create-agent modal",
   source.includes("leadMember={leadMember}"),
+  source,
+);
+check(
+  "refreshes create-agent modal member data when opened",
+  source.includes("if (!isCreateSessionModalOpen || !selectedProjectId) return") &&
+    source.includes("void refreshMembers().catch(() => undefined)") &&
+    source.includes("void loadLeadMember(selectedProjectId)"),
   source,
 );
 check(
@@ -176,6 +188,7 @@ check(
   "workflow member display uses project member or agent name instead of ids",
   source.includes("workflowProjectAgent.member_name?.trim()") &&
     source.includes("agent?.name?.trim()") &&
+    source.includes("const runnerLabel =") &&
     source.includes("avatar: monogramFromName(displayName)") &&
     source.includes("id: workflowProjectAgent.id") &&
     !source.includes("workflowProjectAgent.agent_id ?? 'lead'") &&
@@ -196,6 +209,16 @@ check(
     source.includes("meta.chat_input_mode = 'workflow'") &&
     source.includes("lead_agent_id: workflowLeadAgentId") &&
     source.includes("chatMessagesApi.send(backendSession.id"),
+  source,
+);
+check(
+  "create-agent session can link the new session to a work item",
+  source.includes("projectWorkItemsApi.linkExecution") &&
+    source.includes("notifyLinkedWorkItemsChanged") &&
+    source.includes("options.workItemId") &&
+    source.includes("session_id: backendSession.id") &&
+    source.includes("workItemId: options.workItemId") &&
+    source.includes("link_type: 'discussed_in'"),
   source,
 );
 check(

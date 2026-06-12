@@ -49,7 +49,7 @@ export function WorkflowCard({
   cardType,
   planGenerationMeta,
 }: WorkflowCardProps) {
-  const { sessionsAsync } = useWorkspace();
+  const { sessionsAsync, workflowRuntimeLinesByExecution } = useWorkspace();
   const sessionTitle = useMemo(() => {
     const session = sessionsAsync.data.find((s) => s.id === sessionId);
     return session?.title ?? null;
@@ -139,6 +139,10 @@ export function WorkflowCard({
   const finalReviewAction = projection?.execution_id
     ? toWorkflowFinalReviewAction(projection.execution_id, transcripts)
     : null;
+  const workflowRuntimeMessages = useMemo(() => {
+    if (!projection?.execution_id) return [];
+    return workflowRuntimeLinesByExecution[projection.execution_id] ?? [];
+  }, [projection?.execution_id, workflowRuntimeLinesByExecution]);
 
   const handleExecute = (nextProjection: WorkflowCardProjection) =>
     void withPending('execute-plan', () =>
@@ -276,6 +280,7 @@ export function WorkflowCard({
           sessionTitle={sessionTitle}
           projection={projection}
           transcript={transcripts}
+          runtimeMessages={workflowRuntimeMessages}
           isOpen={windowOpen}
           onClose={() => setWindowOpen(false)}
           onExecute={handleExecute}

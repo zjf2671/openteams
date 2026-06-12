@@ -1,4 +1,5 @@
 import React, {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -44,6 +45,7 @@ import {
   chatMessagesApi,
   chatSessionsApi,
   projectApi,
+  projectWorkItemsApi,
 } from "@/lib/api";
 import {
   ISSUE_NAVIGATION_EVENT,
@@ -51,6 +53,7 @@ import {
   storeIssueNavigationTarget,
   type IssueNavigationTarget,
 } from "@/lib/issueNavigation";
+import { notifyLinkedWorkItemsChanged } from "@/lib/linkedWorkItemsEvents";
 import { mapSession } from "@/lib/mappers";
 import { mockFrontendApi } from "@/lib/mockFrontendApi";
 import { projectDisplayName } from "@/lib/projectDisplay";
@@ -280,6 +283,7 @@ function WorkspaceLayout() {
     createProject,
     refreshSessions,
     members,
+    refreshMembers,
     activeSessionId,
     setActiveSessionId,
     weeklyCost,
@@ -309,22 +313,16 @@ function WorkspaceLayout() {
     scale: 1,
   });
 
-  useEffect(() => {
-    if (!selectedProjectId) {
-      setLeadMember(null);
-      return;
-    }
-    setLeadMember(null);
-    let cancelled = false;
-    void Promise.all([
-      projectApi.listMembers(selectedProjectId),
-      chatAgentsApi.list().catch(() => []),
-    ]).then(([projectMembers, agents]) => {
-      if (cancelled) return;
+  const loadLeadMember = useCallback(
+    async (projectId: string): Promise<Member | null> => {
+      if (!projectId) return null;
+      const [projectMembers, agents] = await Promise.all([
+        projectApi.listMembers(projectId),
+        chatAgentsApi.list().catch(() => []),
+      ]);
       const workflowProjectAgent = findWorkflowProjectAgent(projectMembers);
       if (!workflowProjectAgent) {
-        setLeadMember(null);
-        return;
+        return null;
       }
       const agent = agents.find(
         (candidate) => candidate.id === workflowProjectAgent.agent_id,
@@ -334,22 +332,64 @@ function WorkspaceLayout() {
         agent?.name?.trim() ||
         (workflowProjectAgent.role === 'lead' ? 'lead' : 'agent');
       const name = displayName.startsWith('@') ? displayName : `@${displayName}`;
-      setLeadMember({
+      const runnerLabel =
+        workflowProjectAgent.execution_config?.runner_type ??
+        agent?.runner_type ??
+        'agent';
+      return {
         id: workflowProjectAgent.id,
         avatar: monogramFromName(displayName),
         status: 'on',
         name,
-        roleDetail: workflowProjectAgent.execution_config?.runner_type ?? 'agent',
+        roleDetail: runnerLabel,
         modelName:
           workflowProjectAgent.execution_config?.model_name ??
           agent?.model_name ??
-          'agent',
+          runnerLabel,
+      };
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setLeadMember(null);
+      return;
+    }
+    setLeadMember(null);
+    let cancelled = false;
+    void loadLeadMember(selectedProjectId)
+      .then((nextLeadMember) => {
+        if (!cancelled) setLeadMember(nextLeadMember);
+      })
+      .catch(() => {
+        if (!cancelled) setLeadMember(null);
       });
-    }).catch(() => {
-      if (!cancelled) setLeadMember(null);
-    });
-    return () => { cancelled = true; };
-  }, [selectedProjectId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadLeadMember, selectedProjectId]);
+
+  useEffect(() => {
+    if (!isCreateSessionModalOpen || !selectedProjectId) return;
+    let cancelled = false;
+    void refreshMembers().catch(() => undefined);
+    void loadLeadMember(selectedProjectId)
+      .then((nextLeadMember) => {
+        if (!cancelled) setLeadMember(nextLeadMember);
+      })
+      .catch(() => {
+        if (!cancelled) setLeadMember(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isCreateSessionModalOpen,
+    loadLeadMember,
+    refreshMembers,
+    selectedProjectId,
+  ]);
 
   const translate = (
     key: string,
@@ -730,6 +770,7 @@ function WorkspaceLayout() {
       taskMode: 'workflow' | 'freeChat';
       memberId?: string;
       memberName?: string;
+      workItemId?: string;
     },
   ) => {
     if (!selectedProjectId) {
@@ -827,6 +868,25 @@ function WorkspaceLayout() {
             meta: Object.keys(meta).length > 0 ? meta : null,
           });
         } catch {}
+      }
+
+      if (options.workItemId) {
+        await projectWorkItemsApi.linkExecution(
+          selectedProjectId,
+          options.workItemId,
+          {
+            session_id: backendSession.id,
+            workflow_execution_id: null,
+            workflow_step_id: null,
+            run_id: null,
+            link_type: 'discussed_in',
+          },
+        );
+        notifyLinkedWorkItemsChanged({
+          projectId: selectedProjectId,
+          sessionId: backendSession.id,
+          workItemId: options.workItemId,
+        });
       }
 
       showToast(
@@ -981,6 +1041,7 @@ function WorkspaceLayout() {
       {activeAppPage !== "tokens" && <DialogManager />}
       <CreateAgentSessionModal
         open={isCreateSessionModalOpen}
+        projectId={selectedProjectId}
         projectName={activeProjectName}
         members={members}
         leadMember={leadMember}

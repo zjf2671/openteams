@@ -44,6 +44,7 @@ export interface Message {
   text: string;
   cost?: string;
   model?: string;
+  clientMessageId?: string;
   quotedMessage?: QuotedMessageReference;
   referenceMessageId?: string;
   attachments?: ChatAttachment[];

@@ -518,6 +518,8 @@ export function ChatWorkflowCard({
     !projection.pending_input &&
     projection.execution_id &&
     (projection.iteration_history.length > 0 || canReviewCurrentRound);
+  const shouldExpandFeedbackCard =
+    canReviewCurrentRound && isViewingCurrentRound;
 
   return (
     <div className="workflow-card-surface w-full max-w-[640px] rounded-lg px-5 py-5 flex flex-col">
@@ -641,7 +643,11 @@ export function ChatWorkflowCard({
 
       {shouldShowProgressInfo ? (
         <div className="mt-4 flex flex-wrap items-start gap-3">
-          <div className="w-[200px] max-w-full shrink-0">
+          <div
+            className={`max-w-full shrink-0 ${
+              shouldExpandFeedbackCard ? 'w-[320px]' : 'w-[200px]'
+            }`}
+          >
             <WorkflowIterationFeedbackCard
               currentRound={visibleRoundIndex}
               completedSteps={selectedRoundStepProgress.completedSteps}
@@ -664,7 +670,7 @@ export function ChatWorkflowCard({
                 canReviewCurrentRound && isViewingCurrentRound
               }
               pendingActionId={pendingActionId}
-              allowExpand={false}
+              allowExpand={shouldExpandFeedbackCard}
               onSubmit={(payload) => {
                 if (!onSubmitIterationFeedback || !projection.execution_id) {
                   return;
@@ -859,14 +865,14 @@ export function ChatWorkflowCard({
 
       {(projection.state === 'completed' ||
         projection.execution_status === 'completed') && (
-        <div className="mt-4 rounded-xl border border-[color-mix(in_srgb,var(--success)_34%,var(--hairline))] bg-[color-mix(in_srgb,var(--success)_12%,var(--surface-1))] p-4">
-          <div className="font-mono text-xs font-medium uppercase tracking-[0.04em] text-[var(--success)]">
+        <div className="mt-4 text-sm leading-6 text-[var(--ink-muted)]">
+          <div className="font-mono text-xs font-medium uppercase tracking-[0.04em] text-[var(--ink-subtle)]">
             {t('workflow.card.finalDelivery', {
               defaultValue: 'Final Delivery',
             })}
           </div>
           {projection.result_summary && (
-            <div className="mt-2 text-sm leading-6 text-[var(--success)]">
+            <div className="mt-2">
               {projection.result_summary}
             </div>
           )}

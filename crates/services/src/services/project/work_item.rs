@@ -87,6 +87,64 @@ impl ProjectWorkItemService {
         Ok(ProjectWorkItem::update(pool, work_item_id, input).await?)
     }
 
+    pub async fn delete(
+        &self,
+        pool: &SqlitePool,
+        project_id: Uuid,
+        work_item_id: Uuid,
+    ) -> Result<u64> {
+        let existing = ProjectWorkItem::find_by_id(pool, work_item_id)
+            .await?
+            .ok_or_else(|| anyhow!("Project work item not found"))?;
+        if existing.project_id != project_id {
+            return Err(anyhow!("Project work item not found"));
+        }
+
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            r#"
+            UPDATE project_delivery_records
+            SET external_link_id = NULL
+            WHERE external_link_id IN (
+                SELECT id
+                FROM project_work_item_external_links
+                WHERE project_work_item_id = ?1
+            )
+            "#,
+        )
+        .bind(work_item_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE project_delivery_records SET project_work_item_id = NULL WHERE project_work_item_id = ?1",
+        )
+        .bind(work_item_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE github_pending_pr_creations SET work_item_id = NULL WHERE work_item_id = ?1",
+        )
+        .bind(work_item_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM project_work_item_execution_links WHERE project_work_item_id = ?1",
+        )
+        .bind(work_item_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM project_work_item_external_links WHERE project_work_item_id = ?1")
+            .bind(work_item_id)
+            .execute(&mut *tx)
+            .await?;
+        let result = sqlx::query("DELETE FROM project_work_items WHERE id = ?1")
+            .bind(work_item_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn detail(
         &self,
         pool: &SqlitePool,

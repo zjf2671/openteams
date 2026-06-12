@@ -2020,19 +2020,24 @@ export function WorkflowWindow({
       (projection.state === 'waiting' ||
         projection.execution_status === 'waiting'));
 
-  const getPendingReviewNodeId = useCallback(
+  const getPendingReviewStep = useCallback(
     (pendingReview: NonNullable<WorkflowCardData['pending_review']>) => {
       const directStep = stepById.get(pendingReview.target_id);
-      if (directStep) return directStep.step_key;
+      if (directStep) return directStep;
 
       const loop = workflowLoops.find(
         (item) => item.id === pendingReview.target_id
       );
-      if (!loop) return undefined;
+      if (!loop) return null;
 
-      return stepById.get(loop.review_step_id)?.step_key;
+      return stepById.get(loop.review_step_id) ?? null;
     },
     [stepById, workflowLoops]
+  );
+  const getPendingReviewNodeId = useCallback(
+    (pendingReview: NonNullable<WorkflowCardData['pending_review']>) =>
+      getPendingReviewStep(pendingReview)?.step_key,
+    [getPendingReviewStep]
   );
 
   // Notification items from pending reviews
@@ -2043,10 +2048,12 @@ export function WorkflowWindow({
       title: string;
       message: string;
       nodeId?: string;
+      stepId?: string;
     }> = [];
 
     for (const pendingReview of pendingReviews) {
-      const nodeId = getPendingReviewNodeId(pendingReview);
+      const reviewStep = getPendingReviewStep(pendingReview);
+      const nodeId = reviewStep?.step_key;
       if (
         openedReviewNotificationId === pendingReview.review_id &&
         isChatVisible &&
@@ -2070,6 +2077,7 @@ export function WorkflowWindow({
             defaultValue: 'Review required',
           }),
         nodeId,
+        stepId: reviewStep?.id,
       });
     }
 
@@ -2111,7 +2119,7 @@ export function WorkflowWindow({
     return items;
   }, [
     activeNodeId,
-    getPendingReviewNodeId,
+    getPendingReviewStep,
     isChatVisible,
     openedReviewNotificationId,
     pendingReviews,
@@ -2424,7 +2432,12 @@ export function WorkflowWindow({
                         <button
                           type="button"
                           onClick={() =>
-                            openPendingReviewInChat(notif.id, notif.nodeId)
+                            onRespondPendingReview(
+                              notif.id,
+                              'approve',
+                              undefined,
+                              notif.stepId
+                            )
                           }
                           disabled={pendingActionId === notif.id}
                           className="flex-1 py-1.5 border border-[var(--workflow-notification-action-border)] text-[var(--workflow-notification-action-text)] rounded bg-transparent text-[10px] font-semibold uppercase tracking-[0.04em] hover:bg-[var(--workflow-notification-action-hover-bg)] hover:border-[var(--workflow-notification-action-hover-border)] transition-colors disabled:opacity-40"

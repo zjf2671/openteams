@@ -987,6 +987,18 @@ export function IssuePage() {
     [],
   );
 
+  const handleIssueDeleted = useCallback((workItemId: string) => {
+    setWorkItems((current) => current.filter((item) => item.id !== workItemId));
+    setIssueRowOverrides((current) => {
+      const next = { ...current };
+      delete next[workItemId];
+      return next;
+    });
+    setSelectedIssueId('');
+    setActiveIssue(null);
+    setInteractionMessage('Issue deleted');
+  }, []);
+
   const openCreateIssueDialog = useCallback(
     (initialStatus: ProjectWorkItemStatus = 'open') => {
       setCreateIssueInitialStatus(initialStatus);
@@ -1422,6 +1434,7 @@ export function IssuePage() {
           onBack={handleIssueBack}
           onAction={handleAction}
           onWorkItemChange={(item) => mergeWorkItem(item, setWorkItems)}
+          onIssueDeleted={handleIssueDeleted}
           onIssueSync={handleIssueDetailSync}
           linkedProviderId={linkedProviderId}
           linkedRepoId={linkedRepoId}
@@ -1475,7 +1488,9 @@ export function IssuePage() {
               <IssueEmptyState
                 filter={activeFilter}
                 onAction={handleAction}
+                onCreateIssue={openCreateIssueDialog}
                 onOpenIntegrations={handleOpenIntegrations}
+                linkedProviderId={linkedProviderId}
                 tr={tr}
               />
             ) : (
@@ -1550,55 +1565,77 @@ export function IssuePage() {
 
 const emptyIssueCopy: Record<
   IssueFilter,
-  { description: string; title: string }
+  { description: string; descriptionKey: string; title: string; titleKey: string }
 > = {
   all: {
-    title: 'No issues',
+    title: 'All issues',
+    titleKey: 'issue.empty.all.title',
     description:
-      'Issues represent work that should be tracked by this team. There are currently no issues here. Create a new issue or link an external repository to start tracking work.',
+      'There are no issues in this project yet. Create a new issue or link an external repository to start tracking work.',
+    descriptionKey: 'issue.empty.all.description',
   },
   active: {
     title: 'Active issues',
+    titleKey: 'issue.empty.active.title',
     description:
-      'Active issues represent work that is currently in flight or should be worked on next. There are currently no active issues in this team. Once an issue moves to the Todo or In Progress state, it will show up here.',
+      'There are no active issues right now. Todo and In Progress issues will appear here when work starts.',
+    descriptionKey: 'issue.empty.active.description',
   },
   backlog: {
     title: 'Backlog issues',
+    titleKey: 'issue.empty.backlog.title',
     description:
-      'Backlog issues represent work that is waiting to be prioritized. There are currently no backlog issues in this team. New deferred work will show up here.',
+      'There are no backlog issues. Deferred or lower-priority work will appear here when it is added.',
+    descriptionKey: 'issue.empty.backlog.description',
   },
 };
 
 function IssueEmptyState({
   filter,
   onAction,
+  onCreateIssue,
   onOpenIntegrations,
+  linkedProviderId,
   tr,
 }: {
   filter: IssueFilter;
   onAction: (message: string) => void;
+  onCreateIssue: () => void;
   onOpenIntegrations: () => void;
+  linkedProviderId: RemoteProviderId | null;
   tr: IssueTranslator;
 }) {
   const copy = emptyIssueCopy[filter];
+  const repositoryButtonLabel = tr(
+    'issue.linkDialog.title',
+    'Link external repository',
+  );
 
   return (
     <div className="flex min-h-full min-w-[780px] items-center justify-center px-[17px] pb-[108px] pt-[108px]">
       <section className="w-[486px] max-w-full">
-        <IssueEmptyIllustration />
+        <IssueEmptyIllustration filter={filter} />
 
-        <h2 className="mt-[28px] text-[19px] font-bold leading-none text-[#f7f7f8]">
-          {copy.title}
+        <h2
+          className={cn(
+            filter === 'backlog' ? 'mt-[22px]' : 'mt-[28px]',
+            'text-[19px] font-bold leading-none text-[#f7f7f8]',
+          )}
+        >
+          {tr(copy.titleKey, copy.title)}
         </h2>
         <p className="mt-[22px] text-[15px] font-medium leading-[1.45] text-[#a6a8ad]">
-          {copy.description}
+          {tr(copy.descriptionKey, copy.description)}
         </p>
 
         <div className="mt-[28px] flex items-center gap-[13px]">
           <button
             type="button"
             className="inline-flex h-[37px] items-center gap-2 rounded-full bg-[#5e6ad2] px-4 text-[15px] font-bold leading-none text-white transition hover:bg-[#6f78e2] active:scale-[0.99]"
-            onClick={() => onAction('Create issue opened')}
+            onClick={() => {
+              onCreateIssue();
+              onAction('Create issue opened');
+            }}
           >
             <span>Create new issue</span>
             <span className="flex h-[22px] min-w-[22px] items-center justify-center rounded-[7px] border border-white/25 bg-white/10 font-mono text-[14px] font-bold leading-none text-white">
@@ -1608,11 +1645,22 @@ function IssueEmptyState({
 
           <button
             type="button"
-            className="inline-flex h-[37px] items-center gap-2 rounded-full border border-[#2a2b2d] bg-[#1b1c1f] px-4 text-[15px] font-bold leading-none text-[#f2f2f3] transition hover:border-[#383a40] hover:bg-[#242529]"
+            className="inline-flex h-[37px] max-w-[270px] items-center gap-2 rounded-full border border-[#2a2b2d] bg-[#1b1c1f] px-4 text-[15px] font-bold leading-none text-[#f2f2f3] transition hover:border-[#383a40] hover:bg-[#242529]"
             onClick={onOpenIntegrations}
+            title={repositoryButtonLabel}
           >
-            <Link2 aria-hidden="true" className="h-[15px] w-[15px]" />
-            <span>{tr('issue.linkDialog.title', 'Link external repository')}</span>
+            {linkedProviderId ? (
+              <span className="relative flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-full bg-[#242529] text-[#f2f2f3]">
+                <ProviderIcon
+                  providerId={linkedProviderId}
+                  className="h-[14px] w-[14px]"
+                />
+                <span className="absolute bottom-[-1px] right-[-1px] h-[7px] w-[7px] rounded-full border border-[#1b1c1f] bg-[#39d353] shadow-[0_0_0_1px_rgba(57,211,83,0.28)]" />
+              </span>
+            ) : (
+              <Link2 aria-hidden="true" className="h-[15px] w-[15px]" />
+            )}
+            <span className="min-w-0 truncate">{repositoryButtonLabel}</span>
           </button>
         </div>
       </section>
@@ -1620,145 +1668,110 @@ function IssueEmptyState({
   );
 }
 
-function IssueEmptyIllustration() {
+function IssueEmptyIllustration({ filter }: { filter: IssueFilter }) {
+  if (filter === 'backlog') {
+    return (
+      <div className="flex h-[112px] w-[112px] -translate-x-[8px] items-center justify-center">
+        <svg
+          aria-hidden="true"
+          className="h-[112px] w-[112px]"
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={1.22}
+          viewBox="0 0 24 24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <defs>
+            <linearGradient
+              id="backlog-empty-stack-layer"
+              x1="12"
+              x2="12"
+              y1="8"
+              y2="19.2"
+              gradientUnits="userSpaceOnUse"
+            >
+              <stop offset="0" stopColor="#d5d8df" />
+              <stop offset="1" stopColor="#767b86" />
+            </linearGradient>
+            <linearGradient
+              id="backlog-empty-stack-top"
+              x1="12"
+              x2="12"
+              y1="4.7"
+              y2="11.3"
+              gradientUnits="userSpaceOnUse"
+            >
+              <stop offset="0" stopColor="#fbfbfe" />
+              <stop offset="0.56" stopColor="#c7cad2" />
+              <stop offset="1" stopColor="#868b96" />
+            </linearGradient>
+            <linearGradient
+              id="backlog-empty-stack-glow"
+              x1="12"
+              x2="12"
+              y1="4.7"
+              y2="11.3"
+              gradientUnits="userSpaceOnUse"
+            >
+              <stop offset="0" stopColor="#ffffff" stopOpacity={0.2} />
+              <stop offset="0.58" stopColor="#ffffff" stopOpacity={0.035} />
+              <stop offset="1" stopColor="#ffffff" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <g stroke="url(#backlog-empty-stack-layer)">
+            <path
+              d="M5.05 15.95 12 18.92l6.95-2.97"
+              opacity={0.28}
+            />
+            <path
+              d="M5.05 15.95 7.25 15.02m9.5 0 2.2.93"
+              opacity={0.22}
+            />
+            <path
+              d="M4.65 12.15 12 15.28l7.35-3.13"
+              opacity={0.58}
+            />
+            <path
+              d="M4.65 12.15 6.92 11.18m10.16 0 2.27.97"
+              opacity={0.46}
+            />
+          </g>
+          <path
+            d="M11.72 4.88q.28-.11.56 0l7.43 2.98q.34.14 0 .28l-7.43 2.98q-.28.11-.56 0L4.29 8.14q-.34-.14 0-.28l7.43-2.98Z"
+            fill="var(--surface-2)"
+            stroke="var(--surface-2)"
+            strokeWidth={2.65}
+          />
+          <path
+            d="M11.72 4.88q.28-.11.56 0l7.43 2.98q.34.14 0 .28l-7.43 2.98q-.28.11-.56 0L4.29 8.14q-.34-.14 0-.28l7.43-2.98Z"
+            fill="url(#backlog-empty-stack-glow)"
+            stroke="url(#backlog-empty-stack-top)"
+          />
+          <path
+            d="M4.42 7.95 12 4.92l7.58 3.03"
+            opacity={0.58}
+            stroke="#ffffff"
+            strokeWidth={0.58}
+          />
+          <path
+            d="M4.42 8.06 12 11.1l7.58-3.04"
+            opacity={0.32}
+            stroke="#7f8490"
+            strokeWidth={0.78}
+          />
+        </svg>
+      </div>
+    );
+  }
+
   return (
-    <svg
+    <img
       aria-hidden="true"
-      className="h-[112px] w-[169px] text-[#aeb0b6]"
-      fill="none"
-      viewBox="0 0 178 118"
-    >
-      <g opacity="0.9" strokeLinecap="round" strokeLinejoin="round">
-        <g transform="translate(0 0)">
-          <ellipse
-            cx="40"
-            cy="31"
-            rx="37"
-            ry="29"
-            stroke="#55565b"
-            strokeWidth="4"
-          />
-          <ellipse
-            cx="40"
-            cy="24"
-            rx="28"
-            ry="19"
-            stroke="#b9bbc1"
-            strokeWidth="4"
-          />
-          <path
-            d="M12 40c4 13 18 22 35 22 14 0 27-6 33-16"
-            stroke="#36373b"
-            strokeWidth="4"
-          />
-          <path
-            d="M13 32c6 14 21 23 38 21 13-1 24-7 29-16"
-            stroke="#898b91"
-            strokeWidth="4"
-          />
-        </g>
-
-        <g transform="translate(91 0)">
-          <ellipse
-            cx="40"
-            cy="31"
-            rx="37"
-            ry="29"
-            stroke="#55565b"
-            strokeWidth="4"
-          />
-          <ellipse
-            cx="40"
-            cy="24"
-            rx="28"
-            ry="19"
-            stroke="#b9bbc1"
-            strokeWidth="4"
-          />
-          <path
-            d="M40 6v18h25c-1-11-11-19-25-18Z"
-            fill="#9a9ca2"
-            stroke="#b9bbc1"
-            strokeWidth="4"
-          />
-          <path
-            d="M12 40c4 13 18 22 35 22 14 0 27-6 33-16"
-            stroke="#36373b"
-            strokeWidth="4"
-          />
-          <path
-            d="M13 32c6 14 21 23 38 21 13-1 24-7 29-16"
-            stroke="#898b91"
-            strokeWidth="4"
-          />
-        </g>
-
-        <g transform="translate(0 64)">
-          <ellipse
-            cx="40"
-            cy="31"
-            rx="37"
-            ry="29"
-            stroke="#55565b"
-            strokeWidth="4"
-          />
-          <ellipse
-            cx="40"
-            cy="24"
-            rx="28"
-            ry="19"
-            stroke="#b9bbc1"
-            strokeWidth="4"
-          />
-          <path
-            d="M13 25c4 14 18 24 36 24 12 0 24-5 31-13v16c-8 8-21 13-35 13-18 0-33-8-41-21Z"
-            fill="#9a9ca2"
-            stroke="#b9bbc1"
-            strokeWidth="4"
-          />
-          <path
-            d="M12 40c4 13 18 22 35 22 14 0 27-6 33-16"
-            stroke="#36373b"
-            strokeWidth="4"
-          />
-        </g>
-
-        <g transform="translate(91 64)">
-          <ellipse
-            cx="40"
-            cy="31"
-            rx="37"
-            ry="29"
-            stroke="#55565b"
-            strokeWidth="4"
-          />
-          <ellipse
-            cx="40"
-            cy="24"
-            rx="28"
-            ry="19"
-            stroke="#b9bbc1"
-            strokeWidth="4"
-          />
-          <path
-            d="M40 5c16 1 28 10 29 22 1 12-11 22-29 23Z"
-            fill="#9a9ca2"
-            stroke="#b9bbc1"
-            strokeWidth="4"
-          />
-          <path
-            d="M12 40c4 13 18 22 35 22 14 0 27-6 33-16"
-            stroke="#36373b"
-            strokeWidth="4"
-          />
-          <path
-            d="M13 32c6 14 21 23 38 21 13-1 24-7 29-16"
-            stroke="#898b91"
-            strokeWidth="4"
-          />
-        </g>
-      </g>
-    </svg>
+      alt=""
+      className="h-[220px] w-[300px] object-contain"
+      src="/issue/issue_page.png"
+    />
   );
 }
 

@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle,
   ChevronRight,
   Loader2,
   RefreshCw,
   ShieldAlert,
-  X,
 } from "lucide-react";
+import { ConfirmationDialog } from "@/components/ConfirmationDialog";
 import { ScrollArea } from "@/components/ScrollArea";
 import { useSessionSourceControl } from "@/hooks/useSessionSourceControl";
 import { deliveryApi } from "@/lib/api";
@@ -196,103 +195,6 @@ function SessionCommitList({
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function SourceControlConfirmDialog({
-  request,
-  onCancel,
-  onConfirm,
-}: {
-  request: SourceControlConfirmDialogState;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const isDanger = request.tone === "danger";
-  return (
-    <div
-      className="fixed inset-0 z-[1002] flex items-center justify-center p-4"
-      role="presentation"
-      onKeyDown={(event) => {
-        if (event.key === "Escape") onCancel();
-      }}
-    >
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-xs"
-        onClick={onCancel}
-      />
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="source-control-confirm-title"
-        aria-describedby="source-control-confirm-desc"
-        className="relative w-full max-w-md overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--canvas)] select-none"
-      >
-        <div className="p-5">
-          <div
-            className={`mb-3 flex h-10 w-10 items-center justify-center rounded-lg ${
-              isDanger ? "bg-red-500/15" : "bg-amber-500/15"
-            }`}
-          >
-            <AlertTriangle
-              className={`h-5 w-5 ${
-                isDanger ? "text-red-400" : "text-amber-500"
-              }`}
-            />
-          </div>
-          <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <p
-                id="source-control-confirm-title"
-                className="text-base font-semibold tracking-tight text-[var(--ink)]"
-              >
-                {request.title}
-              </p>
-              <p
-                id="source-control-confirm-desc"
-                className="mt-1 text-xs leading-relaxed text-[var(--ink-subtle)]"
-              >
-                {request.description}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
-              aria-label="Cancel"
-              title="Cancel"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-        <div className="flex items-center justify-between border-t border-[var(--hairline)] bg-[var(--surface-1)] px-5 py-3">
-          <span className="font-mono text-[10px] text-[var(--ink-tertiary)]">
-            Esc to cancel
-          </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="cursor-pointer rounded-md border border-[var(--hairline-strong)] px-3 py-1.5 text-xs font-medium text-[var(--ink-muted)] transition hover:bg-[var(--surface-3)]"
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-medium text-white transition ${
-                isDanger
-                  ? "bg-red-500 hover:bg-red-600"
-                  : "bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
-              }`}
-              onClick={onConfirm}
-            >
-              {request.confirmLabel}
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -708,8 +610,14 @@ export const SessionSourceControlPanel: React.FC<
       </div>
       </div>
       {confirmDialog && (
-        <SourceControlConfirmDialog
-          request={confirmDialog}
+        <ConfirmationDialog
+          title={confirmDialog.title}
+          description={confirmDialog.description}
+          confirmLabel={confirmDialog.confirmLabel}
+          cancelLabel="Cancel"
+          escLabel="Esc to cancel"
+          tone={confirmDialog.tone}
+          idPrefix="source-control-confirm"
           onCancel={() => closeConfirmDialog(false)}
           onConfirm={() => closeConfirmDialog(true)}
         />

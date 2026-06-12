@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { motion } from 'framer-motion';
@@ -65,6 +65,12 @@ export function WorkflowIterationFeedbackCard({
   const canSubmit = !!onSubmit;
   const disabled = !!pendingActionId;
 
+  useEffect(() => {
+    if (canReviewCurrentRound) {
+      setIsCollapsed(false);
+    }
+  }, [canReviewCurrentRound, currentRound]);
+
   const handleAccept = () => {
     setExpandedReject(false);
     setValidationError(null);
@@ -125,7 +131,7 @@ export function WorkflowIterationFeedbackCard({
       <div
         onClick={allowExpand ? () => setIsCollapsed(false) : undefined}
         className={cn(
-          "workflow-iteration-feedback-card flex items-center gap-3 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-1.5 transition-all hover:border-[var(--hairline-strong)] group w-[200px]",
+          'workflow-iteration-feedback-card flex h-8 w-fit min-w-[200px] max-w-[calc(100vw-3rem)] items-center gap-3 overflow-hidden rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-4 whitespace-nowrap transition-all hover:border-[var(--hairline-strong)] group',
           allowExpand && "cursor-pointer"
         )}
         title={
@@ -136,19 +142,19 @@ export function WorkflowIterationFeedbackCard({
           ` · ${completedSteps}/${totalSteps} ${t('workflow.iterationFeedback.steps', { defaultValue: 'Steps' }).toLowerCase()} · ${statusLabel}${runningStepTitle && !isRegeneratingPlan ? `: ${runningStepTitle}` : ''}`
         }
       >
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <div className={cn('w-2 h-2 rounded-full', statusDotClass)} />
           <span className="text-xs font-bold text-[var(--ink)]">
             R{currentRound}
           </span>
         </div>
-        <div className="h-3 w-[1px] bg-[var(--hairline)]" />
-        <span className="text-xs font-medium text-[var(--ink-muted)]">
+        <div className="h-3 w-[1px] shrink-0 bg-[var(--hairline)]" />
+        <span className="min-w-0 truncate text-xs font-medium text-[var(--ink-muted)]">
           {completedSteps}/{totalSteps}{' '}
           {t('workflow.iterationFeedback.steps', { defaultValue: 'Steps' })}
         </span>
-        <div className="h-3 w-[1px] bg-[var(--hairline)]" />
-        <span className="text-xs font-bold text-[var(--primary)]">
+        <div className="h-3 w-[1px] shrink-0 bg-[var(--hairline)]" />
+        <span className="shrink-0 text-xs font-bold text-[var(--primary)]">
           {progressPercent}%
         </span>
       </div>

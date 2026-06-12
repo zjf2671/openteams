@@ -153,6 +153,14 @@ const referenceMessageIdFromMeta = (
   return typeof messageId === 'string' ? messageId : undefined;
 };
 
+const clientMessageIdFromMeta = (
+  meta: JsonValue | undefined,
+): string | undefined => {
+  const obj = jsonObject(meta);
+  const clientMessageId = obj?.client_message_id;
+  return typeof clientMessageId === 'string' ? clientMessageId : undefined;
+};
+
 const attachmentsFromMeta = (
   meta: JsonValue | undefined,
 ): ChatAttachment[] | undefined => {
@@ -240,6 +248,7 @@ export const mapMessage = (
     text: backend.content,
     isUser: isUser || undefined,
     model,
+    clientMessageId: clientMessageIdFromMeta(backend.meta),
     referenceMessageId: referenceMessageIdFromMeta(backend.meta),
     attachments: attachmentsFromMeta(backend.meta),
     runId: runIdFromMeta(backend.meta),

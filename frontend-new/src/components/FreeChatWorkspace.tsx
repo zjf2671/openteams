@@ -33,11 +33,20 @@ import { ResourceStateNotice } from "@/components/ResourceState";
 import { ScrollArea } from "@/components/ScrollArea";
 import { AgentMessageContent } from "@/components/AgentMessageContent";
 import { SessionSourceControlPanel } from "@/components/source-control/SessionSourceControlPanel";
-import { chatMessagesApi, sessionAgentsApi, projectWorkItemsApi } from "@/lib/api";
+import {
+  chatMessagesApi,
+  sessionAgentsApi,
+  projectWorkItemsApi,
+} from "@/lib/api";
 import {
   ISSUE_NAVIGATION_EVENT,
   type IssueNavigationTarget,
 } from "@/lib/issueNavigation";
+import {
+  LINKED_WORK_ITEMS_CHANGED_EVENT,
+  type LinkedWorkItemsChangedDetail,
+} from "@/lib/linkedWorkItemsEvents";
+import { markPendingIssueStatusSync } from "@/lib/pendingIssueStatusSync";
 import {
   flattenWorkspaceChanges,
   hasRelatedFileDiff,
@@ -303,43 +312,142 @@ const linkedWorkItemStatusLabel: Record<LinkedWorkItemIssueStatus, string> = {
   todo: "Todo",
   in_progress: "In Progress",
   backlog: "Backlog",
-  ready_to_merge: "Ready To Merge",
+  ready_to_merge: "Ready to Merge",
   merging: "Merging",
   done: "Done",
   cancelled: "Canceled",
   duplicate: "Duplicate",
 };
 
+const linkedWorkItemStatusOptions: Array<{
+  value: ProjectWorkItem["status"];
+  label: string;
+  shortcut: string;
+}> = [
+  { value: "blocked", label: "Backlog", shortcut: "1" },
+  { value: "open", label: "Todo", shortcut: "2" },
+  { value: "in_progress", label: "In Progress", shortcut: "3" },
+  { value: "ready_to_merge", label: "Ready to Merge", shortcut: "4" },
+  { value: "merging", label: "Merging", shortcut: "5" },
+  { value: "done", label: "Done", shortcut: "6" },
+  { value: "cancelled", label: "Canceled", shortcut: "7" },
+  { value: "duplicate", label: "Duplicate", shortcut: "8" },
+];
+
 function LinkedWorkItemRow({
   item,
+  statusPending,
   onOpen,
+  onStatusChange,
 }: {
   item: ProjectWorkItem;
+  statusPending: boolean;
   onOpen: (item: ProjectWorkItem) => void;
+  onStatusChange: (
+    item: ProjectWorkItem,
+    status: ProjectWorkItem["status"],
+  ) => void;
 }) {
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const statusMenuRef = useRef<HTMLDivElement | null>(null);
   const issueStatus = linkedWorkItemIssueStatus(item.status);
   const statusLabel =
     linkedWorkItemStatusLabel[issueStatus] ?? titleCaseStatus(item.status);
 
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!statusMenuRef.current?.contains(event.target as Node)) {
+        setStatusMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [statusMenuOpen]);
+
+  const handleStatusSelect = (status: ProjectWorkItem["status"]) => {
+    setStatusMenuOpen(false);
+    if (status !== item.status) onStatusChange(item, status);
+  };
+
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(item)}
-      className="flex w-full min-w-0 items-center gap-1.5 rounded-md bg-[var(--surface-1)] px-2 py-1.5 text-left text-[13px] transition hover:bg-[var(--surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
-      aria-label={`Open issue ${item.title}`}
-    >
-      <PriorityMenuIcon
-        priority={item.priority}
-        selected={item.priority === "urgent"}
-      />
-      <span className="min-w-0 flex-1 truncate text-[var(--ink)]">
-        {item.title}
-      </span>
-      <span className="inline-flex shrink-0 items-center gap-1.5 text-[var(--ink-tertiary)]">
-        <LinkedWorkItemStatusIcon status={issueStatus} />
-        {statusLabel}
-      </span>
-    </button>
+    <div className="relative flex w-full min-w-0 items-stretch text-[13px]">
+      <button
+        type="button"
+        onClick={() => onOpen(item)}
+        className="flex min-w-0 flex-1 items-center gap-1.5 rounded-l-md bg-[var(--surface-1)] px-2 py-1.5 text-left transition hover:bg-[var(--surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
+        aria-label={`Open issue ${item.title}`}
+      >
+        <PriorityMenuIcon
+          priority={item.priority}
+          selected={item.priority === "urgent"}
+        />
+        <span className="min-w-0 flex-1 truncate text-[var(--ink)]">
+          {item.title}
+        </span>
+      </button>
+      <div ref={statusMenuRef} className="relative shrink-0">
+        <button
+          type="button"
+          disabled={statusPending}
+          aria-haspopup="listbox"
+          aria-expanded={statusMenuOpen}
+          onClick={(event) => {
+            event.stopPropagation();
+            setStatusMenuOpen((current) => !current);
+          }}
+          className="inline-flex h-full max-w-[128px] items-center gap-1.5 rounded-r-md bg-[var(--surface-1)] px-2 py-1.5 text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-2)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 disabled:cursor-not-allowed disabled:opacity-70"
+          title={`Change status: ${statusLabel}`}
+          aria-label={`Change status for ${item.title}`}
+        >
+          {statusPending ? (
+            <RefreshCw className="h-[13px] w-[13px] shrink-0 animate-spin" />
+          ) : (
+            <LinkedWorkItemStatusIcon status={issueStatus} />
+          )}
+          <span className="min-w-0 truncate">{statusLabel}</span>
+        </button>
+        {statusMenuOpen && (
+          <div className="absolute right-0 top-full z-30 mt-1 w-44 overflow-hidden rounded-[10px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] p-1 shadow-[0_12px_30px_rgba(0,0,0,0.18)]">
+            <div
+              role="listbox"
+              className="max-h-[240px] overflow-y-auto ot-scroll-area-styled"
+            >
+              {linkedWorkItemStatusOptions.map((option) => {
+                const selected = option.value === item.status;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    className="flex h-8 w-full items-center gap-2 rounded-[7px] px-2 text-left text-[12px] font-semibold text-[var(--ink-muted)] transition hover:bg-[var(--surface-3)]"
+                    onClick={() => handleStatusSelect(option.value)}
+                  >
+                    <LinkedWorkItemStatusIcon
+                      status={linkedWorkItemIssueStatus(option.value)}
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {option.label}
+                    </span>
+                    <span className="ml-auto flex w-8 shrink-0 items-center justify-between text-[var(--ink-subtle)]">
+                      {selected ? (
+                        <Check className="h-3 w-3" strokeWidth={3} />
+                      ) : (
+                        <span aria-hidden="true" className="h-3 w-3" />
+                      )}
+                      <span className="font-mono text-[10px]">
+                        {option.shortcut}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -547,13 +655,19 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   );
   const [linkedWorkItems, setLinkedWorkItems] = useState<ProjectWorkItem[]>([]);
   const [linkedWorkItemsLoading, setLinkedWorkItemsLoading] = useState(false);
-  const [linkedWorkItemsError, setLinkedWorkItemsError] = useState<string | null>(null);
+  const [linkedWorkItemsError, setLinkedWorkItemsError] = useState<
+    string | null
+  >(null);
+  const [updatingLinkedWorkItemIds, setUpdatingLinkedWorkItemIds] = useState<
+    Set<string>
+  >(() => new Set());
   const workspaceGridRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const memberRailRef = useRef<HTMLDivElement>(null);
   const copiedResetTimerRef = useRef<number | null>(null);
+  const linkedWorkItemsRequestIdRef = useRef(0);
   const relatedFileChanges = useMemo(
     () => flattenWorkspaceChanges(workspaceChangesAsync.data),
     [workspaceChangesAsync.data],
@@ -799,35 +913,67 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     reloadRelatedFiles();
   }, [reloadRelatedFiles]);
 
-  useEffect(() => {
+  const reloadLinkedWorkItems = useCallback(() => {
     if (!activeSessionId || !selectedProjectId) {
+      linkedWorkItemsRequestIdRef.current += 1;
       setLinkedWorkItems([]);
       setLinkedWorkItemsError(null);
+      setLinkedWorkItemsLoading(false);
       return;
     }
-    let cancelled = false;
+
+    const requestId = linkedWorkItemsRequestIdRef.current + 1;
+    linkedWorkItemsRequestIdRef.current = requestId;
     setLinkedWorkItemsLoading(true);
     setLinkedWorkItemsError(null);
     projectWorkItemsApi
       .listBySession(selectedProjectId, activeSessionId)
       .then((items) => {
-        if (!cancelled) {
-          setLinkedWorkItems(items);
-          setLinkedWorkItemsLoading(false);
-        }
+        if (linkedWorkItemsRequestIdRef.current !== requestId) return;
+        setLinkedWorkItems(items);
+        setLinkedWorkItemsLoading(false);
       })
       .catch((err) => {
-        if (!cancelled) {
-          setLinkedWorkItemsError(
-            err instanceof Error ? err.message : String(err),
-          );
-          setLinkedWorkItemsLoading(false);
-        }
+        if (linkedWorkItemsRequestIdRef.current !== requestId) return;
+        setLinkedWorkItemsError(
+          err instanceof Error ? err.message : String(err),
+        );
+        setLinkedWorkItemsLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [activeSessionId, selectedProjectId]);
+
+  useEffect(() => {
+    reloadLinkedWorkItems();
+  }, [reloadLinkedWorkItems]);
+
+  useEffect(() => {
+    if (!activeSessionId || !selectedProjectId) return;
+
+    const handleLinkedWorkItemsChanged = (event: Event) => {
+      const detail = (event as CustomEvent<LinkedWorkItemsChangedDetail>)
+        .detail;
+      if (
+        !detail ||
+        detail.projectId !== selectedProjectId ||
+        detail.sessionId !== activeSessionId
+      ) {
+        return;
+      }
+
+      reloadLinkedWorkItems();
+    };
+
+    window.addEventListener(
+      LINKED_WORK_ITEMS_CHANGED_EVENT,
+      handleLinkedWorkItemsChanged,
+    );
+    return () => {
+      window.removeEventListener(
+        LINKED_WORK_ITEMS_CHANGED_EVENT,
+        handleLinkedWorkItemsChanged,
+      );
+    };
+  }, [activeSessionId, reloadLinkedWorkItems, selectedProjectId]);
 
   const handleOpenLinkedWorkItem = (item: ProjectWorkItem) => {
     if (!selectedProjectId) return;
@@ -842,6 +988,53 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
         detail: target,
       }),
     );
+  };
+
+  const handleLinkedWorkItemStatusChange = async (
+    item: ProjectWorkItem,
+    status: ProjectWorkItem["status"],
+  ) => {
+    if (!selectedProjectId || item.status === status) return;
+
+    const optimisticItem = { ...item, status };
+    setUpdatingLinkedWorkItemIds((current) => {
+      const next = new Set(current);
+      next.add(item.id);
+      return next;
+    });
+    setLinkedWorkItems((current) =>
+      current.map((candidate) =>
+        candidate.id === item.id ? optimisticItem : candidate,
+      ),
+    );
+
+    try {
+      const updated = await projectWorkItemsApi.update(
+        selectedProjectId,
+        item.id,
+        { status },
+      );
+      setLinkedWorkItems((current) =>
+        current.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      );
+      markPendingIssueStatusSync(selectedProjectId, updated.id, updated.status);
+      showToast(t("linkedWorkItems.statusUpdated"));
+    } catch {
+      setLinkedWorkItems((current) =>
+        current.map((candidate) =>
+          candidate.id === item.id ? item : candidate,
+        ),
+      );
+      showToast(t("linkedWorkItems.statusUpdateError"));
+    } finally {
+      setUpdatingLinkedWorkItemIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
+    }
   };
 
   const summarizeMessage = (text: string) => {
@@ -1374,19 +1567,21 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
 
           {/* Messages Feed */}
           <ScrollArea className="mb-4 flex-1 space-y-4 pr-1">
-            <ResourceStateNotice
-              resource={messagesAsync}
-              labels={{
-                loading: t("resource.messages.loading"),
-                empty: t("resource.messages.empty"),
-                error: t("resource.messages.error"),
-                fallback: t("resource.messages.fallback"),
-              }}
-              onRetry={() => void refreshMessages()}
-            />
+            {(!messagesAsync.loading || displayedMessages.length === 0) && (
+              <ResourceStateNotice
+                resource={messagesAsync}
+                labels={{
+                  loading: t("resource.messages.loading"),
+                  empty: t("resource.messages.empty"),
+                  error: t("resource.messages.error"),
+                  fallback: t("resource.messages.fallback"),
+                }}
+                onRetry={() => void refreshMessages()}
+              />
+            )}
             {displayedMessages.map((msg) => (
               <div
-                key={msg.id}
+                key={msg.clientMessageId ?? msg.id}
                 className={`group/message relative flex gap-3 items-start rounded-md ${
                   msg.isUser
                     ? "border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2.5"
@@ -1992,7 +2187,14 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                       <LinkedWorkItemRow
                         key={item.id}
                         item={item}
+                        statusPending={updatingLinkedWorkItemIds.has(item.id)}
                         onOpen={handleOpenLinkedWorkItem}
+                        onStatusChange={(nextItem, status) => {
+                          void handleLinkedWorkItemStatusChange(
+                            nextItem,
+                            status,
+                          );
+                        }}
                       />
                     ))}
                   </div>

@@ -8,10 +8,13 @@ import {
   Link2,
   MoreHorizontal,
   Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
+  Save,
   Send,
   Tag,
+  Trash2,
   User,
   X,
   type LucideIcon,
@@ -29,14 +32,21 @@ import {
 import { ProjectBreadcrumbAvatar } from '@/components/ProjectBreadcrumbAvatar';
 import { AgentMarkdown } from '@/components/AgentMarkdown';
 import {
+  CommandSelectList,
+  CommandSelectMenu,
+  CommandSelectNoMatches,
+  CommandSelectSearchRow,
+} from '@/components/CommandSelectMenu';
+import { ConfirmationDialog } from '@/components/ConfirmationDialog';
+import {
   NotificationToast,
   type NotificationToastTone,
 } from '@/components/NotificationToast';
+import { projectApi, projectGithubApi, projectWorkItemsApi } from '@/lib/api';
 import {
-  projectApi,
-  projectGithubApi,
-  projectWorkItemsApi,
-} from '@/lib/api';
+  clearPendingIssueStatusSync,
+  getPendingIssueStatusSync,
+} from '@/lib/pendingIssueStatusSync';
 import type {
   BackendChatSession,
   GitHubAccount,
@@ -77,6 +87,7 @@ export type IssueDetailPageProps = {
   onBack: () => void;
   onAction: (message: string) => void;
   onWorkItemChange?: (item: ProjectWorkItem) => void;
+  onIssueDeleted?: (workItemId: string) => void;
   onIssueSync?: (snapshot: IssueDetailSyncSnapshot) => void;
   linkedProviderId: RemoteProviderId | null;
   linkedRepoId?: string;
@@ -116,7 +127,6 @@ type LabelMenuOption = {
 type SessionMenuOption = {
   value: string;
   label: string;
-  shortcut: string;
 };
 
 export type IssueCommentAttachment = {
@@ -201,6 +211,7 @@ export function IssueDetailPage({
   onBack,
   onAction,
   onWorkItemChange,
+  onIssueDeleted,
   onIssueSync,
   linkedProviderId,
   linkedRepoId,
@@ -220,6 +231,8 @@ export function IssueDetailPage({
   const [commentText, setCommentText] = useState('');
   const [descriptionDraft, setDescriptionDraft] = useState('');
   const [descriptionEditing, setDescriptionEditing] = useState(false);
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [syncNotice, setSyncNotice] = useState<IssueDetailSyncNotice | null>(
     null,
@@ -240,7 +253,9 @@ export function IssueDetailPage({
   const labelMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionMenuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
   const detailRequestIdRef = useRef(0);
+  const pendingStatusSyncAttemptRef = useRef<string | null>(null);
 
   const loadDetail = useCallback(async () => {
     if (!projectId || !issue.workItemId) {
@@ -252,9 +267,13 @@ export function IssueDetailPage({
     setDetailLoading(true);
     setDetailError('');
     try {
-      const nextDetail = await projectWorkItemsApi.get(projectId, issue.workItemId, {
-        includeGithubDetail: false,
-      });
+      const nextDetail = await projectWorkItemsApi.get(
+        projectId,
+        issue.workItemId,
+        {
+          includeGithubDetail: false,
+        },
+      );
       if (detailRequestIdRef.current !== requestId) return;
       setDetail(nextDetail);
       setDetailLoading(false);
@@ -336,8 +355,12 @@ export function IssueDetailPage({
   const targetRepoIntegrationId = hasGitHubIssue
     ? issueRepoIntegrationId
     : linkedRepoId;
-  const canWriteGitHub = Boolean(targetRepoIntegrationId && linkedGitHubIssueNumber);
-  const canSyncActivity = Boolean(targetRepoIntegrationId && linkedGitHubIssueNumber);
+  const canWriteGitHub = Boolean(
+    targetRepoIntegrationId && linkedGitHubIssueNumber,
+  );
+  const canSyncActivity = Boolean(
+    targetRepoIntegrationId && linkedGitHubIssueNumber,
+  );
   const issueTitle = githubIssue?.summary.title ?? current.title;
   const issueBody = githubIssue?.body ?? current.description;
   const issueComments = githubIssue?.comments ?? [];
@@ -358,7 +381,9 @@ export function IssueDetailPage({
   const creatorAvatarUrl =
     githubIssue?.summary.author_avatar_url ??
     (githubIssue ? null : localCreatorIdentity.avatarUrl);
-  const creatorFallback = githubIssue ? 'initials' : localCreatorIdentity.fallback;
+  const creatorFallback = githubIssue
+    ? 'initials'
+    : localCreatorIdentity.fallback;
   const creatorDate = githubIssue?.summary.created_at ?? current.created_at;
   const linkedSessionLinks = (detail?.execution_links ?? []).flatMap((link) =>
     link.session_id ? [{ linkId: link.id, sessionId: link.session_id }] : [],
@@ -367,11 +392,29 @@ export function IssueDetailPage({
   const linkedSessionIdSet = new Set(linkedSessionIds);
   const sessionMenuOptions: SessionMenuOption[] = projectSessions
     .filter((session) => !linkedSessionIdSet.has(session.id))
-    .map((session, index) => ({
+    .map((session) => ({
       value: session.id,
       label: session.title?.trim() || session.id,
-      shortcut: index < 9 ? String(index + 1) : '',
     }));
+  const trimmedTitleDraft = titleDraft.trim();
+  const titleSaveDisabled =
+    action === 'rename-issue' ||
+    action === 'delete-issue' ||
+    !trimmedTitleDraft ||
+    trimmedTitleDraft === issueTitle;
+
+  useEffect(() => {
+    if (!titleEditing) {
+      setTitleDraft(issueTitle);
+    }
+  }, [issueTitle, titleEditing]);
+
+  useEffect(() => {
+    if (titleEditing) {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    }
+  }, [titleEditing]);
 
   useEffect(() => {
     setLabelDraft(issueLabels.join(', '));
@@ -425,11 +468,156 @@ export function IssueDetailPage({
     });
   };
 
+  const handleRenameIssue = async (nextTitle: string) => {
+    const title = nextTitle.trim();
+    if (!title || title === current.title) return true;
+
+    setAction('rename-issue');
+    setActionError('');
+    try {
+      const updated = await projectWorkItemsApi.update(projectId, current.id, {
+        title,
+      });
+      setDetail((existing) =>
+        existing
+          ? {
+              ...existing,
+              work_item: updated,
+              github_issue_detail: existing.github_issue_detail
+                ? {
+                    ...existing.github_issue_detail,
+                    summary: {
+                      ...existing.github_issue_detail.summary,
+                      title,
+                    },
+                  }
+                : existing.github_issue_detail,
+            }
+          : existing,
+      );
+      onWorkItemChange?.(updated);
+      onIssueSync?.({
+        workItem: updated,
+        labels: githubIssue ? issueLabels : undefined,
+      });
+      onAction('Issue name updated');
+      return true;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      return false;
+    } finally {
+      setAction(null);
+    }
+  };
+
+  const handleSaveTitleDraft = async () => {
+    const saved = await handleRenameIssue(trimmedTitleDraft);
+    if (saved) {
+      setTitleEditing(false);
+    }
+  };
+
+  const handleDeleteIssue = async () => {
+    setAction('delete-issue');
+    setActionError('');
+    try {
+      await projectWorkItemsApi.delete(projectId, current.id);
+      onAction('Issue deleted');
+      onIssueDeleted?.(current.id);
+      return true;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      return false;
+    } finally {
+      setAction(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!detail || !targetRepoIntegrationId || !linkedGitHubIssueNumber) {
+      return;
+    }
+
+    const pendingSync = getPendingIssueStatusSync(projectId, current.id);
+    if (!pendingSync) return;
+
+    if (pendingSync.status !== current.status) {
+      clearPendingIssueStatusSync(projectId, current.id);
+      return;
+    }
+
+    const attemptKey = [
+      pendingSync.projectId,
+      pendingSync.workItemId,
+      pendingSync.status,
+      pendingSync.updatedAt,
+    ].join(':');
+    if (pendingStatusSyncAttemptRef.current === attemptKey) return;
+    pendingStatusSyncAttemptRef.current = attemptKey;
+
+    setAction('status-sync');
+    setActionError('');
+    void projectGithubApi
+      .updateIssueState(
+        projectId,
+        targetRepoIntegrationId,
+        linkedGitHubIssueNumber,
+        issueStatusSyncsToClosed(current.status) ? 'closed' : 'open',
+      )
+      .then((githubSummary) => {
+        setDetail((existing) =>
+          existing
+            ? {
+                ...existing,
+                github_issue_detail: {
+                  summary: githubSummary,
+                  body:
+                    existing.github_issue_detail?.body ?? current.description,
+                  comments: existing.github_issue_detail?.comments ?? [],
+                },
+              }
+            : existing,
+        );
+        clearPendingIssueStatusSync(projectId, current.id);
+        onAction('GitHub issue status synced');
+        showSyncNotice(
+          'GitHub sync complete',
+          'Status synced to GitHub.',
+          'success',
+        );
+      })
+      .catch((error) => {
+        setActionError(errorMessage(error));
+        onAction('GitHub issue status sync failed');
+        showSyncNotice(
+          'GitHub sync pending',
+          'Could not sync status to GitHub. It will retry when you reopen this issue.',
+          'warning',
+        );
+      })
+      .finally(() => {
+        setAction((currentAction) =>
+          currentAction === 'status-sync' ? null : currentAction,
+        );
+      });
+  }, [
+    current.description,
+    current.id,
+    current.status,
+    detail,
+    linkedGitHubIssueNumber,
+    onAction,
+    projectId,
+    targetRepoIntegrationId,
+  ]);
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     setSelectedFiles(files);
     if (files.length > 0) {
-      onAction(`${files.length} attachment${files.length === 1 ? '' : 's'} selected`);
+      onAction(
+        `${files.length} attachment${files.length === 1 ? '' : 's'} selected`,
+      );
     }
   };
 
@@ -577,7 +765,8 @@ export function IssueDetailPage({
                 ...existing,
                 github_issue_detail: {
                   summary: githubSummary,
-                  body: existing.github_issue_detail?.body ?? current.description,
+                  body:
+                    existing.github_issue_detail?.body ?? current.description,
                   comments: existing.github_issue_detail?.comments ?? [],
                 },
               }
@@ -588,6 +777,7 @@ export function IssueDetailPage({
         status: nextStatus,
       });
       patchCurrentWorkItem(updated);
+      clearPendingIssueStatusSync(projectId, current.id);
       onAction(`Issue status updated to ${statusLabel(nextStatus)}`);
     });
   };
@@ -689,7 +879,10 @@ export function IssueDetailPage({
           return;
         }
         if (openPropertyMenu === 'priority') {
-          const option = filterMenuOptions(priorityMenuOptions, priorityQuery)[0];
+          const option = filterMenuOptions(
+            priorityMenuOptions,
+            priorityQuery,
+          )[0];
           if (option) handlePriorityMenuSelect(option.value);
           return;
         }
@@ -724,17 +917,6 @@ export function IssueDetailPage({
         if (option) {
           event.preventDefault();
           handlePriorityMenuSelect(option.value);
-        }
-        return;
-      }
-
-      if (openPropertyMenu === 'session') {
-        const option = sessionMenuOptions.find(
-          (candidate) => candidate.shortcut === event.key,
-        );
-        if (option) {
-          event.preventDefault();
-          handleAssignSession(option.value);
         }
         return;
       }
@@ -837,6 +1019,10 @@ export function IssueDetailPage({
         projectName={projectName}
         onBack={onBack}
         onAction={onAction}
+        onStartRename={() => setTitleEditing(true)}
+        onDeleteIssue={handleDeleteIssue}
+        renaming={action === 'rename-issue'}
+        deleting={action === 'delete-issue'}
         linkedProviderId={linkedProviderId}
         linkedRepoName={linkedRepoName}
         onOpenIntegrations={onOpenIntegrations}
@@ -846,9 +1032,48 @@ export function IssueDetailPage({
       <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--surface-2)] text-[var(--ink)]">
         <div className="grid min-w-[820px] grid-cols-[minmax(0,1fr)_268px] gap-8 px-[15px] pb-14 pt-[6px]">
           <section className="min-w-0 pl-2 pr-1 pt-6">
-            <h2 className="text-[23px] font-bold leading-tight text-[var(--ink)]">
-              {issueTitle}
-            </h2>
+            {titleEditing ? (
+              <form
+                className="flex min-w-0 items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!titleSaveDisabled) void handleSaveTitleDraft();
+                }}
+              >
+                <input
+                  ref={titleInputRef}
+                  value={titleDraft}
+                  className="h-10 min-w-0 flex-1 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] px-2.5 text-[23px] font-bold leading-tight text-[var(--ink)] outline-none transition placeholder:text-[var(--ink-tertiary)] focus:border-[var(--hairline-strong)]"
+                  placeholder={tr(
+                    'issue.detail.actions.namePlaceholder',
+                    'Issue name',
+                  )}
+                  onChange={(event) => setTitleDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setTitleEditing(false);
+                      setTitleDraft(issueTitle);
+                    }
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={titleSaveDisabled}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] border border-[var(--hairline)] text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-45"
+                  aria-label={tr(
+                    'issue.detail.actions.saveName',
+                    'Save name',
+                  )}
+                >
+                  <Save aria-hidden="true" className="h-[18px] w-[18px]" />
+                </button>
+              </form>
+            ) : (
+              <h2 className="text-[23px] font-bold leading-tight text-[var(--ink)]">
+                {issueTitle}
+              </h2>
+            )}
             <div className="mt-2 flex items-center gap-2 text-[12px] font-medium text-[var(--ink-subtle)]">
               <IssueAvatar
                 avatarUrl={creatorAvatarUrl}
@@ -857,7 +1082,8 @@ export function IssueDetailPage({
                 size="normal"
               />
               <span className="min-w-0 truncate">
-                {creatorName} opened this issue on {formatSimpleDate(creatorDate)}
+                {creatorName} opened this issue on{' '}
+                {formatSimpleDate(creatorDate)}
               </span>
             </div>
 
@@ -877,7 +1103,7 @@ export function IssueDetailPage({
             />
 
             {detailLoading ? (
-              <div className="mt-[22px] rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] font-medium leading-relaxed text-[var(--ink-tertiary)]">
+              <div className="mt-[22px] rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] font-medium leading-relaxed text-[var(--ink-tertiary)]">
                 Loading description...
               </div>
             ) : descriptionEditing ? (
@@ -885,7 +1111,7 @@ export function IssueDetailPage({
                 autoFocus
                 value={descriptionDraft}
                 placeholder="Add a description..."
-                className="mt-[22px] min-h-[126px] w-full resize-y rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-muted)] outline-none transition placeholder:text-[var(--ink-tertiary)] focus:border-[var(--hairline-strong)]"
+                className="mt-[22px] min-h-[126px] w-full resize-y rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-muted)] outline-none transition placeholder:text-[var(--ink-tertiary)] focus:border-[var(--hairline-strong)]"
                 onChange={(event) => setDescriptionDraft(event.target.value)}
                 onBlur={() => {
                   void handleSaveDescriptionDraft();
@@ -894,14 +1120,14 @@ export function IssueDetailPage({
               />
             ) : descriptionDraft ? (
               <div
-                className="mt-[22px] cursor-text rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px]"
+                className="mt-[22px] cursor-text rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px]"
                 onClick={() => setDescriptionEditing(true)}
               >
                 <AgentMarkdown content={descriptionDraft} fontSize={14} />
               </div>
             ) : (
               <div
-                className="mt-[22px] cursor-text rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-tertiary)]"
+                className="mt-[22px] cursor-text rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-tertiary)]"
                 onClick={() => setDescriptionEditing(true)}
               >
                 Add a description...
@@ -977,10 +1203,13 @@ export function IssueDetailPage({
                   {issueComments.map((comment) => (
                     <article
                       key={String(comment.id)}
-                      className="flex gap-3 rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px]"
+                      className="flex gap-3 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px]"
                     >
                       <IssueAvatar
-                        avatarUrl={commentAvatarUrl(comment, githubAccount ?? null)}
+                        avatarUrl={commentAvatarUrl(
+                          comment,
+                          githubAccount ?? null,
+                        )}
                         name={comment.author ?? 'unknown'}
                         size="large"
                       />
@@ -992,19 +1221,22 @@ export function IssueDetailPage({
                           </span>
                         </p>
                         <div className="mt-2">
-                          <AgentMarkdown content={commentBodyText(comment.body)} fontSize={14} />
+                          <AgentMarkdown
+                            content={commentBodyText(comment.body)}
+                            fontSize={14}
+                          />
                         </div>
                       </div>
                     </article>
                   ))}
                 </div>
               ) : (
-                <p className="mt-5 rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[13px] font-medium text-[var(--ink-tertiary)]">
+                <p className="mt-5 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[13px] font-medium text-[var(--ink-tertiary)]">
                   No comments yet.
                 </p>
               )}
 
-              <div className="mt-6 rounded-[9px] border border-[var(--hairline)] bg-[var(--surface-2)] p-[12px]">
+              <div className="mt-6 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-[12px]">
                 <textarea
                   value={commentText}
                   placeholder="Leave a comment..."
@@ -1033,7 +1265,8 @@ export function IssueDetailPage({
                       className="inline-flex h-6 items-center rounded-full px-2 text-[12px] font-semibold text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
                       onClick={() => {
                         setSelectedFiles([]);
-                        if (fileInputRef.current) fileInputRef.current.value = '';
+                        if (fileInputRef.current)
+                          fileInputRef.current.value = '';
                       }}
                     >
                       Clear
@@ -1046,7 +1279,10 @@ export function IssueDetailPage({
                     className="inline-flex items-center gap-2 text-[13px] font-semibold text-[var(--ink-subtle)] transition hover:text-[var(--ink)]"
                     onClick={() => fileInputRef.current?.click()}
                   >
-                    <Paperclip aria-hidden="true" className="h-[14px] w-[14px]" />
+                    <Paperclip
+                      aria-hidden="true"
+                      className="h-[14px] w-[14px]"
+                    />
                     Attach
                   </button>
                   <button
@@ -1182,7 +1418,8 @@ export function IssueDetailPage({
                 <SessionDropdown
                   menuRef={sessionMenuRef}
                   disabled={
-                    sessionsLoading || Boolean(action?.startsWith('assign-session-'))
+                    sessionsLoading ||
+                    Boolean(action?.startsWith('assign-session-'))
                   }
                   loading={sessionsLoading}
                   open={openPropertyMenu === 'session'}
@@ -1223,7 +1460,7 @@ export function IssueDetailPage({
               )}
               {(githubIssue?.summary.url ?? githubIssueLink?.url) && (
                 <a
-                  href={(githubIssue?.summary.url ?? githubIssueLink?.url) ?? '#'}
+                  href={githubIssue?.summary.url ?? githubIssueLink?.url ?? '#'}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-2 text-[13px] font-bold text-[#8d97ff] transition hover:text-[#b8bfff]"
@@ -1245,6 +1482,10 @@ function IssueDetailHeader({
   projectName,
   onBack,
   onAction,
+  onStartRename,
+  onDeleteIssue,
+  renaming,
+  deleting,
   linkedProviderId,
   linkedRepoName,
   onOpenIntegrations,
@@ -1254,11 +1495,46 @@ function IssueDetailHeader({
   projectName: string;
   onBack: () => void;
   onAction: (message: string) => void;
+  onStartRename: () => void;
+  onDeleteIssue: () => Promise<boolean>;
+  renaming: boolean;
+  deleting: boolean;
   linkedProviderId: RemoteProviderId | null;
   linkedRepoName?: string;
   onOpenIntegrations: () => void;
   tr: IssueDetailTranslator;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpen]);
+
+  const handleDelete = async () => {
+    const deleted = await onDeleteIssue();
+    if (deleted) {
+      setDeleteDialogOpen(false);
+    }
+  };
+
   return (
     <header className="flex h-[49px] shrink-0 items-center justify-between border-b border-[var(--hairline)] bg-[var(--surface-2)] px-[29px]">
       <div className="flex min-w-0 items-center gap-[7px]">
@@ -1295,14 +1571,71 @@ function IssueDetailHeader({
           />
           <span className="min-w-0 truncate">{issue.title}</span>
         </h1>
-        <button
-          type="button"
-          className="ml-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
-          aria-label="More issue options"
-          onClick={() => onAction(`More options opened for ${issue.id}`)}
-        >
-          <MoreHorizontal aria-hidden="true" className="h-[17px] w-[17px]" />
-        </button>
+        <div ref={menuRef} className="relative ml-2 shrink-0">
+          <button
+            type="button"
+            className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+            aria-expanded={menuOpen}
+            aria-haspopup="menu"
+            aria-label={tr('issue.detail.actions.more', 'More issue options')}
+            onClick={() => {
+              setMenuOpen((open) => !open);
+              onAction(`More options opened for ${issue.id}`);
+            }}
+          >
+            <MoreHorizontal aria-hidden="true" className="h-[17px] w-[17px]" />
+          </button>
+
+          {menuOpen && (
+            <div className="absolute left-full top-full z-50 ml-2 mt-2">
+              <div
+                role="menu"
+                className="w-[226px] rounded-[8px] border border-[#34363a] bg-[#1b1b1c] p-2 text-[15px] shadow-[0_24px_70px_rgba(0,0,0,0.46),inset_0_1px_0_rgba(255,255,255,0.04)]"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex h-12 w-full items-center gap-3 rounded-[8px] px-3 text-left font-semibold text-[#e9eaec] transition hover:bg-[#27282c]"
+                  onClick={() => {
+                    onStartRename();
+                    setMenuOpen(false);
+                  }}
+                >
+                  <Pencil
+                    aria-hidden="true"
+                    className="h-[18px] w-[18px] shrink-0 text-[#a6a8ad]"
+                    strokeWidth={2.4}
+                  />
+                  <span className="min-w-0 flex-1 truncate">
+                    {tr('issue.detail.actions.rename', 'Rename')}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={renaming || deleting}
+                  className="mt-1 flex h-12 w-full items-center gap-3 rounded-[8px] px-3 text-left font-semibold text-[#f1f2f3] transition hover:bg-[#27282c] disabled:cursor-not-allowed disabled:opacity-55"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setDeleteDialogOpen(true);
+                  }}
+                >
+                  <Trash2
+                    aria-hidden="true"
+                    className="h-[19px] w-[19px] shrink-0 text-[#f1f2f3]"
+                    strokeWidth={2.4}
+                  />
+                  <span className="min-w-0 flex-1 truncate">
+                    {deleting
+                      ? tr('issue.detail.actions.deleting', 'Deleting...')
+                      : tr('issue.detail.actions.delete', 'Delete')}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <HeaderIntegrationControls
@@ -1311,6 +1644,37 @@ function IssueDetailHeader({
         onOpen={onOpenIntegrations}
         tr={tr}
       />
+      {deleteDialogOpen && (
+        <ConfirmationDialog
+          title={tr('issue.detail.actions.confirmDelete', 'Confirm delete')}
+          description={
+            <>
+              <span>
+                {tr(
+                  'issue.detail.actions.deleteWarning',
+                  'This removes the issue from this project.',
+                )}
+              </span>
+              <span className="mt-2 block truncate font-semibold text-[var(--ink)]">
+                {issue.title}
+              </span>
+            </>
+          }
+          confirmLabel={
+            deleting
+              ? tr('issue.detail.actions.deleting', 'Deleting...')
+              : tr('issue.detail.actions.confirmDelete', 'Confirm delete')
+          }
+          cancelLabel={tr('issue.detail.actions.cancelDelete', 'Cancel')}
+          escLabel="Esc to cancel"
+          tone="danger"
+          confirming={deleting}
+          idPrefix="issue-delete-dialog"
+          confirmIcon={<Trash2 className="h-3.5 w-3.5" />}
+          onCancel={() => setDeleteDialogOpen(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
     </header>
   );
 }
@@ -1325,7 +1689,7 @@ function InlineError({
   return (
     <div
       className={cn(
-        'rounded-[10px] border border-[#55343a] bg-[#28181b] px-4 py-[10px] text-[13px] font-semibold text-[#ffb4bf]',
+        'rounded-[8px] border border-[#55343a] bg-[#28181b] px-4 py-[10px] text-[13px] font-semibold text-[#ffb4bf]',
         className,
       )}
     >
@@ -1351,7 +1715,11 @@ function DetailPlainButton({
       title={label}
       onClick={onClick}
     >
-      <Icon aria-hidden="true" className="h-[15px] w-[15px]" strokeWidth={2.2} />
+      <Icon
+        aria-hidden="true"
+        className="h-[15px] w-[15px]"
+        strokeWidth={2.2}
+      />
     </button>
   );
 }
@@ -1373,7 +1741,11 @@ function DetailRoundButton({
       title={label}
       onClick={onClick}
     >
-      <Icon aria-hidden="true" className="h-[14px] w-[14px]" strokeWidth={2.2} />
+      <Icon
+        aria-hidden="true"
+        className="h-[14px] w-[14px]"
+        strokeWidth={2.2}
+      />
     </button>
   );
 }
@@ -1391,7 +1763,7 @@ function DetailPanel({
     .replace(/[^a-z0-9]+/g, '-')}`;
 
   return (
-    <section className="mb-[9px] rounded-[10px] border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-[15px]">
+    <section className="mb-[9px] rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-[15px]">
       <button
         type="button"
         className={cn(
@@ -1495,7 +1867,10 @@ function StatusDropdown({
                           strokeWidth={3}
                         />
                       ) : (
-                        <span aria-hidden="true" className="h-[14px] w-[14px]" />
+                        <span
+                          aria-hidden="true"
+                          className="h-[14px] w-[14px]"
+                        />
                       )}
                       <span className="text-[13px] font-semibold">
                         {option.shortcut}
@@ -1580,7 +1955,10 @@ function PriorityDropdown({
                           strokeWidth={3}
                         />
                       ) : (
-                        <span aria-hidden="true" className="h-[14px] w-[14px]" />
+                        <span
+                          aria-hidden="true"
+                          className="h-[14px] w-[14px]"
+                        />
                       )}
                       <span className="text-[13px] font-semibold">
                         {option.shortcut}
@@ -1601,7 +1979,7 @@ function PriorityDropdown({
 
 function CommandMenuShell({ children }: { children: ReactNode }) {
   return (
-    <div className="absolute right-0 top-full z-50 mt-1 w-[248px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[13px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
+    <div className="absolute right-0 top-full z-50 mt-1 w-[248px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
       {children}
     </div>
   );
@@ -1627,7 +2005,7 @@ function CommandSearchRow({
         className="min-w-0 flex-1 bg-transparent text-[13px] font-medium leading-none text-[var(--ink)] caret-[var(--primary)] outline-none placeholder:text-[var(--ink-tertiary)]"
         onChange={(event) => onChange(event.target.value)}
       />
-      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1 text-[12px] font-medium leading-none text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1 text-[12px] font-medium leading-none text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
         {shortcut}
       </kbd>
     </div>
@@ -1787,7 +2165,7 @@ export function PriorityMenuIcon({
       <span
         aria-hidden="true"
         className={cn(
-          'flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[2px] text-[12px] font-black leading-none text-white',
+          'flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[8px] text-[12px] font-black leading-none text-white',
           urgentFillClass,
         )}
       >
@@ -1797,11 +2175,7 @@ export function PriorityMenuIcon({
   }
 
   const bars =
-    priority === 'low'
-      ? [5]
-      : priority === 'medium'
-        ? [5, 8]
-        : [5, 8, 12];
+    priority === 'low' ? [5] : priority === 'medium' ? [5, 8] : [5, 8, 12];
 
   return (
     <span
@@ -1890,7 +2264,7 @@ function LabelDropdown({
       </div>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[16px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
+        <div className="absolute right-0 top-full z-50 mt-2 w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
           <LabelSearchRow
             placeholder="Add labels..."
             shortcut="L"
@@ -1910,7 +2284,7 @@ function LabelDropdown({
                     disabled={disabled}
                     role="option"
                     aria-selected={selected}
-                    className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[7px] px-3 text-left text-[13px] font-bold leading-normal text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[8px] px-3 text-left text-[13px] font-bold leading-normal text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)] disabled:cursor-not-allowed disabled:opacity-50"
                     onClick={() => onSelect(option.value)}
                   >
                     <LabelColorDot color={option.color} />
@@ -1925,7 +2299,10 @@ function LabelDropdown({
                           strokeWidth={3}
                         />
                       ) : (
-                        <span aria-hidden="true" className="h-[13px] w-[13px]" />
+                        <span
+                          aria-hidden="true"
+                          className="h-[13px] w-[13px]"
+                        />
                       )}
                       {option.shortcut ? (
                         <span className="text-[12px] font-semibold">
@@ -1990,17 +2367,14 @@ function SessionDropdown({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[16px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
-          <LabelSearchRow
+        <CommandSelectMenu>
+          <CommandSelectSearchRow
             placeholder="Link session..."
             shortcut="S"
             value={query}
             onChange={onQueryChange}
           />
-          <div
-            className="max-h-[220px] space-y-1 overflow-y-auto px-3 py-3 ot-scroll-area-styled"
-            role="listbox"
-          >
+          <CommandSelectList>
             {options.length > 0 ? (
               options.map((option) => (
                 <button
@@ -2008,7 +2382,7 @@ function SessionDropdown({
                   type="button"
                   role="option"
                   aria-selected={false}
-                  className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[7px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)]"
+                  className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[8px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)]"
                   onClick={() => onSelect(option.value)}
                 >
                   <Box
@@ -2016,23 +2390,19 @@ function SessionDropdown({
                     className="h-[13px] w-[13px] shrink-0 text-[var(--ink-subtle)]"
                     strokeWidth={2.3}
                   />
-                  <span className="min-w-0 flex-1 truncate" title={option.label}>
+                  <span
+                    className="min-w-0 flex-1 truncate"
+                    title={option.label}
+                  >
                     {option.label}
                   </span>
-                  {option.shortcut ? (
-                    <span className="ml-auto shrink-0 text-[12px] font-semibold text-[var(--ink-subtle)]">
-                      {option.shortcut}
-                    </span>
-                  ) : (
-                    <span aria-hidden="true" className="w-2 shrink-0" />
-                  )}
                 </button>
               ))
             ) : (
-              <CommandNoMatches />
+              <CommandSelectNoMatches />
             )}
-          </div>
-        </div>
+          </CommandSelectList>
+        </CommandSelectMenu>
       )}
     </div>
   );
@@ -2058,7 +2428,7 @@ function LabelSearchRow({
         className="min-w-0 flex-1 bg-transparent text-[13px] font-medium leading-normal text-[var(--ink)] caret-[var(--primary)] outline-none placeholder:text-[var(--ink-tertiary)]"
         onChange={(event) => onChange(event.target.value)}
       />
-      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 text-[12px] font-medium leading-normal text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+      <kbd className="flex h-6 min-w-6 items-center justify-center rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 text-[12px] font-medium leading-normal text-[var(--ink-subtle)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
         {shortcut}
       </kbd>
     </div>
@@ -2075,7 +2445,11 @@ function DetailStaticRow({
   return (
     <div className="flex w-full items-center gap-[10px] text-left text-[14px] font-semibold leading-none text-[var(--ink)]">
       <span className="flex h-[17px] w-[17px] shrink-0 items-center justify-center text-[var(--ink)]">
-        <Icon aria-hidden="true" className="h-[16px] w-[16px]" strokeWidth={2.2} />
+        <Icon
+          aria-hidden="true"
+          className="h-[16px] w-[16px]"
+          strokeWidth={2.2}
+        />
       </span>
       <span className="min-w-0 truncate">{children}</span>
     </div>
@@ -2156,7 +2530,9 @@ function IssueAvatar({
       >
         <User
           aria-hidden="true"
-          className={size === 'large' ? 'h-[18px] w-[18px]' : 'h-[11px] w-[11px]'}
+          className={
+            size === 'large' ? 'h-[18px] w-[18px]' : 'h-[11px] w-[11px]'
+          }
           strokeWidth={2.4}
         />
       </span>
@@ -2447,8 +2823,9 @@ function findIssueRepoIntegrationId(
 ) {
   if (repoId) {
     const directMatch =
-      repos.find((repo) => repo.repo_id === repoId && repo.sync_status === 'connected')
-        ?.id ?? null;
+      repos.find(
+        (repo) => repo.repo_id === repoId && repo.sync_status === 'connected',
+      )?.id ?? null;
     if (directMatch) return directMatch;
   }
 

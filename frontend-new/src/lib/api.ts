@@ -1674,6 +1674,15 @@ export const projectWorkItemsApi = {
     );
     return handleApiResponse<ProjectWorkItem, GitHubErrorData>(r);
   },
+  delete: async (projectId: string, workItemId: string): Promise<void> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/work-items/${encodeURIComponent(
+        workItemId,
+      )}`,
+      { method: "DELETE" },
+    );
+    await handleApiResponse<void, GitHubErrorData>(r);
+  },
   linkExecution: async (
     projectId: string,
     workItemId: string,

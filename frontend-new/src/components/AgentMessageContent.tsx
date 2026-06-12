@@ -45,6 +45,7 @@ export const AgentMessageContent: React.FC<AgentMessageContentProps> = ({
   );
   const mountedRef = useRef(true);
   const activityRequestIdRef = useRef(0);
+  const wasRunningRef = useRef(isRunning);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -57,6 +58,13 @@ export const AgentMessageContent: React.FC<AgentMessageContentProps> = ({
   useEffect(() => {
     if (isRunning) {
       setExpanded(true);
+      wasRunningRef.current = true;
+      return;
+    }
+
+    if (wasRunningRef.current) {
+      setExpanded(false);
+      wasRunningRef.current = false;
     }
   }, [isRunning]);
 

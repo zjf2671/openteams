@@ -29,6 +29,8 @@ const translations: Record<string, string> = {
   'createSession.promptPlaceholder': 'PROMPT_PLACEHOLDER',
   'createSession.workflowMode': 'WORKFLOW',
   'createSession.freeChatMode': 'FREE_CHAT',
+  'createSession.issueLink': 'LINK_ISSUE',
+  planMode: 'PLAN_MODE',
   'createSession.sendButton': 'SEND_CTRL_ENTER',
   'createSession.close': 'CLOSE_MODAL',
 };
@@ -87,35 +89,189 @@ const source = readFileSync(
 );
 
 check('does not render when closed', closedHtml === '', closedHtml);
-check('renders modal dialog semantics', html.includes('role="dialog"') && html.includes('aria-modal="true"'), html);
-check('renders translated title and breadcrumb project', html.includes('NEW_SESSION_TITLE') && html.includes('my-saas'), html);
-check('centers the modal overlay', html.includes('items-center justify-center'), html);
-check('uses light translucent blurred page overlay', html.includes('bg-[#050608]/30') && html.includes('backdrop-blur-sm'), html);
-check('uses compact modal dimensions', html.includes('max-w-[620px]') && html.includes('min-h-[320px]'), html);
-check('keeps modal text at 14px scale', html.includes('text-[14px]') && !html.includes('text-[16px]') && !html.includes('text-[19px]'), html);
-check('renders read-only main agent in workflow mode', html.includes('MEMBER_LABEL') && html.includes('@lead') && html.includes('Claude'), html);
-check('read-only workflow main agent has no outer border', source.includes('inline-flex min-w-0 max-w-[280px] items-center gap-2 rounded-md bg-[var(--surface-2)]'), source);
-check('does not render member dropdown in workflow mode', !html.includes('aria-haspopup="listbox"'), html);
-check('workflow mode only shows the main agent by default', html.includes('@lead') && !html.includes('@backend'), html);
-check('does not fall back when App explicitly has no workflow agent', noLeadHtml.includes('No members available') && !noLeadHtml.includes('@lead'), noLeadHtml);
-check('renders prompt composer placeholder', html.includes('PROMPT_PLACEHOLDER'), html);
-check('renders only the current mode label', html.includes('WORKFLOW') && !html.includes('FREE_CHAT'), html);
-check('mode labels omit the word mode', !html.includes('Workflow mode') && !html.includes('Free chat mode'), html);
-check('renders send shortcut action only in footer', html.includes('SEND_CTRL_ENTER') && !html.includes('SWITCH_MANUAL') && !html.includes('CREATE_ANOTHER'), html);
-check('does not render old no-project/manual/create-another labels', !html.includes('NO_PROJECT') && !html.includes('Create another') && !html.includes('Switch to Manual'), html);
-check('supports Ctrl/Cmd+Enter submit', source.includes("event.key === 'Enter'") && source.includes('event.metaKey || event.ctrlKey'), source);
-check('supports Escape close', source.includes("event.key === 'Escape'"), source);
-check('uses shared DropdownSelect for member picking', source.includes('import {') && source.includes('DropdownSelect') && !source.includes('<select'), source);
-check('only uses shared DropdownSelect for free chat member picking', source.includes("taskMode === 'workflow' ?") && source.includes('<DropdownSelect'), source);
+check(
+  'renders modal dialog semantics',
+  html.includes('role="dialog"') && html.includes('aria-modal="true"'),
+  html,
+);
+check(
+  'renders translated title and breadcrumb project',
+  html.includes('NEW_SESSION_TITLE') && html.includes('my-saas'),
+  html,
+);
+check(
+  'centers the modal overlay',
+  html.includes('items-center justify-center'),
+  html,
+);
+check(
+  'uses light translucent blurred page overlay',
+  html.includes('bg-[#050608]/30') && html.includes('backdrop-blur-sm'),
+  html,
+);
+check(
+  'uses compact modal dimensions',
+  html.includes('max-w-[620px]') && html.includes('min-h-[320px]'),
+  html,
+);
+check(
+  'keeps modal text at 14px scale',
+  html.includes('text-[14px]') &&
+    !html.includes('text-[16px]') &&
+    !html.includes('text-[19px]'),
+  html,
+);
+check(
+  'renders member picker by default',
+  html.includes('MEMBER_LABEL') && html.includes('aria-haspopup="listbox"'),
+  html,
+);
+check(
+  'read-only workflow main agent has no outer border',
+  source.includes(
+    'inline-flex min-w-0 max-w-[280px] items-center gap-2 rounded-md bg-[var(--surface-2)]',
+  ),
+  source,
+);
+check(
+  'plan mode source switches member list to the main agent',
+  source.includes('isPlanMode ? (mainAgent ? [mainAgent] : []) : members'),
+  source,
+);
+check(
+  'does not require a workflow lead before plan mode is activated',
+  noLeadHtml.includes('MEMBER_LABEL') &&
+    !noLeadHtml.includes('No members available'),
+  noLeadHtml,
+);
+check(
+  'renders prompt composer placeholder',
+  html.includes('PROMPT_PLACEHOLDER'),
+  html,
+);
+check(
+  'renders plan mode button instead of mode labels',
+  html.includes('PLAN_MODE') &&
+    !html.includes('WORKFLOW') &&
+    !html.includes('FREE_CHAT'),
+  html,
+);
+check(
+  'mode labels omit the word mode',
+  !html.includes('Workflow mode') && !html.includes('Free chat mode'),
+  html,
+);
+check('renders issue linker control', html.includes('LINK_ISSUE'), html);
+check(
+  'issue linker uses plan-mode button text sizing',
+  source.includes('px-2 py-1 text-[10px] font-medium') &&
+    source.includes('className="h-3 w-3 shrink-0"'),
+  source,
+);
+check(
+  'issue menu renders through a fixed portal outside the modal clipping context',
+  source.includes('createPortal(') &&
+    source.includes('document.body') &&
+    source.includes('className="fixed top-auto mt-0"') &&
+    source.includes("transform: 'translateY(-100%)'"),
+  source,
+);
+check(
+  'issue menu option rows leave room for descenders',
+  source.includes('flex min-h-12 w-full') &&
+    source.includes('text-[14px] font-bold leading-normal') &&
+    source.includes('truncate leading-snug') &&
+    source.includes('text-[12px] font-semibold leading-normal'),
+  source,
+);
+check(
+  'issue menu options do not show unexplained shortcut numbers',
+  !source.includes('option.shortcut') &&
+    !source.includes('shortcut: index < 9 ? String(index + 1)'),
+  source,
+);
+check(
+  'issue menu supports keyboard option navigation',
+  source.includes('activeWorkItemOptionIndex') &&
+    source.includes("event.key === 'ArrowDown'") &&
+    source.includes("event.key === 'ArrowUp'") &&
+    source.includes("event.key === 'Enter'") &&
+    source.includes('onKeyDown={handleWorkItemMenuKeyDown}') &&
+    source.includes("scrollIntoView({ block: 'nearest' })") &&
+    source.includes('onMouseEnter={() =>'),
+  source,
+);
+check(
+  'renders send shortcut action only in footer',
+  html.includes('SEND_CTRL_ENTER') &&
+    !html.includes('SWITCH_MANUAL') &&
+    !html.includes('CREATE_ANOTHER'),
+  html,
+);
+check(
+  'does not render old no-project/manual/create-another labels',
+  !html.includes('NO_PROJECT') &&
+    !html.includes('Create another') &&
+    !html.includes('Switch to Manual'),
+  html,
+);
+check(
+  'supports Ctrl/Cmd+Enter submit',
+  source.includes("event.key === 'Enter'") &&
+    source.includes('event.metaKey || event.ctrlKey'),
+  source,
+);
+check(
+  'supports Escape close',
+  source.includes("event.key === 'Escape'"),
+  source,
+);
+check(
+  'uses shared DropdownSelect for member picking',
+  source.includes('import {') &&
+    source.includes('DropdownSelect') &&
+    !source.includes('<select'),
+  source,
+);
+check(
+  'only uses shared DropdownSelect for free chat member picking',
+  source.includes('isPlanMode ?') && source.includes('<DropdownSelect'),
+  source,
+);
 check(
   'free-chat member dropdown is wider and shorter',
   source.includes('className="w-[168px] max-w-full shrink-0') &&
     source.includes('maxPanelHeightClassName="max-h-[144px]"'),
   source,
 );
-check('mode switch uses smaller text and a switch mark', source.includes('text-[13px]') && source.includes('ArrowLeftRight'), source);
-check('mode control toggles between workflow and free chat', source.includes('handleToggleTaskMode') && source.includes("'freeChat' : 'workflow'"), source);
-check('free-chat mode keeps all members selectable in source', source.includes("taskMode === 'workflow'") && source.includes(': members'), source);
+check(
+  'plan mode button uses chat composer animation class',
+  source.includes('plan-mode-toggle-active') && source.includes('GitBranch'),
+  source,
+);
+check(
+  'plan mode control toggles between workflow and free chat',
+  source.includes('handleTogglePlanMode') &&
+    source.includes("isPlanMode ? 'freeChat' : 'workflow'"),
+  source,
+);
+check(
+  'free-chat mode keeps all members selectable in source',
+  source.includes('isPlanMode ?') && source.includes(': members'),
+  source,
+);
+check(
+  'member selection reacts to updated selectable members',
+  source.includes('selectableMembers.find(') &&
+    source.includes("setSelectedMemberId(selectableMembers[0]?.id ?? '')"),
+  source,
+);
+check(
+  'issue menu reuses shared command select menu',
+  source.includes('CommandSelectMenu') &&
+    source.includes('CommandSelectSearchRow'),
+  source,
+);
 
 if (failures > 0) {
   // eslint-disable-next-line no-console

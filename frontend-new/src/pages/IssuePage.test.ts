@@ -50,9 +50,23 @@ const issueDetailSource = readFileSync(
   new URL('./IssueDetailPage.tsx', import.meta.url),
   'utf8',
 );
-const apiSource = readFileSync(new URL('../lib/api.ts', import.meta.url), 'utf8');
+const commandSelectMenuSource = readFileSync(
+  new URL('../components/CommandSelectMenu.tsx', import.meta.url),
+  'utf8',
+);
+const confirmationDialogSource = readFileSync(
+  new URL('../components/ConfirmationDialog.tsx', import.meta.url),
+  'utf8',
+);
+const apiSource = readFileSync(
+  new URL('../lib/api.ts', import.meta.url),
+  'utf8',
+);
 const projectGithubRouteSource = readFileSync(
-  new URL('../../../crates/server/src/routes/project_github.rs', import.meta.url),
+  new URL(
+    '../../../crates/server/src/routes/project_github.rs',
+    import.meta.url,
+  ),
   'utf8',
 );
 const projectWorkItemServiceSource = readFileSync(
@@ -69,6 +83,13 @@ const githubIssueServiceSource = readFileSync(
   ),
   'utf8',
 );
+const githubRestClientSource = readFileSync(
+  new URL(
+    '../../../crates/services/src/services/github/rest_client.rs',
+    import.meta.url,
+  ),
+  'utf8',
+);
 const detailPanelUsages =
   issueDetailSource.match(/<DetailPanel title=/g)?.length ?? 0;
 const sourceBetween = (start: string, end: string) =>
@@ -76,6 +97,18 @@ const sourceBetween = (start: string, end: string) =>
     issueDetailSource.indexOf(start),
     issueDetailSource.indexOf(end),
   );
+const sessionOptionTypeSource = sourceBetween(
+  'type SessionMenuOption',
+  'export type IssueCommentAttachment',
+);
+const sessionMenuOptionsSource = sourceBetween(
+  'const sessionMenuOptions',
+  'useEffect(() => {\n    setLabelDraft',
+);
+const sessionDropdownSource = sourceBetween(
+  'function SessionDropdown',
+  'function LabelSearchRow',
+);
 
 check(
   'issue detail right panels use collapsible detail panels',
@@ -91,8 +124,9 @@ check(
 check(
   'issue detail project panel links sessions from a label-style dropdown',
   issueDetailSource.includes('function SessionDropdown') &&
-    issueDetailSource.includes("placeholder=\"Link session...\"") &&
-    issueDetailSource.includes('max-h-[220px]') &&
+    issueDetailSource.includes("from '@/components/CommandSelectMenu'") &&
+    issueDetailSource.includes('placeholder="Link session..."') &&
+    commandSelectMenuSource.includes('max-h-[220px]') &&
     issueDetailSource.includes('options={filteredSessionOptions}') &&
     issueDetailSource.includes('linkedSessionLinks.length === 0 &&') &&
     issueDetailSource.includes(
@@ -101,6 +135,20 @@ check(
     !issueDetailSource.includes('projectApi.createSession(projectId') &&
     !issueDetailSource.includes('<select'),
   issueDetailSource,
+);
+check(
+  'issue detail link session menu omits unexplained numeric shortcuts',
+  !sessionOptionTypeSource.includes('shortcut') &&
+    !sessionMenuOptionsSource.includes('shortcut') &&
+    !sessionDropdownSource.includes('option.shortcut') &&
+    !issueDetailSource.includes(
+      "if (openPropertyMenu === 'session') {\n        const option = sessionMenuOptions.find",
+    ),
+  {
+    sessionOptionTypeSource,
+    sessionMenuOptionsSource,
+    sessionDropdownSource,
+  },
 );
 
 const statusMutationSource = sourceBetween(
@@ -141,6 +189,20 @@ check(
     sessionUnlinkSource,
   },
 );
+check(
+  'issue detail syncs pending local status changes to github on entry',
+  issueDetailSource.includes('pendingStatusSyncAttemptRef') &&
+    issueDetailSource.includes(
+      'getPendingIssueStatusSync(projectId, current.id)',
+    ) &&
+    issueDetailSource.includes("setAction('status-sync')") &&
+    issueDetailSource.includes('projectGithubApi.updateIssueState(') &&
+    issueDetailSource.includes(
+      'clearPendingIssueStatusSync(projectId, current.id)',
+    ) &&
+    issueDetailSource.includes('GitHub issue status synced'),
+  issueDetailSource,
+);
 
 check(
   'issue detail loads cached local work item detail without github request',
@@ -160,7 +222,8 @@ check(
   'issue detail edits description and syncs description/comment explicitly',
   issueDetailSource.includes('const [descriptionDraft, setDescriptionDraft]') &&
     issueDetailSource.includes('handleSaveDescriptionDraft') &&
-    issueDetailSource.includes('onBlur={() => void handleSaveDescriptionDraft()}') &&
+    issueDetailSource.includes('onBlur={() => {') &&
+    issueDetailSource.includes('void handleSaveDescriptionDraft();') &&
     issueDetailSource.includes('projectGithubApi.updateIssueBody') &&
     issueDetailSource.includes('projectGithubApi.refreshIssue') &&
     issueDetailSource.includes('Sync description to GitHub') &&
@@ -173,17 +236,21 @@ check(
 );
 
 const activitySyncButtonSource = sourceBetween(
-  'disabled={action === \'activity-sync\' || !canSyncActivity}',
+  "disabled={action === 'activity-sync' || !canSyncActivity}",
   'onClick={() => void handleSyncActivity()}',
+);
+const canSyncActivitySource = sourceBetween(
+  'const canSyncActivity = Boolean(',
+  'const issueTitle',
 );
 check(
   'issue detail activity sync does not require a comment draft',
-  issueDetailSource.includes(
-    'const canSyncActivity = Boolean(targetRepoIntegrationId && linkedGitHubIssueNumber)',
+  canSyncActivitySource.includes(
+    'targetRepoIntegrationId && linkedGitHubIssueNumber',
   ) &&
     activitySyncButtonSource.includes("action === 'activity-sync'") &&
     !activitySyncButtonSource.includes('commentBody'),
-  activitySyncButtonSource,
+  { canSyncActivitySource, activitySyncButtonSource },
 );
 
 const externalLinkPanelStart = issueDetailSource.indexOf(
@@ -200,7 +267,9 @@ const externalLinkPanelSource = issueDetailSource.slice(
 check(
   'issue detail external link shows github icon with issue number only',
   externalLinkPanelSource.includes('<DetailStaticRow icon={Github}>') &&
-    externalLinkPanelSource.includes('GitHub Issue #{linkedGitHubIssueNumber}') &&
+    externalLinkPanelSource.includes(
+      'GitHub Issue #{linkedGitHubIssueNumber}',
+    ) &&
     !externalLinkPanelSource.includes('<DetailStaticRow icon={Box}>') &&
     !externalLinkPanelSource.includes('titleCaseToken(current.source)'),
   externalLinkPanelSource,
@@ -212,15 +281,57 @@ check(
     projectWorkItemServiceSource.includes('cached_github_issue_detail') &&
     projectGithubRouteSource.includes('include_github_detail') &&
     projectGithubRouteSource.includes('update_github_issue_detail_cache') &&
-    projectGithubRouteSource.includes('update_linked_github_issue_body_cache') &&
+    projectGithubRouteSource.includes(
+      'update_linked_github_issue_title_cache',
+    ) &&
+    projectGithubRouteSource.includes('sync_linked_github_issue_title') &&
+    projectGithubRouteSource.includes('.update_issue_title(') &&
+    githubRestClientSource.includes('pub async fn update_issue_title(') &&
+    githubRestClientSource.includes('serde_json::json!({ "title": title })') &&
+    projectGithubRouteSource.includes(
+      'update_linked_github_issue_body_cache',
+    ) &&
     projectGithubRouteSource.includes('update_github_issue_summary_cache') &&
     projectGithubRouteSource.includes('update_github_issue_labels_cache') &&
     githubIssueServiceSource.includes('cache_issue_detail') &&
     githubIssueServiceSource.includes('Some(serde_json::to_string(detail)?)'),
-  { projectWorkItemServiceSource, projectGithubRouteSource, githubIssueServiceSource },
+  {
+    projectWorkItemServiceSource,
+    projectGithubRouteSource,
+    githubIssueServiceSource,
+    githubRestClientSource,
+  },
 );
 
-check('open work items map to todo', projectWorkItemIssueStatus('open') === 'todo');
+check(
+  'issue detail more menu renames and deletes project work items',
+  issueDetailSource.includes('handleRenameIssue') &&
+    issueDetailSource.includes('handleDeleteIssue') &&
+    issueDetailSource.includes('onIssueDeleted?.(current.id)') &&
+    issueDetailSource.includes('role="menu"') &&
+    issueDetailSource.includes('<ConfirmationDialog') &&
+    confirmationDialogSource.includes('role="alertdialog"') &&
+    issueDetailSource.includes('<Trash2') &&
+    apiSource.includes(
+      'delete: async (projectId: string, workItemId: string)',
+    ) &&
+    (apiSource.includes('{ method: "DELETE" }') ||
+      apiSource.includes("{ method: 'DELETE' }")) &&
+    projectGithubRouteSource.includes('.delete(delete_work_item)') &&
+    projectWorkItemServiceSource.includes('pub async fn delete('),
+  {
+    issueDetailSource,
+    confirmationDialogSource,
+    apiSource,
+    projectGithubRouteSource,
+    projectWorkItemServiceSource,
+  },
+);
+
+check(
+  'open work items map to todo',
+  projectWorkItemIssueStatus('open') === 'todo',
+);
 check(
   'in progress work items map to in progress',
   projectWorkItemIssueStatus('in_progress') === 'in_progress',
@@ -237,7 +348,10 @@ check(
   'merging work items keep their issue status',
   projectWorkItemIssueStatus('merging') === 'merging',
 );
-check('done work items map to done', projectWorkItemIssueStatus('done') === 'done');
+check(
+  'done work items map to done',
+  projectWorkItemIssueStatus('done') === 'done',
+);
 check(
   'cancelled work items map to canceled issue status',
   projectWorkItemIssueStatus('cancelled') === 'cancelled',
@@ -289,9 +403,8 @@ check(
 );
 check(
   'issue row shows only synced labels in row chips',
-  syncedGroups[0]?.items[0]?.labels
-    ?.map((label) => label.name)
-    .join(',') === 'bug',
+  syncedGroups[0]?.items[0]?.labels?.map((label) => label.name).join(',') ===
+    'bug',
   syncedGroups[0]?.items[0]?.labels,
 );
 
@@ -355,8 +468,10 @@ check(
 );
 check(
   'work item issue ids increment in page display order',
-  groups.flatMap((group) => group.items).map((issue) => issue.id).join(',') ===
-    'OPE-1,OPE-2,OPE-3',
+  groups
+    .flatMap((group) => group.items)
+    .map((issue) => issue.id)
+    .join(',') === 'OPE-1,OPE-2,OPE-3',
   groups,
 );
 check(
@@ -387,8 +502,7 @@ check(
 );
 check(
   'project work item labels parse from json arrays',
-  projectWorkItemLabelList('["bug"," feature "]').join(',') ===
-    'bug,feature',
+  projectWorkItemLabelList('["bug"," feature "]').join(',') === 'bug,feature',
 );
 
 const detailWithGithubLink = {
@@ -424,7 +538,8 @@ const authorizedIdentity = defaultIssueUserIdentity({
 check(
   'local issue default identity switches to github account after auth',
   authorizedIdentity.name === 'octocat' &&
-    authorizedIdentity.avatarUrl === 'https://avatars.githubusercontent.com/u/1?v=4',
+    authorizedIdentity.avatarUrl ===
+      'https://avatars.githubusercontent.com/u/1?v=4',
 );
 
 if (failures > 0) process.exit(1);

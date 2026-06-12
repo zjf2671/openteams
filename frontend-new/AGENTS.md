@@ -1,5 +1,14 @@
 # AGENTS.md
 
+## Test Restraint
+
+- Default to minimal verification instead of adding new tests. Prefer type
+  checks, lint, builds, or targeted manual verification for low-risk UI,
+  copy, style, and wiring changes.
+- Add or update tests only when the change touches shared runtime logic,
+  protocol/API contracts, state synchronization, security-sensitive behavior,
+  or a bug that is likely to regress without a focused guard.
+
 ## 角色定位
 
 本仓库中的智能代理应作为工程协作者参与开发，重点关注代码质量、可维护性、可运行性与交付透明度。代理在执行任务时应先理解现有项目结构、技术栈与约定，再进行最小必要变更。

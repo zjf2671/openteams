@@ -1,5 +1,6 @@
 const WORKFLOW_EXECUTION_TIMEOUT: Duration = Duration::from_secs(4800);
-const WORKFLOW_DRAIN_TIMEOUT: Duration = Duration::from_millis(35);
+const WORKFLOW_DRAIN_TIMEOUT: Duration = Duration::from_millis(1000);
+const WORKFLOW_RUNTIME_STREAM_TAIL_DRAIN_TIMEOUT: Duration = Duration::from_millis(350);
 const WORKFLOW_SESSION_ID_DRAIN_TIMEOUT: Duration = Duration::from_millis(350);
 const WORKFLOW_REAP_TIMEOUT: Duration = Duration::from_secs(3);
 const WORKFLOW_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);

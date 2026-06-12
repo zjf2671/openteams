@@ -231,6 +231,23 @@ impl GitHubRestClient {
         Ok(raw.into())
     }
 
+    pub async fn update_issue_title(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        title: &str,
+    ) -> Result<GitHubIssueSummary, GitHubRestError> {
+        let raw: GitHubIssueRaw = self
+            .request(
+                Method::PATCH,
+                &format!("/repos/{owner}/{repo}/issues/{number}"),
+                Some(&serde_json::json!({ "title": title })),
+            )
+            .await?;
+        Ok(raw.into())
+    }
+
     pub async fn update_issue_body(
         &self,
         owner: &str,

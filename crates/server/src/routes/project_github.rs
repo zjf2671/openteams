@@ -209,7 +209,9 @@ pub fn router() -> Router<DeploymentImpl> {
         )
         .route(
             "/projects/{project_id}/work-items/{work_item_id}",
-            get(work_item_detail).put(update_work_item),
+            get(work_item_detail)
+                .put(update_work_item)
+                .delete(delete_work_item),
         )
         .route(
             "/projects/{project_id}/work-items/{work_item_id}/external-links",
@@ -558,15 +560,34 @@ async fn update_work_item(
     Json(payload): Json<UpdateProjectWorkItem>,
 ) -> Result<ResponseJson<ApiResponse<ProjectWorkItem>>, ApiError> {
     ensure_project(&deployment, project_id).await?;
+    let title_cache = payload.title.clone();
     let description_cache = payload.description.clone();
+    if let Some(title) = title_cache.clone() {
+        sync_linked_github_issue_title(&deployment, project_id, work_item_id, title).await?;
+    }
     let row = ProjectWorkItemService::new()
         .update(&deployment.db().pool, project_id, work_item_id, payload)
         .await
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    if let Some(title) = title_cache {
+        update_linked_github_issue_title_cache(&deployment, row.id, title).await?;
+    }
     if let Some(body) = description_cache {
         update_linked_github_issue_body_cache(&deployment, row.id, body).await?;
     }
     Ok(ResponseJson(ApiResponse::success(row)))
+}
+
+async fn delete_work_item(
+    State(deployment): State<DeploymentImpl>,
+    Path((project_id, work_item_id)): Path<(Uuid, Uuid)>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    ensure_project(&deployment, project_id).await?;
+    ProjectWorkItemService::new()
+        .delete(&deployment.db().pool, project_id, work_item_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    Ok(ResponseJson(ApiResponse::success(())))
 }
 
 async fn link_external(
@@ -1187,6 +1208,95 @@ async fn update_issue_assignees(
     .await
 }
 
+async fn sync_linked_github_issue_title(
+    deployment: &DeploymentImpl,
+    project_id: Uuid,
+    work_item_id: Uuid,
+    title: String,
+) -> Result<(), ApiError> {
+    let links = ProjectWorkItemExternalLink::find_by_work_item(&deployment.db().pool, work_item_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let github_links = links
+        .into_iter()
+        .filter(|link| link.provider == "github")
+        .filter(|link| link.external_type == ProjectExternalType::GithubIssue)
+        .filter_map(|link| Some((link.repo_id?, link.number?)))
+        .collect::<Vec<_>>();
+    if github_links.is_empty() {
+        return Ok(());
+    }
+
+    let integrations = RepoIntegration::find_by_project(&deployment.db().pool, project_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let client = github_client()
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+
+    for (repo_id, number) in github_links {
+        let integration = integrations
+            .iter()
+            .find(|integration| integration.provider == "github" && integration.repo_id == repo_id)
+            .ok_or_else(|| {
+                ApiError::BadRequest("Linked GitHub repository is not connected".to_string())
+            })?;
+        let owner = integration
+            .owner
+            .as_deref()
+            .ok_or_else(|| ApiError::BadRequest("Repo owner missing".to_string()))?;
+        let repo = integration
+            .name
+            .as_deref()
+            .ok_or_else(|| ApiError::BadRequest("Repo name missing".to_string()))?;
+        let audit = GitHubAuditService::new()
+            .record(
+                &deployment.db().pool,
+                CreateGitHubOperationAudit {
+                    actor: Some(deployment.user_id().to_string()),
+                    operation_source: GitHubOperationSource::UserUi,
+                    session_id: None,
+                    workflow_execution_id: None,
+                    repo_id: Some(repo_id),
+                    target_type: GitHubTargetType::Issue,
+                    target_id: Some(number.to_string()),
+                    action: "issue_title".to_string(),
+                    result: GitHubOperationResult::Approved,
+                    error: None,
+                },
+            )
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+        let summary = match client.update_issue_title(owner, repo, number, &title).await {
+            Ok(summary) => summary,
+            Err(err) => {
+                GitHubAuditService::new()
+                    .update_result(
+                        &deployment.db().pool,
+                        audit.id,
+                        GitHubOperationResult::Failed,
+                        Some(err.to_string()),
+                    )
+                    .await
+                    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+                return Err(ApiError::BadRequest(err.to_string()));
+            }
+        };
+        GitHubAuditService::new()
+            .update_result(
+                &deployment.db().pool,
+                audit.id,
+                GitHubOperationResult::Success,
+                None,
+            )
+            .await
+            .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+        update_github_issue_summary_cache(deployment, repo_id, number, summary).await?;
+    }
+
+    Ok(())
+}
+
 async fn update_linked_github_issue_body_cache(
     deployment: &DeploymentImpl,
     work_item_id: Uuid,
@@ -1213,6 +1323,37 @@ async fn update_linked_github_issue_body_cache(
             continue;
         };
         detail.body = Some(body.clone());
+        write_github_issue_detail_cache(deployment, repo_id, number, detail).await?;
+    }
+    Ok(())
+}
+
+async fn update_linked_github_issue_title_cache(
+    deployment: &DeploymentImpl,
+    work_item_id: Uuid,
+    title: String,
+) -> Result<(), ApiError> {
+    let links = ProjectWorkItemExternalLink::find_by_work_item(&deployment.db().pool, work_item_id)
+        .await
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    for link in links {
+        if link.provider != "github" || link.external_type != ProjectExternalType::GithubIssue {
+            continue;
+        }
+        let Some(repo_id) = link.repo_id else {
+            continue;
+        };
+        let Some(number) = link.number else {
+            continue;
+        };
+        let Some(mut detail) = link
+            .metadata_json
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str::<GitHubIssueDetail>(metadata).ok())
+        else {
+            continue;
+        };
+        detail.summary.title = title.clone();
         write_github_issue_detail_cache(deployment, repo_id, number, detail).await?;
     }
     Ok(())

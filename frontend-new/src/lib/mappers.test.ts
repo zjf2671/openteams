@@ -106,7 +106,7 @@ const userMsg: BackendChatMessage = {
   sender_id: null,
   content: 'hello',
   mentions: [],
-  meta: null,
+  meta: { client_message_id: 'local-message-1' },
   created_at: '2026-01-01T00:00:00Z',
 };
 const u = mapMessage(userMsg, { now });
@@ -114,6 +114,7 @@ eq('user sender label', u.sender, 'You');
 eq('user avatar', u.avatar, 'YOU');
 eq('user isUser', u.isUser === true, true);
 eq('text preserved', u.text, 'hello');
+eq('client message id mapped from meta', u.clientMessageId, 'local-message-1');
 
 const agentMsg: BackendChatMessage = {
   ...userMsg,

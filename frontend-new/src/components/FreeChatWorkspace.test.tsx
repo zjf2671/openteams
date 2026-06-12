@@ -69,7 +69,7 @@ const memberInviteIndex = source.indexOf(
 
 check(
   "uses a wider related-files default width",
-  source.includes("const RELATED_FILES_DEFAULT_WIDTH = 280"),
+  source.includes("const RELATED_FILES_DEFAULT_WIDTH = 300"),
   source,
 );
 check(
@@ -154,6 +154,10 @@ check(
       "selectedSidebarMember.name.toLowerCase()",
     ) &&
     source.includes("{displayedMessages.map((msg) => (") &&
+    source.includes("key={msg.clientMessageId ?? msg.id}") &&
+    source.includes(
+      "(!messagesAsync.loading || displayedMessages.length === 0)",
+    ) &&
     source.includes("aria-pressed={isSelected}") &&
     source.includes("title={member.name}") &&
     source.includes(
@@ -191,6 +195,14 @@ check(
     markdownIndex >= 0 &&
     activityPanelIndex < markdownIndex,
   { activityPanelIndex, markdownIndex },
+);
+check(
+  "collapses thinking details after an agent run finishes",
+  messageContentSource.includes("const wasRunningRef = useRef(isRunning)") &&
+    messageContentSource.includes("wasRunningRef.current = true") &&
+    messageContentSource.includes("setExpanded(false)") &&
+    messageContentSource.includes("wasRunningRef.current = false"),
+  messageContentSource,
 );
 check(
   "thinking process toggle title uses compact type",
@@ -395,6 +407,30 @@ check(
     source.includes("formatFileSize(attachment.size_bytes)") &&
     apiSource.includes("attachmentUrl: ("),
   { source, apiSource },
+);
+check(
+  "linked work item status changes update only local work items and mark github sync pending",
+  source.includes("handleLinkedWorkItemStatusChange") &&
+    source.includes("projectWorkItemsApi.update(") &&
+    source.includes(
+      "markPendingIssueStatusSync(selectedProjectId, updated.id, updated.status)",
+    ) &&
+    source.includes("statusPending={updatingLinkedWorkItemIds.has(item.id)}") &&
+    source.includes("onStatusChange={(nextItem, status) =>") &&
+    !source.includes("projectGithubApi.updateIssueState"),
+  source,
+);
+check(
+  "refreshes linked work items when a session link event arrives",
+  source.includes("LINKED_WORK_ITEMS_CHANGED_EVENT") &&
+    source.includes("LinkedWorkItemsChangedDetail") &&
+    source.includes("linkedWorkItemsRequestIdRef") &&
+    source.includes("const reloadLinkedWorkItems = useCallback") &&
+    source.includes("detail.projectId !== selectedProjectId") &&
+    source.includes("detail.sessionId !== activeSessionId") &&
+    source.includes("window.addEventListener(") &&
+    source.includes("reloadLinkedWorkItems();"),
+  source,
 );
 check(
   "activity panel uses compact Codex-like line rows",

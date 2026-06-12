@@ -24,6 +24,10 @@ const source = readFileSync(
   new URL('./WorkspaceContext.tsx', import.meta.url),
   'utf8',
 );
+const workflowCardSource = readFileSync(
+  new URL('../components/workflow/WorkflowCard.tsx', import.meta.url),
+  'utf8',
+);
 
 const refreshProjectsIndex = source.indexOf('await refreshProjects();');
 const refreshSessionsIndex = source.indexOf('refreshSessions(),');
@@ -82,6 +86,16 @@ check(
   source,
 );
 check(
+  'workflow runtime stream lines are kept live for workflow logs',
+  source.includes("type: 'workflow_runtime_line'") &&
+    source.includes('workflowRuntimeLinesByExecution') &&
+    source.includes('setWorkflowRuntimeLinesByExecution') &&
+    source.includes('handleWorkflowRuntimeLine(parsed)') &&
+    workflowCardSource.includes('workflowRuntimeLinesByExecution[projection.execution_id]') &&
+    workflowCardSource.includes('runtimeMessages={workflowRuntimeMessages}'),
+  { source, workflowCardSource },
+);
+check(
   'stream token usage messages notify build stats refresh',
   source.includes('notifyBuildStatsUsageUpdated(projectId)') &&
     source.includes('hasRealCompleteTokenUsage(parsed.message)') &&
@@ -92,8 +106,30 @@ check(
   'real sends insert an immediate pending agent placeholder',
   pendingPlaceholderIndex >= 0 &&
     source.includes('PENDING_AGENT_MESSAGE_PREFIX') &&
+    source.includes('OPTIMISTIC_USER_MESSAGE_PREFIX') &&
+    source.includes('clientMessageId: userMsgId') &&
+    source.includes('meta.client_message_id = userMsgId') &&
     pendingPlaceholderIndex < sendApiIndex,
   { pendingPlaceholderIndex, sendApiIndex },
+);
+check(
+  'pending agent placeholders are matched by agent session instead of first item',
+  source.includes('findPendingAgentPlaceholderIndex') &&
+    source.includes('message.sessionAgentId === sessionAgentId') &&
+    source.includes('findPendingAgentPlaceholderIndex(current, incoming.sessionAgentId)') &&
+    source.includes('findPendingAgentPlaceholderIndex(') &&
+    source.includes('line.session_agent_id') &&
+    source.includes('event.session_agent_id') &&
+    !source.includes('current.findIndex(isPendingAgentPlaceholder)'),
+  source,
+);
+check(
+  'new sends prune stale pending placeholders for the same agent session',
+  source.includes('withoutStalePending') &&
+    source.includes('pendingAgentMsg?.sessionAgentId') &&
+    source.includes('message.sessionAgentId === pendingAgentMsg.sessionAgentId') &&
+    source.includes('[...withoutStalePending, userMsg, pendingAgentMsg]'),
+  source,
 );
 check(
   'quoted messages are sent through backend reference meta instead of message content',
@@ -144,7 +180,12 @@ check(
   'message refresh preserves running placeholders until stream replacement',
   source.includes('mergePersistedWithRunningPlaceholders') &&
     source.includes('isPendingAgentPlaceholder') &&
-    source.includes('pendingIndex'),
+    source.includes('isOptimisticUserMessage') &&
+    source.includes('persistedClientMessageIds') &&
+    source.includes('pendingIndex') &&
+    source.includes('activeSessionAgentIds') &&
+    source.includes('isActiveAgentState(sessionAgent.state)') &&
+    source.includes('!isActiveAgentState(parsed.state)'),
   source,
 );
 check(

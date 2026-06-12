@@ -11,8 +11,8 @@ use serde::Deserialize;
 use services::services::agent_runtime::{
     AgentRuntimeDiagnostics, AgentRuntimeError, AgentRuntimeListResponse,
     AgentRuntimeRefreshResponse, AgentRuntimeStatus, UpdateAgentRuntimeConfig, add_runtime_model,
-    list_runtime_statuses_with_discovery, refresh_runtime_discovery, rename_runtime_model,
-    runtime_diagnostics, update_runtime_config,
+    list_runtime_statuses, refresh_runtime_discovery, rename_runtime_model, runtime_diagnostics,
+    update_runtime_config,
 };
 use utils::response::ApiResponse;
 
@@ -45,10 +45,7 @@ struct UpdateRuntimeModelRequest {
 }
 
 async fn get_runtime() -> Result<ResponseJson<ApiResponse<AgentRuntimeListResponse>>, ApiError> {
-    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let response = list_runtime_statuses_with_discovery(&current_dir)
-        .await
-        .map_err(api_error_from_runtime)?;
+    let response = list_runtime_statuses().map_err(api_error_from_runtime)?;
     Ok(ResponseJson(ApiResponse::success(response)))
 }
 
