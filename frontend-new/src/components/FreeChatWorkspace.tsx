@@ -32,6 +32,7 @@ import {
 import { ResourceStateNotice } from "@/components/ResourceState";
 import { ScrollArea } from "@/components/ScrollArea";
 import { AgentMessageContent } from "@/components/AgentMessageContent";
+import { SessionSourceControlPanel } from "@/components/source-control/SessionSourceControlPanel";
 import { chatMessagesApi, sessionAgentsApi, projectWorkItemsApi } from "@/lib/api";
 import {
   ISSUE_NAVIGATION_EVENT,
@@ -45,7 +46,13 @@ import {
 } from "@/lib/sessionWorkspaceChanges";
 import { openFileInVSCode } from "@/vscode/bridge";
 import { PriorityMenuIcon } from "@/pages/IssueDetailPage";
-import type { ChatAttachment, Member, QuotedMessageReference, ProjectWorkItem } from "@/types";
+import type {
+  ChatAttachment,
+  Member,
+  ProjectWorkItem,
+  QuotedMessageReference,
+  SourceControlDiffArea,
+} from "@/types";
 
 interface FreeChatWorkspaceProps {
   embedded?: boolean;
@@ -54,6 +61,12 @@ interface FreeChatWorkspaceProps {
     filePath: string,
     status: string,
     unifiedDiff: string,
+  ) => void;
+  onOpenSourceControlDiffTab?: (
+    projectId: string,
+    sessionId: string,
+    filePath: string,
+    area: SourceControlDiffArea,
   ) => void;
 }
 
@@ -222,7 +235,7 @@ const TruncatedFileName: React.FC<TruncatedFileNameProps> = ({ path }) => {
   );
 };
 
-const RELATED_FILES_DEFAULT_WIDTH = 240;
+const RELATED_FILES_DEFAULT_WIDTH = 300;
 const RELATED_FILES_MIN_WIDTH = 200;
 const RELATED_FILES_MAX_WIDTH = 360;
 const RELATED_FILES_MIN_CENTER_WIDTH = 540;
@@ -481,6 +494,7 @@ function titleCaseStatus(status: string) {
 export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   embedded = false,
   onOpenDiffTab,
+  onOpenSourceControlDiffTab,
 }) => {
   const appScale = useAppScale();
   const {
@@ -543,6 +557,10 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   const relatedFileChanges = useMemo(
     () => flattenWorkspaceChanges(workspaceChangesAsync.data),
     [workspaceChangesAsync.data],
+  );
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId),
+    [projects, selectedProjectId],
   );
   const sidebarMembers = members;
   const visibleSidebarMemberCount = getVisibleSidebarMemberCount(
@@ -764,8 +782,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
       resetWorkspaceChanges();
       return;
     }
-    const project = projects.find((p) => p.id === selectedProjectId);
-    const workspacePath = project?.default_workspace_path;
+    const workspacePath = currentProject?.default_workspace_path;
     if (!workspacePath) {
       resetWorkspaceChanges();
       return;
@@ -773,8 +790,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     void refreshWorkspaceChanges(activeSessionId, workspacePath, true);
   }, [
     activeSessionId,
-    projects,
-    selectedProjectId,
+    currentProject,
     refreshWorkspaceChanges,
     resetWorkspaceChanges,
   ]);
@@ -1212,6 +1228,89 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
       return <span key={idx}>{el}</span>;
     });
   };
+
+  const plainRelatedFilesContent = (
+    <>
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
+        <h2 className="text-[14px] font-semibold text-[var(--ink)]">
+          {t("relatedFiles.title")}
+        </h2>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={reloadRelatedFiles}
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+            title={t("relatedFiles.refresh")}
+            aria-label={t("relatedFiles.refresh")}
+          >
+            <RefreshCw
+              aria-hidden="true"
+              className={`h-3.5 w-3.5 ${
+                workspaceChangesAsync.loading ? "animate-spin" : ""
+              }`}
+            />
+          </button>
+          <span className="rounded-full bg-[var(--surface-3)] px-2 py-0.5 font-mono text-[13px] text-[var(--ink-tertiary)]">
+            {relatedFileChanges.length}
+          </span>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1 px-2 pb-2">
+        {workspaceChangesAsync.loading && (
+          <div className="rounded-md bg-[var(--surface-1)] px-3 py-3 text-[13px] text-[var(--ink-tertiary)]">
+            Loading changes...
+          </div>
+        )}
+        {workspaceChangesAsync.error && (
+          <div className="rounded-md bg-[var(--surface-1)] px-3 py-3 text-[13px] text-rose-500">
+            {workspaceChangesAsync.error}
+          </div>
+        )}
+        {!workspaceChangesAsync.loading &&
+          !workspaceChangesAsync.error &&
+          relatedFileChanges.length === 0 && (
+            <div className="rounded-md bg-[var(--surface-1)] px-3 py-3 text-[13px] text-[var(--ink-tertiary)]">
+              {t("relatedFiles.noChangedFiles")}
+            </div>
+          )}
+        {!workspaceChangesAsync.loading &&
+          !workspaceChangesAsync.error &&
+          relatedFileChanges.length > 0 && (
+            <div className="space-y-1">
+              {relatedFileChanges.map((file) => (
+                <button
+                  type="button"
+                  key={`${file.status}-${file.path}`}
+                  onClick={() => handleRelatedFileClick(file)}
+                  className="flex h-8 w-full min-w-0 items-center gap-2 rounded-md bg-[var(--surface-1)] px-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-3)]"
+                  aria-label={t("relatedFiles.openDiff", {
+                    path: file.path,
+                  })}
+                >
+                  <TruncatedFileName path={file.path} />
+                  {hasLineStat(file.additions) && (
+                    <span className="shrink-0 font-mono text-[13px] text-emerald-500">
+                      +{file.additions}
+                    </span>
+                  )}
+                  {hasLineStat(file.deletions) && (
+                    <span className="shrink-0 font-mono text-[13px] text-rose-500">
+                      -{file.deletions}
+                    </span>
+                  )}
+                  <span
+                    className={`w-4 shrink-0 text-right font-mono text-[13px] font-semibold ${statusTextTone[file.status]}`}
+                  >
+                    {file.status}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+      </ScrollArea>
+    </>
+  );
 
   return (
     <div
@@ -1900,84 +1999,21 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                 )}
             </div>
 
-            <div className="flex h-10 shrink-0 items-center justify-between px-3">
-              <h2 className="text-[14px] font-semibold text-[var(--ink)]">
-                {t("relatedFiles.title")}
-              </h2>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={reloadRelatedFiles}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
-                  title={t("relatedFiles.refresh")}
-                  aria-label={t("relatedFiles.refresh")}
-                >
-                  <RefreshCw
-                    aria-hidden="true"
-                    className={`h-3.5 w-3.5 ${
-                      workspaceChangesAsync.loading ? "animate-spin" : ""
-                    }`}
-                  />
-                </button>
-                <span className="rounded-full bg-[var(--surface-3)] px-2 py-0.5 font-mono text-[13px] text-[var(--ink-tertiary)]">
-                  {relatedFileChanges.length}
-                </span>
-              </div>
-            </div>
-
-            <ScrollArea className="flex-1 px-2 pb-2">
-              {workspaceChangesAsync.loading && (
-                <div className="rounded-md bg-[var(--surface-1)] px-3 py-3 text-[13px] text-[var(--ink-tertiary)]">
-                  Loading changes...
-                </div>
-              )}
-              {workspaceChangesAsync.error && (
-                <div className="rounded-md bg-[var(--surface-1)] px-3 py-3 text-[13px] text-rose-500">
-                  {workspaceChangesAsync.error}
-                </div>
-              )}
-              {!workspaceChangesAsync.loading &&
-                !workspaceChangesAsync.error &&
-                relatedFileChanges.length === 0 && (
-                  <div className="rounded-md bg-[var(--surface-1)] px-3 py-3 text-[13px] text-[var(--ink-tertiary)]">
-                    {t("relatedFiles.noChangedFiles")}
-                  </div>
-                )}
-              {!workspaceChangesAsync.loading &&
-                !workspaceChangesAsync.error &&
-                relatedFileChanges.length > 0 && (
-                  <div className="space-y-1">
-                    {relatedFileChanges.map((file) => (
-                      <button
-                        type="button"
-                        key={`${file.status}-${file.path}`}
-                        onClick={() => handleRelatedFileClick(file)}
-                        className="flex h-8 w-full min-w-0 items-center gap-2 rounded-md bg-[var(--surface-1)] px-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-3)]"
-                        aria-label={t("relatedFiles.openDiff", {
-                          path: file.path,
-                        })}
-                      >
-                        <TruncatedFileName path={file.path} />
-                        {hasLineStat(file.additions) && (
-                          <span className="shrink-0 font-mono text-[13px] text-emerald-500">
-                            +{file.additions}
-                          </span>
-                        )}
-                        {hasLineStat(file.deletions) && (
-                          <span className="shrink-0 font-mono text-[13px] text-rose-500">
-                            -{file.deletions}
-                          </span>
-                        )}
-                        <span
-                          className={`w-4 shrink-0 text-right font-mono text-[13px] font-semibold ${statusTextTone[file.status]}`}
-                        >
-                          {file.status}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-            </ScrollArea>
+            <SessionSourceControlPanel
+              projectId={selectedProjectId || null}
+              sessionId={activeSessionId || null}
+              enabled={Boolean(selectedProjectId && activeSessionId)}
+              fallbackRelatedFiles={plainRelatedFilesContent}
+              linkedWorkItemIds={linkedWorkItems.map((item) => item.id)}
+              onOpenDiff={(projectId, sessionId, filePath, area) => {
+                onOpenSourceControlDiffTab?.(
+                  projectId,
+                  sessionId,
+                  filePath,
+                  area,
+                );
+              }}
+            />
           </aside>
         )}
       </div>

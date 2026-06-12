@@ -35,7 +35,7 @@ pub mod oauth_credentials;
 pub mod project;
 pub use project::{
     delivery as project_delivery, member as project_member, migration as project_migration,
-    path as project_path, work_item as project_work_item,
+    path as project_path, source_control as project_source_control, work_item as project_work_item,
 };
 #[cfg(feature = "qa-mode")]
 pub mod qa_repos;

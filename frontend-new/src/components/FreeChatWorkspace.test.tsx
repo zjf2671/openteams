@@ -54,7 +54,7 @@ const composerAttachmentIndex = source.indexOf(
   'className="mb-2 flex flex-wrap gap-2"',
 );
 const composerInputIndex = source.indexOf(
-  'className={`relative rounded-md border bg-[var(--surface-1)]',
+  'className={`relative rounded-md border border-[var(--hairline-strong)]',
 );
 const memberRailIndex = source.indexOf("ref={memberRailRef}");
 const memberRailCloseIndex = source.indexOf("</ScrollArea>", memberRailIndex);
@@ -68,8 +68,8 @@ const memberInviteIndex = source.indexOf(
 );
 
 check(
-  "uses a narrower related-files default width",
-  source.includes("const RELATED_FILES_DEFAULT_WIDTH = 240"),
+  "uses a wider related-files default width",
+  source.includes("const RELATED_FILES_DEFAULT_WIDTH = 280"),
   source,
 );
 check(
@@ -116,11 +116,12 @@ check(
   source,
 );
 check(
-  "phase one related files do not expose git source-control actions",
-  !source.includes("Stage All") &&
-    !source.includes("Unstage All") &&
-    !source.includes("Discard All") &&
-    !source.includes("commit message"),
+  "phase four wires source-control panel while preserving plain related files fallback",
+  source.includes("SessionSourceControlPanel") &&
+    source.includes("plainRelatedFilesContent") &&
+    source.includes("onOpenSourceControlDiffTab") &&
+    source.includes("fallbackRelatedFiles={plainRelatedFilesContent}") &&
+    source.includes('title={t("relatedFiles.refresh")}'),
   source,
 );
 check(
@@ -402,15 +403,11 @@ check(
     activityPanelSource.includes("renderSimpleBoldMarkdown") &&
     activityPanelSource.includes("<strong key={`bold-${partIndex}`}") &&
     messageContentSource.includes("translate={t}") &&
-    activityPanelSource.includes("data-line-type={line.line_type}") &&
+    activityPanelSource.includes("wf-log-task-row") &&
+    activityPanelSource.includes("wf-log-task-content-text") &&
     activityPanelSource.includes('line_type === "tool"') &&
-    activityPanelSource.includes("text-[12px]") &&
-    activityPanelSource.includes("max-h-[480px]") &&
-    activityPanelSource.includes("line-clamp-1") &&
-    activityPanelSource.includes("hover:bg-[var(--surface-1)]/70") &&
-    activityPanelSource.includes("text-[var(--ink)]") &&
-    activityPanelSource.includes("text-[var(--ink-tertiary)]") &&
-    activityPanelSource.includes("agent-activity-scrollbar") &&
+    activityPanelSource.includes("isToolRunning") &&
+    activityPanelSource.includes("agent-activity-scrollbar max-h-[480px] pr-1") &&
     !activityPanelSource.includes("border border"),
   activityPanelSource,
 );

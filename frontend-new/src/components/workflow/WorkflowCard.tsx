@@ -204,13 +204,23 @@ export function WorkflowCard({
   const handleIterationFeedback = (payload: {
     executionId: string;
     action: 'accept' | 'reject';
-    feedback?: UserIterationFeedbackRequest['feedback'];
+    feedback?: {
+      what_wrong: string;
+      expected: string;
+      priority: 'low' | 'medium' | 'high';
+      additional_notes?: string | null;
+    };
   }) =>
     void withPending(payload.executionId, () =>
       workflowApi.submitIterationFeedback({
         execution_id: payload.executionId,
         action: payload.action,
-        feedback: payload.feedback ?? null,
+        feedback: payload.feedback
+          ? {
+              ...payload.feedback,
+              additional_notes: payload.feedback.additional_notes ?? null,
+            }
+          : null,
       }),
     );
 

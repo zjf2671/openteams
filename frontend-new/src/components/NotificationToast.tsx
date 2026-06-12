@@ -82,7 +82,7 @@ export function NotificationToast({
       role={liveRole}
       aria-live={liveRole === 'alert' ? 'assertive' : 'polite'}
       className={cn(
-        'fixed bottom-5 right-5 z-[70] flex w-[min(360px,calc(100vw-40px))] items-start gap-3 rounded-lg border bg-[var(--surface-1)] px-4 py-3 text-[var(--ink)] shadow-[0_18px_45px_rgba(0,0,0,0.28)] animate-fade-in-up',
+        'fixed bottom-5 right-5 z-[70] inline-flex w-fit max-w-[min(360px,calc(100vw-40px))] items-start gap-3 rounded-lg border bg-[var(--surface-1)] px-4 py-3 text-[var(--ink)] shadow-[0_18px_45px_rgba(0,0,0,0.28)] animate-fade-in-up',
         style.border,
         className,
       )}
@@ -97,13 +97,13 @@ export function NotificationToast({
       >
         {icon ?? <Icon className="h-4 w-4" />}
       </span>
-      <span className="min-w-0 flex-1">
+      <span className="min-w-0 max-w-full">
         {title && (
           <span className="block truncate text-[13px] font-semibold leading-tight">
             {title}
           </span>
         )}
-        <span className="mt-1 block text-[12px] leading-relaxed text-[var(--ink-subtle)]">
+        <span className="mt-1 block break-words text-[12px] leading-relaxed text-[var(--ink-subtle)]">
           {message}
         </span>
         {actionLabel && onAction && (

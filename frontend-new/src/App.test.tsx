@@ -249,6 +249,22 @@ check(
   source,
 );
 check(
+  "models source-control diff tabs by project/session/path reference",
+  source.includes('kind: "sc-diff"') &&
+    source.includes("projectId: string") &&
+    source.includes("area: SourceControlDiffArea") &&
+    source.includes("createSourceControlDiffTabId") &&
+    source.includes("sourceControlRef={{"),
+  source,
+);
+check(
+  "passes source-control diff opener into the workspace",
+  source.includes("openSourceControlDiffTab") &&
+    source.includes("onOpenSourceControlDiffTab={openSourceControlDiffTab}") &&
+    source.includes('activeTab?.kind === "sc-diff"'),
+  source,
+);
+check(
   "replaces active tab for sidebar page navigation",
   source.includes("const replaceActiveTab") &&
     source.includes("replaceActiveTab(createPageTab(page, label))"),

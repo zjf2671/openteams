@@ -2,7 +2,11 @@ pub mod delivery;
 pub mod member;
 pub mod migration;
 pub mod path;
+pub mod source_control;
 pub mod work_item;
+
+#[cfg(test)]
+mod source_control_tests;
 
 use std::{
     collections::HashSet,

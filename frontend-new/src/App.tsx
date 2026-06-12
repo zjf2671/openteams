@@ -11,6 +11,7 @@ import { WorkflowWorkspace } from "@/components/WorkflowWorkspace";
 import { CreateAgentSessionModal } from "@/components/CreateAgentSessionModal";
 import { DialogManager } from "@/components/DialogManager";
 import { DiffViewTab } from "@/components/DiffViewTab";
+import { NotificationToast } from "@/components/NotificationToast";
 import { ProjectSidebar } from "@/components/ProjectSidebar";
 import { GitHubRepositoryPage } from "@/pages/GitHubRepositoryPage";
 import { IssuePage } from "@/pages/IssuePage";
@@ -33,7 +34,6 @@ import {
   Plus,
   Route,
   Settings2,
-  Sparkles,
   SquareCheckBig,
   Users,
   X,
@@ -68,6 +68,7 @@ import type {
   SidebarNavigationItem,
   SidebarNavigationTarget,
   SidebarPrimaryAction,
+  SourceControlDiffArea,
 } from "@/types";
 import { monogramFromName } from "@/lib/mappers";
 
@@ -81,6 +82,14 @@ type WorkspaceTab =
       filePath: string;
       status: string;
       unified_diff: string;
+    }
+  | {
+      id: string;
+      kind: "sc-diff";
+      projectId: string;
+      sessionId: string;
+      filePath: string;
+      area: SourceControlDiffArea;
     };
 
 type RenderedWorkspaceTab = {
@@ -424,6 +433,10 @@ function WorkspaceLayout() {
         const fileName = tab.filePath.split("/").pop() ?? tab.filePath;
         return { tab, label: fileName, Icon: FileText };
       }
+      if (tab.kind === "sc-diff") {
+        const fileName = tab.filePath.split("/").pop() ?? tab.filePath;
+        return { tab, label: fileName, Icon: FileText };
+      }
       const config = pageTabConfig[tab.page];
       return { tab, label: getPageTabLabel(tab.page), Icon: config.icon };
     })
@@ -442,6 +455,18 @@ function WorkspaceLayout() {
           filePath={activeTab.filePath}
           status={activeTab.status}
           unifiedDiff={activeTab.unified_diff}
+        />
+      );
+    }
+    if (activeTab?.kind === "sc-diff") {
+      return (
+        <DiffViewTab
+          sourceControlRef={{
+            projectId: activeTab.projectId,
+            sessionId: activeTab.sessionId,
+            filePath: activeTab.filePath,
+            area: activeTab.area,
+          }}
         />
       );
     }
@@ -483,7 +508,10 @@ function WorkspaceLayout() {
       default:
         return (
           <div className="h-full w-full flex flex-col min-h-0">
-            <WorkflowWorkspace onOpenDiffTab={openDiffTab} />
+            <WorkflowWorkspace
+              onOpenDiffTab={openDiffTab}
+              onOpenSourceControlDiffTab={openSourceControlDiffTab}
+            />
           </div>
         );
     }
@@ -571,6 +599,12 @@ function WorkspaceLayout() {
 
   const createDiffTabId = (sessionId: string, filePath: string) =>
     `diff:${sessionId}:${filePath}`;
+  const createSourceControlDiffTabId = (
+    projectId: string,
+    sessionId: string,
+    filePath: string,
+    area: SourceControlDiffArea,
+  ) => `sc-diff:${projectId}:${sessionId}:${area}:${filePath}`;
 
   const openDiffTab = (
     sessionId: string,
@@ -585,6 +619,27 @@ function WorkspaceLayout() {
       filePath,
       status,
       unified_diff,
+    };
+    setOpenTabs((currentTabs) => {
+      if (currentTabs.some((tab) => tab.id === nextTab.id)) return currentTabs;
+      return [...currentTabs, nextTab];
+    });
+    setActiveTabId(nextTab.id);
+  };
+
+  const openSourceControlDiffTab = (
+    projectId: string,
+    sessionId: string,
+    filePath: string,
+    area: SourceControlDiffArea,
+  ) => {
+    const nextTab: WorkspaceTab = {
+      id: createSourceControlDiffTabId(projectId, sessionId, filePath, area),
+      kind: "sc-diff",
+      projectId,
+      sessionId,
+      filePath,
+      area,
     };
     setOpenTabs((currentTabs) => {
       if (currentTabs.some((tab) => tab.id === nextTab.id)) return currentTabs;
@@ -920,10 +975,7 @@ function WorkspaceLayout() {
   return (
     <div className="h-full w-full flex bg-[var(--canvas)] text-[var(--ink)] font-sans antialiased overflow-hidden selection:bg-[var(--primary)] selection:text-white transition-colors duration-200">
       {toast && (
-        <div className="fixed bottom-5 right-5 z-50 rounded-lg border border-[var(--primary)] bg-[var(--surface-1)] px-4 py-3 text-xs font-semibold text-[var(--ink)] shadow-md animate-fade-in-up flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-[var(--primary)] animate-pulse" />
-          <span>{toast}</span>
-        </div>
+        <NotificationToast message={toast} tone="info" />
       )}
 
       {activeAppPage !== "tokens" && <DialogManager />}
@@ -1055,7 +1107,8 @@ function WorkspaceLayout() {
               activeAppPage === "issue" ||
               activeAppPage === "agents" ||
               activeAppPage === "team" ||
-              activeTab?.kind === "diff"
+              activeTab?.kind === "diff" ||
+              activeTab?.kind === "sc-diff"
                 ? "overflow-hidden p-0"
                 : "overflow-y-auto p-4 md:p-6"
             }`}

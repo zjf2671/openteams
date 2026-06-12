@@ -18,7 +18,7 @@ import {
   useState,
   type ChangeEvent,
   type FormEvent,
-  type KeyboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { ProjectBreadcrumbAvatar } from '@/components/ProjectBreadcrumbAvatar';
@@ -185,7 +185,7 @@ export function IssueCreateDialog({
   useEffect(() => {
     if (!open) return;
 
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape' && !submitting) {
         if (openMenu) {
           setOpenMenu(null);
@@ -238,7 +238,7 @@ export function IssueCreateDialog({
     }
   };
 
-  const handleFormKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
+  const handleFormKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
     if (
       event.key !== 'Enter' ||
       !event.ctrlKey ||

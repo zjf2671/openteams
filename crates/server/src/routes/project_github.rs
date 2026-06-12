@@ -1128,10 +1128,8 @@ async fn update_issue_state(
                 .update_issue_state(&owner, &repo, number, &payload.state)
                 .await
         },
-        |deployment, repo_id, number, summary| {
-            async move {
-                update_github_issue_summary_cache(&deployment, repo_id, number, summary).await
-            }
+        |deployment, repo_id, number, summary| async move {
+            update_github_issue_summary_cache(&deployment, repo_id, number, summary).await
         },
     )
     .await
@@ -1156,10 +1154,8 @@ async fn update_issue_labels(
                 .replace_labels(&owner, &repo, number, payload.labels)
                 .await
         },
-        |deployment, repo_id, number, labels| {
-            async move {
-                update_github_issue_labels_cache(&deployment, repo_id, number, labels).await
-            }
+        |deployment, repo_id, number, labels| async move {
+            update_github_issue_labels_cache(&deployment, repo_id, number, labels).await
         },
     )
     .await
@@ -1184,10 +1180,8 @@ async fn update_issue_assignees(
                 .replace_assignees(&owner, &repo, number, payload.assignees)
                 .await
         },
-        |deployment, repo_id, number, summary| {
-            async move {
-                update_github_issue_summary_cache(&deployment, repo_id, number, summary).await
-            }
+        |deployment, repo_id, number, summary| async move {
+            update_github_issue_summary_cache(&deployment, repo_id, number, summary).await
         },
     )
     .await

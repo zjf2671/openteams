@@ -55,6 +55,19 @@ body[data-mode="light"] {
   --mono-border: #d8dce3;
 }
 
+body[data-mode="light"] .diff-view-tab {
+  --diff-view-canvas: #fbfbfc;
+  --diff-view-surface: #ffffff;
+  --diff-view-separator: rgba(15, 23, 42, 0.08);
+  --diff-view-separator-solid: #eef0f3;
+  --diff-view-added-bg: rgba(46, 214, 137, 0.12);
+  --diff-view-added-border: #20b978;
+  --diff-view-added-symbol: #0f8f5d;
+  --diff-view-removed-bg: rgba(242, 95, 114, 0.12);
+  --diff-view-removed-border: #e5485d;
+  --diff-view-removed-symbol: #d9364e;
+}
+
 html,
 body,
 #root {

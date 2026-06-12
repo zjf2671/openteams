@@ -70,6 +70,16 @@ import type {
   ResumeExecutionResponse,
   RetryWorkflowPlanGenerationResponse,
   SessionWorkspacesResponse,
+  SessionSourceControlStatus,
+  SourceControlCommitError,
+  SourceControlCommitRequest,
+  SourceControlCommitResponse,
+  SourceControlDiffRequest,
+  SourceControlDiffResponse,
+  SourceControlDiscardRequest,
+  SourceControlOperationResponse,
+  SourceControlStageRequest,
+  SourceControlUnstageRequest,
   UpdateAgentRuntimeConfig,
   UpdateAgentSkill,
   UpdateChatAgent,
@@ -1146,6 +1156,96 @@ export const projectApi = {
   },
 };
 
+type SourceControlWriteOptions = {
+  response?: "full" | "fast";
+};
+
+const sourceControlWriteQuery = (
+  options?: SourceControlWriteOptions,
+): string => (options?.response === "fast" ? qs({ response: "fast" }) : "");
+
+export const projectSourceControlApi = {
+  getSessionStatus: async (
+    projectId: string,
+    sessionId: string,
+  ): Promise<SessionSourceControlStatus> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(
+        projectId,
+      )}/source-control/session-status${qs({ session_id: sessionId })}`,
+    );
+    return handleApiResponse<SessionSourceControlStatus>(r);
+  },
+  getDiff: async (
+    projectId: string,
+    params: SourceControlDiffRequest,
+  ): Promise<SourceControlDiffResponse> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(
+        projectId,
+      )}/source-control/diff${qs({
+        session_id: params.session_id,
+        workspace_id: params.workspace_id,
+        path: params.path,
+        area: params.area,
+      })}`,
+    );
+    return handleApiResponse<SourceControlDiffResponse>(r);
+  },
+  stage: async (
+    projectId: string,
+    request: SourceControlStageRequest,
+    options?: SourceControlWriteOptions,
+  ): Promise<SourceControlOperationResponse> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(
+        projectId,
+      )}/source-control/stage${sourceControlWriteQuery(options)}`,
+      { method: "POST", body: jsonBody(request) },
+    );
+    return handleApiResponse<SourceControlOperationResponse>(r);
+  },
+  unstage: async (
+    projectId: string,
+    request: SourceControlUnstageRequest,
+    options?: SourceControlWriteOptions,
+  ): Promise<SourceControlOperationResponse> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(
+        projectId,
+      )}/source-control/unstage${sourceControlWriteQuery(options)}`,
+      { method: "POST", body: jsonBody(request) },
+    );
+    return handleApiResponse<SourceControlOperationResponse>(r);
+  },
+  discard: async (
+    projectId: string,
+    request: SourceControlDiscardRequest,
+    options?: SourceControlWriteOptions,
+  ): Promise<SourceControlOperationResponse> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(
+        projectId,
+      )}/source-control/discard${sourceControlWriteQuery(options)}`,
+      { method: "POST", body: jsonBody(request) },
+    );
+    return handleApiResponse<SourceControlOperationResponse>(r);
+  },
+  commit: async (
+    projectId: string,
+    request: SourceControlCommitRequest,
+  ): Promise<SourceControlCommitResponse> => {
+    const r = await makeRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/source-control/commit`,
+      { method: "POST", body: jsonBody(request) },
+    );
+    return handleApiResponse<
+      SourceControlCommitResponse,
+      SourceControlCommitError
+    >(r);
+  },
+};
+
 // -----------------------------------------------------------------------------
 // GitHub integration (local backend API only)
 // -----------------------------------------------------------------------------
@@ -1653,6 +1753,7 @@ export const api = {
   sessionAgents: sessionAgentsApi,
   skills: skillsApi,
   projects: projectApi,
+  projectSourceControl: projectSourceControlApi,
   workflow: workflowApi,
   cliConfig: cliConfigApi,
   buildStats: buildStatsApi,

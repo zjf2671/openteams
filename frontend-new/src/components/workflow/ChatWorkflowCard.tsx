@@ -264,6 +264,8 @@ const buildWorkflowPlanGenerationProjection = (
     validation_errors: null,
     is_terminal: status === 'failed',
     has_transcripts: null,
+    started_at: null,
+    completed_at: null,
   };
 };
 

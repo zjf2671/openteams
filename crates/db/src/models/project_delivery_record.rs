@@ -15,6 +15,7 @@ pub enum ProjectDeliveryEventTypeV2 {
     Release,
     TestPassed,
     TestFailed,
+    CommitCreated,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
@@ -64,6 +65,7 @@ pub struct ProjectDeliveryStatsSummary {
     pub release_count: i64,
     pub test_passed_count: i64,
     pub test_failed_count: i64,
+    pub commit_created_count: i64,
 }
 
 impl ProjectDeliveryRecord {
@@ -114,7 +116,8 @@ impl ProjectDeliveryRecord {
             FROM project_delivery_records dr
             LEFT JOIN project_work_items pwi ON pwi.id = dr.project_work_item_id
             LEFT JOIN project_repos pr ON pr.repo_id = dr.repo_id
-            WHERE (pwi.project_id = ?1 OR pr.project_id = ?1)
+            LEFT JOIN chat_sessions cs ON cs.id = dr.source_session_id
+            WHERE (pwi.project_id = ?1 OR pr.project_id = ?1 OR cs.project_id = ?1)
               AND (?2 IS NULL OR dr.project_work_item_id = ?2)
               AND (?3 IS NULL OR dr.repo_id = ?3)
             ORDER BY dr.occurred_at DESC
@@ -139,7 +142,8 @@ impl ProjectDeliveryRecord {
             FROM project_delivery_records dr
             LEFT JOIN project_work_items pwi ON pwi.id = dr.project_work_item_id
             LEFT JOIN project_repos pr ON pr.repo_id = dr.repo_id
-            WHERE (pwi.project_id = ?1 OR pr.project_id = ?1)
+            LEFT JOIN chat_sessions cs ON cs.id = dr.source_session_id
+            WHERE (pwi.project_id = ?1 OR pr.project_id = ?1 OR cs.project_id = ?1)
               AND date(dr.occurred_at) >= ?2
               AND date(dr.occurred_at) <= ?3
             GROUP BY dr.event_type
@@ -160,6 +164,7 @@ impl ProjectDeliveryRecord {
             release_count: 0,
             test_passed_count: 0,
             test_failed_count: 0,
+            commit_created_count: 0,
         };
 
         for row in rows {
@@ -172,6 +177,7 @@ impl ProjectDeliveryRecord {
                 "release" => summary.release_count = count,
                 "test_passed" => summary.test_passed_count = count,
                 "test_failed" => summary.test_failed_count = count,
+                "commit_created" => summary.commit_created_count = count,
                 _ => {}
             }
         }

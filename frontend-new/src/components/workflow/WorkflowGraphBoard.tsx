@@ -470,7 +470,7 @@ export function WorkflowGraphBoard({
 
     elk
       .layout(graph as Parameters<typeof elk.layout>[0])
-      .then((laidOut) => {
+      .then((laidOut: unknown) => {
         const result = laidOut as unknown as ElkLayoutNode;
         setLayout(result);
         setLayoutError(null);
@@ -487,9 +487,10 @@ export function WorkflowGraphBoard({
           setTransform({ x, y, scale });
         }
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.error('ELK Layout error:', err);
-        const errorMessage = String(err?.message ?? err);
+        const errorMessage =
+          err instanceof Error ? err.message : String(err);
         setLayoutError(errorMessage);
         // Fallback: simple grid layout without ELK
         const fallbackLayout = buildFallbackLayout(graph.children ?? []);
@@ -787,7 +788,7 @@ export function WorkflowGraphBoard({
                     ? 'text-[#4F5156]'
                     : 'text-[#8A8F98]'
               )}
-              title={step?.title ?? dataNode.data.title}
+              title={step?.title ?? dataNode.data.title ?? undefined}
             >
               {step?.title ?? dataNode.data.title}
             </div>

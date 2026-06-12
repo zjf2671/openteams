@@ -74,9 +74,9 @@ export type ProjectDeliveryRecord = { id: string, project_work_item_id: string |
 
 export type CreateProjectDeliveryRecord = { project_work_item_id: string | null, repo_id: string | null, external_link_id: string | null, event_type: ProjectDeliveryEventTypeV2, external_id: string | null, url: string | null, actor: string | null, source_session_id: string | null, source_workflow_execution_id: string | null, metadata_json: string | null, occurred_at: Date | null, };
 
-export enum ProjectDeliveryEventTypeV2 { pr_opened = "pr_opened", pr_merged = "pr_merged", deployment = "deployment", release = "release", test_passed = "test_passed", test_failed = "test_failed" }
+export enum ProjectDeliveryEventTypeV2 { pr_opened = "pr_opened", pr_merged = "pr_merged", deployment = "deployment", release = "release", test_passed = "test_passed", test_failed = "test_failed", commit_created = "commit_created" }
 
-export type ProjectDeliveryStatsSummary = { period_start: string, period_end: string, pr_opened_count: bigint, pr_merged_count: bigint, deployment_count: bigint, release_count: bigint, test_passed_count: bigint, test_failed_count: bigint, };
+export type ProjectDeliveryStatsSummary = { period_start: string, period_end: string, pr_opened_count: bigint, pr_merged_count: bigint, deployment_count: bigint, release_count: bigint, test_passed_count: bigint, test_failed_count: bigint, commit_created_count: bigint, };
 
 export type GitHubOperationAudit = { id: string, actor: string | null, operation_source: GitHubOperationSource, session_id: string | null, workflow_execution_id: string | null, repo_id: string | null, target_type: GitHubTargetType, target_id: string | null, action: string, result: GitHubOperationResult, error: string | null, created_at: Date, };
 
@@ -119,6 +119,42 @@ export enum GitHubPendingOperationStatus { pending_approval = "pending_approval"
 export type ProjectDetail = { project: Project, paths: Array<ProjectPath>, members: Array<ProjectMember>, sessions: Array<ChatSession>, repos: Array<Repo>, stats: Array<ProjectStats>, };
 
 export type ProjectWorkItemDetail = { work_item: ProjectWorkItem, external_links: Array<ProjectWorkItemExternalLink>, execution_links: Array<ProjectWorkItemExecutionLink>, delivery_records: Array<ProjectDeliveryRecord>, github_audits: Array<GitHubOperationAudit>, github_issue_detail: GitHubIssueDetail | null, };
+
+export type SourceControlFileStatus = "modified" | "added" | "deleted" | "untracked" | "renamed" | "copied" | "type_changed";
+
+export type SourceControlDiffArea = "changes" | "staged";
+
+export type SourceControlOperationInProgress = "merge" | "rebase" | "cherry_pick" | "revert";
+
+export type SourceControlPlainReason = "not_git_repo";
+
+export type SourceControlOperationFailureCode = "path_outside_workspace" | "not_session_scoped" | "shared_file" | "external_staged_conflict" | "stale_status" | "git_operation_blocked" | "file_missing" | "unknown";
+
+export type SourceControlCommitErrorCode = "empty_message" | "empty_staged" | "external_staged_conflict" | "shared_file_requires_confirmation" | "detached_head" | "git_operation_blocked" | "stale_status" | "path_outside_workspace" | "not_session_scoped" | "unknown";
+
+export type SourceControlFile = { path: string, old_path: string | null, status: SourceControlFileStatus, additions: number, deletions: number, has_diff: boolean, is_binary: boolean, is_too_large: boolean, shared: boolean, shared_session_ids: Array<string>, blocked_reason: string | null, };
+
+export type SessionSourceControlStatus = { "mode": "git", workspace_id: string | null, workspace_path: string, branch: string, head_sha: string | null, changes: Array<SourceControlFile>, staged_changes: Array<SourceControlFile>, external_staged_paths: Array<string>, operation_in_progress: SourceControlOperationInProgress | null, detached_head: boolean, blocked_reason: string | null, } | { "mode": "plain", workspace_id: string | null, workspace_path: string, files: Array<SourceControlFile>, reason: SourceControlPlainReason, };
+
+export type SourceControlDiffRequest = { session_id: string, workspace_id?: string | null, path: string, area: SourceControlDiffArea, };
+
+export type SourceControlDiffResponse = { path: string, old_path: string | null, area: SourceControlDiffArea, base_label: string, compare_label: string, unified_diff: string | null, additions: number, deletions: number, is_binary: boolean, is_too_large: boolean, content_omitted: boolean, message: string | null, };
+
+export type SourceControlStageRequest = { session_id: string, workspace_id?: string | null, paths: Array<string>, force_shared?: boolean | null, };
+
+export type SourceControlUnstageRequest = { session_id: string, workspace_id?: string | null, paths: Array<string>, };
+
+export type SourceControlDiscardRequest = { session_id: string, workspace_id?: string | null, paths: Array<string>, force_shared?: boolean | null, expected_head_sha?: string | null, };
+
+export type SourceControlOperationFailure = { path: string, code: SourceControlOperationFailureCode, message: string, };
+
+export type SourceControlOperationResponse = { ok: boolean, succeeded: Array<string>, failed: Array<SourceControlOperationFailure>, status?: SessionSourceControlStatus | null, head_sha?: string | null, operation_id?: string | null, };
+
+export type SourceControlCommitRequest = { session_id: string, workspace_id?: string | null, message: string, expected_staged_paths: Array<string>, force_shared?: boolean | null, work_item_ids?: Array<string>, expected_head_sha?: string | null, };
+
+export type SourceControlCommitResponse = { commit_sha: string, short_sha: string, branch: string, message: string, committed_paths: Array<string>, additions: number, deletions: number, status: SessionSourceControlStatus, };
+
+export type SourceControlCommitError = { code: SourceControlCommitErrorCode, message: string, conflicting_paths?: Array<string>, status?: SessionSourceControlStatus, };
 
 export type GitHubAccount = { login: string, id: bigint, avatar_url: string | null, html_url: string | null, scopes: Array<string>, connected_at: Date, };
 
@@ -599,6 +635,8 @@ export type ProjectSessionResponse = { session: ChatSession, };
 export type ProjectReposResponse = { repos: Array<Repo>, };
 
 export type ProjectStatsResponse = { stats: Array<ProjectStats>, };
+
+export type SessionSourceControlStatusQuery = { session_id: string, workspace_id?: string | null, };
 
 export type GitHubDevicePollRequest = { device_code: string, };
 

@@ -282,7 +282,8 @@ export type ProjectDeliveryEventType =
   | 'deployment'
   | 'release'
   | 'test_passed'
-  | 'test_failed';
+  | 'test_failed'
+  | 'commit_created';
 
 export type GitHubOperationSource = 'user_ui' | 'agent';
 export type GitHubOperationResult =
@@ -580,6 +581,7 @@ export interface ProjectDeliveryStatsSummary {
   release_count: number;
   test_passed_count: number;
   test_failed_count: number;
+  commit_created_count: number;
 }
 
 // =============================================================================
@@ -603,6 +605,171 @@ export interface ApiResponse<T, E = T> {
   data: T | null;
   error_data: E | null;
   message: string | null;
+}
+
+// ----- Project source control -----------------------------------------------
+
+export type SourceControlFileStatus =
+  | 'modified'
+  | 'added'
+  | 'deleted'
+  | 'untracked'
+  | 'renamed'
+  | 'copied'
+  | 'type_changed';
+
+export type SourceControlDiffArea = 'changes' | 'staged';
+
+export type SourceControlOperationInProgress =
+  | 'merge'
+  | 'rebase'
+  | 'cherry_pick'
+  | 'revert';
+
+export type SourceControlPlainReason = 'not_git_repo';
+
+export type SourceControlOperationFailureCode =
+  | 'path_outside_workspace'
+  | 'not_session_scoped'
+  | 'shared_file'
+  | 'external_staged_conflict'
+  | 'stale_status'
+  | 'git_operation_blocked'
+  | 'file_missing'
+  | 'unknown';
+
+export type SourceControlCommitErrorCode =
+  | 'empty_message'
+  | 'empty_staged'
+  | 'external_staged_conflict'
+  | 'shared_file_requires_confirmation'
+  | 'detached_head'
+  | 'git_operation_blocked'
+  | 'stale_status'
+  | 'path_outside_workspace'
+  | 'not_session_scoped'
+  | 'unknown';
+
+export interface SourceControlFile {
+  path: string;
+  old_path: string | null;
+  status: SourceControlFileStatus;
+  additions: number;
+  deletions: number;
+  has_diff: boolean;
+  is_binary: boolean;
+  is_too_large: boolean;
+  shared: boolean;
+  shared_session_ids: string[];
+  blocked_reason: string | null;
+}
+
+export type SessionSourceControlStatus =
+  | {
+      mode: 'git';
+      workspace_id: string | null;
+      workspace_path: string;
+      branch: string;
+      head_sha: string | null;
+      changes: SourceControlFile[];
+      staged_changes: SourceControlFile[];
+      external_staged_paths: string[];
+      operation_in_progress: SourceControlOperationInProgress | null;
+      detached_head: boolean;
+      blocked_reason: string | null;
+    }
+  | {
+      mode: 'plain';
+      workspace_id: string | null;
+      workspace_path: string;
+      files: SourceControlFile[];
+      reason: SourceControlPlainReason;
+    };
+
+export interface SourceControlDiffRequest {
+  session_id: string;
+  workspace_id?: string | null;
+  path: string;
+  area: SourceControlDiffArea;
+}
+
+export interface SourceControlDiffResponse {
+  path: string;
+  old_path: string | null;
+  area: SourceControlDiffArea;
+  base_label: string;
+  compare_label: string;
+  unified_diff: string | null;
+  additions: number;
+  deletions: number;
+  is_binary: boolean;
+  is_too_large: boolean;
+  content_omitted: boolean;
+  message: string | null;
+}
+
+export interface SourceControlStageRequest {
+  session_id: string;
+  workspace_id?: string | null;
+  paths: string[];
+  force_shared?: boolean | null;
+}
+
+export interface SourceControlUnstageRequest {
+  session_id: string;
+  workspace_id?: string | null;
+  paths: string[];
+}
+
+export interface SourceControlDiscardRequest {
+  session_id: string;
+  workspace_id?: string | null;
+  paths: string[];
+  force_shared?: boolean | null;
+  expected_head_sha?: string | null;
+}
+
+export interface SourceControlOperationFailure {
+  path: string;
+  code: SourceControlOperationFailureCode;
+  message: string;
+}
+
+export interface SourceControlOperationResponse {
+  ok: boolean;
+  succeeded: string[];
+  failed: SourceControlOperationFailure[];
+  status?: SessionSourceControlStatus | null;
+  head_sha?: string | null;
+  operation_id?: string | null;
+}
+
+export interface SourceControlCommitRequest {
+  session_id: string;
+  workspace_id?: string | null;
+  message: string;
+  expected_staged_paths: string[];
+  force_shared?: boolean | null;
+  work_item_ids?: string[];
+  expected_head_sha?: string | null;
+}
+
+export interface SourceControlCommitResponse {
+  commit_sha: string;
+  short_sha: string;
+  branch: string;
+  message: string;
+  committed_paths: string[];
+  additions: number;
+  deletions: number;
+  status: SessionSourceControlStatus;
+}
+
+export interface SourceControlCommitError {
+  code: SourceControlCommitErrorCode;
+  message: string;
+  conflicting_paths?: string[];
+  status?: SessionSourceControlStatus;
 }
 
 // ----- Chat sessions ---------------------------------------------------------

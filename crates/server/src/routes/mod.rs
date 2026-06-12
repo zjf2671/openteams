@@ -21,6 +21,7 @@ pub mod github;
 pub mod health;
 pub mod images;
 pub mod project_github;
+pub mod project_source_control;
 pub mod projects;
 pub mod scratch;
 pub mod tags;
@@ -42,6 +43,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .merge(projects::router())
         .merge(github::router())
         .merge(project_github::router())
+        .merge(project_source_control::router())
         .merge(scratch::router(&deployment))
         .merge(workflow::router())
         .merge(version::router())

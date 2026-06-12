@@ -461,15 +461,15 @@ function MemberSaveActions({
   if (!dirty && !success && !saving) return null;
 
   return (
-    <div className="sticky bottom-0 z-10 flex justify-end gap-2 border-t border-[var(--hairline)] bg-[var(--surface-1)] py-4">
+    <div className="flex justify-end gap-2">
       {dirty && !success && (
         <button
           type="button"
           onClick={onDiscardChanges}
           disabled={saving}
-          className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3.5 text-[14px] font-medium text-[var(--ink-subtle)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2.5 text-[12px] font-medium text-[var(--ink-subtle)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <RotateCcw className="h-4 w-4" />
+          <RotateCcw className="h-3.5 w-3.5" />
           {t("teamPage.action.discard")}
         </button>
       )}
@@ -477,14 +477,14 @@ function MemberSaveActions({
         type="button"
         onClick={() => void onSaveChanges()}
         disabled={saving || success}
-        className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-[var(--primary)] px-3.5 text-[14px] font-semibold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-[6px] bg-[var(--primary)] px-2.5 text-[12px] font-semibold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {success ? (
-          <Check className="h-4 w-4" />
+          <Check className="h-3.5 w-3.5" />
         ) : saving ? (
-          <RefreshCw className="h-4 w-4 animate-spin" />
+          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
         ) : (
-          <Save className="h-4 w-4" />
+          <Save className="h-3.5 w-3.5" />
         )}
         {success
           ? t("teamPage.action.saved")
@@ -496,22 +496,77 @@ function MemberSaveActions({
   );
 }
 
+function McpSaveActions({
+  mcpApplying,
+  mcpDirty,
+  mcpError,
+  mcpLoading,
+  mcpSuccess,
+  onApplyMcpServers,
+  onDiscardMcpChanges,
+  t,
+}: Pick<
+  TeamConfigTabsProps,
+  | "mcpApplying"
+  | "mcpDirty"
+  | "mcpError"
+  | "mcpLoading"
+  | "mcpSuccess"
+  | "onApplyMcpServers"
+  | "onDiscardMcpChanges"
+  | "t"
+>) {
+  const unsupported = mcpError?.includes("support MCP") ?? false;
+
+  if (unsupported || (!mcpDirty && !mcpSuccess && !mcpApplying)) return null;
+
+  return (
+    <div className="flex justify-end gap-2">
+      {mcpDirty && !mcpSuccess && (
+        <button
+          type="button"
+          onClick={onDiscardMcpChanges}
+          disabled={mcpApplying}
+          className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--hairline)] bg-[var(--surface-2)] px-2.5 text-[12px] font-medium text-[var(--ink-subtle)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          {t("teamPage.action.discard")}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => void onApplyMcpServers()}
+        disabled={mcpApplying || mcpLoading || !!mcpError || mcpSuccess}
+        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] bg-[var(--primary)] px-2.5 text-[12px] font-semibold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {mcpSuccess ? (
+          <Check className="h-3.5 w-3.5" />
+        ) : mcpApplying ? (
+          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Save className="h-3.5 w-3.5" />
+        )}
+        {mcpSuccess
+          ? t("teamPage.action.saved")
+          : mcpApplying
+            ? t("teamPage.action.saving")
+            : t("teamPage.action.saveMcpConfig")}
+      </button>
+    </div>
+  );
+}
+
 function ConfigTab({
   capability,
   isLeader,
-  memberDirty,
-  memberSuccess,
   modelOptions,
   reasoningOptions,
   roleDefinition,
   runnerType,
   runtimeOptions,
-  saving,
   selectedModelValue,
   selectedReasoningValue,
   workspacePath,
-  onDiscardMemberChanges,
-  onSaveMember,
   setIsLeader,
   setMemberName,
   setModelName,
@@ -538,6 +593,11 @@ function ConfigTab({
   | "onDiscardMcpChanges"
   | "onMcpServersChange"
   | "onToggleMcpServer"
+  | "memberDirty"
+  | "memberSuccess"
+  | "onDiscardMemberChanges"
+  | "onSaveMember"
+  | "saving"
   | "selectedMember"
   | "allowedSkillIds"
   | "setAllowedSkillIds"
@@ -682,26 +742,12 @@ function ConfigTab({
           />
         </ConfigSection>
       </div>
-
-      <MemberSaveActions
-        dirty={memberDirty}
-        saving={saving}
-        success={memberSuccess}
-        onDiscardChanges={onDiscardMemberChanges}
-        onSaveChanges={onSaveMember}
-        t={t}
-      />
     </div>
   );
 }
 
 function SkillsTab({
   allowedSkillIds,
-  memberDirty,
-  memberSuccess,
-  onDiscardMemberChanges,
-  onSaveMember,
-  saving,
   setAllowedSkillIds,
   skillLookup,
   skills,
@@ -711,11 +757,6 @@ function SkillsTab({
 }: Pick<
   TeamConfigTabsProps,
   | "allowedSkillIds"
-  | "memberDirty"
-  | "memberSuccess"
-  | "onDiscardMemberChanges"
-  | "onSaveMember"
-  | "saving"
   | "setAllowedSkillIds"
   | "skillLookup"
   | "skills"
@@ -739,15 +780,6 @@ function SkillsTab({
           t={t}
         />
       </ConfigSection>
-
-      <MemberSaveActions
-        dirty={memberDirty}
-        saving={saving}
-        success={memberSuccess}
-        onDiscardChanges={onDiscardMemberChanges}
-        onSaveChanges={onSaveMember}
-        t={t}
-      />
     </div>
   );
 }
@@ -764,32 +796,22 @@ const getMcpIconSrc = (icon?: string) =>
 
 function McpConfigTab({
   configuredMcpServerKeys,
-  mcpApplying,
   mcpConfig,
   mcpConfigPath,
-  mcpDirty,
   mcpError,
   mcpLoading,
   mcpServersJson,
-  mcpSuccess,
-  onApplyMcpServers,
-  onDiscardMcpChanges,
   onMcpServersChange,
   onToggleMcpServer,
   t,
 }: Pick<
   TeamConfigTabsProps,
   | "configuredMcpServerKeys"
-  | "mcpApplying"
   | "mcpConfig"
   | "mcpConfigPath"
-  | "mcpDirty"
   | "mcpError"
   | "mcpLoading"
   | "mcpServersJson"
-  | "mcpSuccess"
-  | "onApplyMcpServers"
-  | "onDiscardMcpChanges"
   | "onMcpServersChange"
   | "onToggleMcpServer"
   | "t"
@@ -923,41 +945,6 @@ function McpConfigTab({
           </>
         )}
       </ConfigSection>
-
-      {!unsupported && (mcpDirty || mcpSuccess || mcpApplying) && (
-        <div className="sticky bottom-0 z-10 flex justify-end gap-2 border-t border-[var(--hairline)] bg-[var(--surface-1)] py-4">
-          {mcpDirty && !mcpSuccess && (
-            <button
-              type="button"
-              onClick={onDiscardMcpChanges}
-              disabled={mcpApplying}
-              className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] px-3.5 text-[14px] font-medium text-[var(--ink-subtle)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RotateCcw className="h-4 w-4" />
-              {t("teamPage.action.discard")}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => void onApplyMcpServers()}
-            disabled={mcpApplying || mcpLoading || !!mcpError || mcpSuccess}
-            className="inline-flex h-10 items-center gap-2 rounded-[8px] bg-[var(--primary)] px-3.5 text-[14px] font-semibold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {mcpSuccess ? (
-              <Check className="h-4 w-4" />
-            ) : mcpApplying ? (
-              <RefreshCw className="h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            {mcpSuccess
-              ? t("teamPage.action.saved")
-              : mcpApplying
-                ? t("teamPage.action.saving")
-                : t("teamPage.action.saveMcpConfig")}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -999,11 +986,19 @@ export function TeamConfigTabs(props: TeamConfigTabsProps) {
     ],
     [t],
   );
+  const isMcpUnsupported = props.mcpError?.includes("support MCP") ?? false;
+  const shouldShowMemberActions =
+    props.memberDirty || props.memberSuccess || props.saving;
+  const shouldShowMcpActions =
+    !isMcpUnsupported &&
+    (props.mcpDirty || props.mcpSuccess || props.mcpApplying);
+  const shouldShowActionFooter =
+    activeTab === "mcp" ? shouldShowMcpActions : shouldShowMemberActions;
 
   if (!selectedMember) return <EmptyMemberState t={t} />;
 
   return (
-    <div className="flex min-h-full flex-col bg-[var(--surface-2)]">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--surface-2)]">
       <div className="sticky top-0 z-20 flex shrink-0 items-end justify-between gap-4 border-b border-[var(--hairline)] bg-[var(--surface-2)] px-5">
         <div className="flex min-w-0 items-center gap-1">
           {tabItems.map((item) => {
@@ -1054,43 +1049,58 @@ export function TeamConfigTabs(props: TeamConfigTabsProps) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 px-5 py-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 ot-scroll-area-styled">
         {activeTab === "config" ? (
           <ConfigTab {...props} />
         ) : activeTab === "skills" ? (
           <SkillsTab
             allowedSkillIds={props.allowedSkillIds}
-            memberDirty={props.memberDirty}
-            memberSuccess={props.memberSuccess}
-            saving={props.saving}
             skillLookup={props.skillLookup}
             skills={props.skills}
             skillsError={props.skillsError}
             skillsLoading={props.skillsLoading}
-            onDiscardMemberChanges={props.onDiscardMemberChanges}
-            onSaveMember={props.onSaveMember}
             setAllowedSkillIds={props.setAllowedSkillIds}
             t={t}
           />
         ) : (
           <McpConfigTab
-            mcpApplying={props.mcpApplying}
             configuredMcpServerKeys={props.configuredMcpServerKeys}
             mcpConfig={props.mcpConfig}
             mcpConfigPath={props.mcpConfigPath}
-            mcpDirty={props.mcpDirty}
             mcpError={props.mcpError}
             mcpLoading={props.mcpLoading}
             mcpServersJson={props.mcpServersJson}
-            mcpSuccess={props.mcpSuccess}
-            onApplyMcpServers={props.onApplyMcpServers}
-            onDiscardMcpChanges={props.onDiscardMcpChanges}
             onMcpServersChange={props.onMcpServersChange}
             onToggleMcpServer={props.onToggleMcpServer}
             t={t}
           />
         )}
       </div>
+      {shouldShowActionFooter && (
+        <div className="shrink-0 border-t border-[var(--hairline)] bg-[var(--surface-1)] px-5 py-2">
+          {activeTab === "mcp" ? (
+            <McpSaveActions
+              mcpApplying={props.mcpApplying}
+              mcpDirty={props.mcpDirty}
+              mcpError={props.mcpError}
+              mcpLoading={props.mcpLoading}
+              mcpSuccess={props.mcpSuccess}
+              onApplyMcpServers={props.onApplyMcpServers}
+              onDiscardMcpChanges={props.onDiscardMcpChanges}
+              t={t}
+            />
+          ) : (
+            <MemberSaveActions
+              dirty={props.memberDirty}
+              saving={props.saving}
+              success={props.memberSuccess}
+              onDiscardChanges={props.onDiscardMemberChanges}
+              onSaveChanges={props.onSaveMember}
+              t={t}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

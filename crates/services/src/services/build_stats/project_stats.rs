@@ -52,7 +52,8 @@ impl ProjectStatsService {
             FROM project_delivery_records dr
             LEFT JOIN project_work_items pwi ON pwi.id = dr.project_work_item_id
             LEFT JOIN project_repos pr ON pr.repo_id = dr.repo_id
-            WHERE (pwi.project_id = ?1 OR pr.project_id = ?1)
+            LEFT JOIN chat_sessions cs ON cs.id = dr.source_session_id
+            WHERE (pwi.project_id = ?1 OR pr.project_id = ?1 OR cs.project_id = ?1)
               AND date(dr.occurred_at) >= ?2
               AND date(dr.occurred_at) <= ?3
             GROUP BY event_type
@@ -72,7 +73,9 @@ impl ProjectStatsService {
             let event_type: String = row.try_get("event_type")?;
             let count: i64 = row.try_get("count")?;
             match event_type.as_str() {
-                "pr_opened" | "pr_merged" | "deployment" | "release" => feature_count += count,
+                "pr_opened" | "pr_merged" | "deployment" | "release" | "commit_created" => {
+                    feature_count += count
+                }
                 "test_passed" | "test_failed" => test_count += count,
                 _ => {}
             }
@@ -295,11 +298,12 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO project_delivery_records (id, project_work_item_id, event_type)
-            VALUES (?1, ?2, 'pr_opened'), (?3, ?2, 'test_passed')
+            VALUES (?1, ?2, 'pr_opened'), (?3, ?2, 'test_passed'), (?4, ?2, 'commit_created')
             "#,
         )
         .bind(Uuid::new_v4())
         .bind(work_item_id)
+        .bind(Uuid::new_v4())
         .bind(Uuid::new_v4())
         .execute(&pool)
         .await
@@ -374,7 +378,7 @@ mod tests {
             .await
             .expect("refresh stats");
 
-        assert_eq!(stats.feature_count, 1);
+        assert_eq!(stats.feature_count, 2);
         assert_eq!(stats.bugfix_count, 0);
         assert_eq!(stats.test_count, 1);
         assert_eq!(stats.input_tokens, 1_000_000);
