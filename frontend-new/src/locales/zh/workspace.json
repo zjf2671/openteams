@@ -198,6 +198,7 @@
   "sourceControl.confirm.sharedDescription": "此操作包含另一个活动会话触及的文件。仅在你确实要覆盖共享保护时继续。",
   "sourceControl.confirm.sharedTitle": "{action}共享文件？",
   "sourceControl.disabledTitle": "{action}：{reason}",
+  "sourceControl.externalStagedCount": "外部已暂存：{count}",
   "sourceControl.externalStagedFiles": "外部已暂存文件：",
   "sourceControl.loading": "正在加载源代码管理状态...",
   "sourceControl.openDiffFor": "打开 {path} 的差异",

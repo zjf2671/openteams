@@ -198,6 +198,7 @@
   "sourceControl.confirm.sharedDescription": "이 작업에는 다른 활성 세션에서 수정한 파일이 포함됩니다. 공유 보호를 덮어쓸 의도가 있을 때만 계속하세요.",
   "sourceControl.confirm.sharedTitle": "공유 파일을 {action}할까요?",
   "sourceControl.disabledTitle": "{action}: {reason}",
+  "sourceControl.externalStagedCount": "외부 스테이지됨: {count}",
   "sourceControl.externalStagedFiles": "외부에서 스테이지된 파일:",
   "sourceControl.loading": "소스 제어 상태 로드 중...",
   "sourceControl.openDiffFor": "{path} diff 열기",

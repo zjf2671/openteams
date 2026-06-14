@@ -198,6 +198,7 @@
   "sourceControl.confirm.sharedDescription": "This operation includes files touched by another active session. Continue only if you intend to override that shared protection.",
   "sourceControl.confirm.sharedTitle": "{action} shared files?",
   "sourceControl.disabledTitle": "{action}: {reason}",
+  "sourceControl.externalStagedCount": "External staged: {count}",
   "sourceControl.externalStagedFiles": "External staged files:",
   "sourceControl.loading": "Loading source-control status...",
   "sourceControl.openDiffFor": "Open diff for {path}",

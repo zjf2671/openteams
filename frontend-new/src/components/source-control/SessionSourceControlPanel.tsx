@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ChevronRight,
+  Info,
   Loader2,
   RefreshCw,
   ShieldAlert,
@@ -499,6 +500,18 @@ export const SessionSourceControlPanel: React.FC<
     );
   }
 
+  const externalStagedCount = viewModel.externalStagedPaths.length;
+  const externalStagedHint =
+    externalStagedCount > 0
+      ? tr("sourceControl.externalStagedCount", "External staged: {count}", {
+          count: externalStagedCount,
+        })
+      : "";
+  const externalStagedTooltip =
+    externalStagedCount > 0
+      ? `${tr("sourceControl.externalStagedFiles", "External staged files:")}\n${viewModel.externalStagedPaths.join("\n")}`
+      : "";
+
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col">
@@ -513,6 +526,15 @@ export const SessionSourceControlPanel: React.FC<
               title={viewModel.branch}
             >
               {viewModel.branch}
+            </span>
+          )}
+          {externalStagedCount > 0 && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600"
+              title={externalStagedTooltip}
+            >
+              <Info className="h-3 w-3 shrink-0" />
+              <span>{externalStagedHint}</span>
             </span>
           )}
         </div>
@@ -532,25 +554,12 @@ export const SessionSourceControlPanel: React.FC<
       </div>
 
       <ScrollArea className="flex-1 px-2 pb-2">
-        {(viewModel.blockedReason ||
-          viewModel.externalStagedPaths.length > 0 ||
-          actionError) && (
+        {(viewModel.blockedReason || actionError) && (
           <div className="mb-2 space-y-1">
             {viewModel.blockedReason && (
               <div className="flex gap-2 rounded-md bg-[var(--surface-1)] px-3 py-2 text-[12px] text-amber-600">
                 <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>{viewModel.blockedReason}</span>
-              </div>
-            )}
-            {viewModel.externalStagedPaths.length > 0 && (
-              <div className="rounded-md bg-[var(--surface-1)] px-3 py-2 text-[12px] text-rose-500">
-                {tr(
-                  "sourceControl.externalStagedFiles",
-                  "External staged files:",
-                )}{" "}
-                <span className="font-mono">
-                  {viewModel.externalStagedPaths.join(", ")}
-                </span>
               </div>
             )}
             {actionError && (
