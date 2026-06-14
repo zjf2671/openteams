@@ -192,6 +192,7 @@
   "sourceControl.commit.fallback": "提交",
   "sourceControl.commit.stagedChanges": "提交已暂存变更",
   "sourceControl.commit.committing": "提交中...",
+  "sourceControl.commit.externalStagedBlocked": "存在外部暂存",
   "sourceControl.commitPlaceholder": "提交信息",
   "sourceControl.confirm.discardDescription": "丢弃 {paths} 的变更？此操作无法撤销。",
   "sourceControl.confirm.discardTitle": "丢弃变更？",

@@ -189,6 +189,7 @@
   "sourceControl.action.unstage": "Quitar de preparados",
   "sourceControl.action.unstageAll": "Quitar todo de preparados",
   "sourceControl.commit.committing": "Haciendo commit...",
+  "sourceControl.commit.externalStagedBlocked": "Preparado externo",
   "sourceControl.commit.enterMessage": "Introduce un mensaje de commit",
   "sourceControl.commit.fallback": "Commit",
   "sourceControl.commit.stagedChanges": "Commit de cambios preparados",

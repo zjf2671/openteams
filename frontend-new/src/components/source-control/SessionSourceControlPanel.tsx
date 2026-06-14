@@ -627,41 +627,49 @@ export const SessionSourceControlPanel: React.FC<
         </div>
       </ScrollArea>
 
-      <div className="shrink-0 border-t border-[var(--hairline)] p-2">
-        <textarea
-          value={commitMessage}
-          onChange={(event) => setCommitMessage(event.target.value)}
-          rows={2}
-          className="mb-2 min-h-14 w-full resize-none rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-2 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
-          placeholder={tr("sourceControl.commitPlaceholder", "commit message")}
-        />
-        <button
-          type="button"
-          onClick={handleCommit}
-          disabled={
-            Boolean(pendingAction) ||
-            !viewModel.canCommit ||
-            !commitMessage.trim()
-          }
-          className="flex h-8 w-full items-center justify-center rounded-md bg-[var(--primary)] px-3 text-[13px] font-medium text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:bg-[var(--surface-3)] disabled:text-[var(--ink-tertiary)] disabled:opacity-80"
-          title={
-            !commitMessage.trim()
-              ? tr(
-                  "sourceControl.commit.enterMessage",
-                  "Enter a commit message",
-                )
-              : (viewModel.commitDisabledReason ??
-                tr(
-                  "sourceControl.commit.stagedChanges",
-                  "Commit staged changes",
-                ))
-          }
-        >
-          {pendingAction === "commit"
-            ? tr("sourceControl.commit.committing", "Committing...")
-            : commitLabel}
-        </button>
-      </div>
+      {viewModel.stagedPaths.length > 0 && (
+        <div className="shrink-0 border-t border-[var(--hairline)] p-2">
+          <textarea
+            value={commitMessage}
+            onChange={(event) => setCommitMessage(event.target.value)}
+            rows={2}
+            className="mb-2 min-h-14 w-full resize-none rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-2 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] focus:border-[var(--primary)]"
+            placeholder={tr("sourceControl.commitPlaceholder", "commit message")}
+          />
+          <button
+            type="button"
+            onClick={handleCommit}
+            disabled={
+              Boolean(pendingAction) ||
+              !viewModel.canCommit ||
+              !commitMessage.trim()
+            }
+            className="flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md bg-[var(--primary)] px-3 text-[13px] font-medium text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:bg-[var(--surface-3)] disabled:text-[var(--ink-tertiary)] disabled:opacity-80"
+            title={
+              !commitMessage.trim()
+                ? tr(
+                    "sourceControl.commit.enterMessage",
+                    "Enter a commit message",
+                  )
+                : (viewModel.commitDisabledReason ??
+                  tr(
+                    "sourceControl.commit.stagedChanges",
+                    "Commit staged changes",
+                  ))
+            }
+          >
+            {pendingAction === "commit"
+              ? tr("sourceControl.commit.committing", "Committing...")
+              : viewModel.externalStagedPaths.length > 0 &&
+                  !viewModel.blockedReason
+                ? tr(
+                    "sourceControl.commit.externalStagedBlocked",
+                    "存在外部暂存",
+                  )
+                : commitLabel}
+          </button>
+        </div>
+      )}
       </div>
       {confirmDialog && (
         <ConfirmationDialog

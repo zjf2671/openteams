@@ -192,6 +192,7 @@
   "sourceControl.commit.fallback": "Commit",
   "sourceControl.commit.stagedChanges": "Commit staged changes",
   "sourceControl.commit.committing": "Committing...",
+  "sourceControl.commit.externalStagedBlocked": "External staged",
   "sourceControl.commitPlaceholder": "commit message",
   "sourceControl.confirm.discardDescription": "Discard changes for {paths}? This cannot be undone.",
   "sourceControl.confirm.discardTitle": "Discard changes?",

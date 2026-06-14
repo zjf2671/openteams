@@ -189,6 +189,7 @@
   "sourceControl.action.unstage": "스테이지 해제",
   "sourceControl.action.unstageAll": "모두 스테이지 해제",
   "sourceControl.commit.committing": "커밋 중...",
+  "sourceControl.commit.externalStagedBlocked": "외부 스테이지됨",
   "sourceControl.commit.enterMessage": "커밋 메시지를 입력하세요",
   "sourceControl.commit.fallback": "커밋",
   "sourceControl.commit.stagedChanges": "스테이지된 변경 사항 커밋",

@@ -189,6 +189,7 @@
   "sourceControl.action.unstage": "Désindexer",
   "sourceControl.action.unstageAll": "Tout désindexer",
   "sourceControl.commit.committing": "Commit en cours...",
+  "sourceControl.commit.externalStagedBlocked": "Indexé en externe",
   "sourceControl.commit.enterMessage": "Saisissez un message de commit",
   "sourceControl.commit.fallback": "Commit",
   "sourceControl.commit.stagedChanges": "Committer les changements indexés",

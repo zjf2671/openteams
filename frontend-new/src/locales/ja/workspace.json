@@ -189,6 +189,7 @@
   "sourceControl.action.unstage": "ステージ解除",
   "sourceControl.action.unstageAll": "すべてステージ解除",
   "sourceControl.commit.committing": "コミット中...",
+  "sourceControl.commit.externalStagedBlocked": "外部ステージあり",
   "sourceControl.commit.enterMessage": "コミットメッセージを入力してください",
   "sourceControl.commit.fallback": "コミット",
   "sourceControl.commit.stagedChanges": "ステージ済みの変更をコミット",
