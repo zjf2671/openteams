@@ -220,5 +220,21 @@
   "issue.toolbar.filter.backlog": "待办池",
   "issue.toolbar.filterIssues": "筛选事项",
   "issue.toolbar.importDisabled": "关联 GitHub 仓库以导入 issue",
-  "issue.toolbar.importIssues": "导入 issue"
+  "issue.toolbar.importIssues": "导入 issue",
+  "issue.detail.attachmentsHeading": "附件：",
+  "issue.detail.prompt.currentMatter": "当前事项是{label}",
+  "issue.detail.prompt.title": "issue标题：{title}",
+  "issue.detail.prompt.description": "issue描述：{description}",
+  "issue.detail.unknownUser": "未知用户",
+  "issue.detail.you": "你",
+  "issue.detail.labelBug": "缺陷",
+  "issue.detail.labelFeature": "功能",
+  "issue.detail.labelTask": "任务",
+  "issue.detail.labelDeploy": "部署",
+  "issue.detail.labelTest": "测试",
+  "issue.detail.labelDocumentation": "文档",
+  "issue.detail.labelRefactor": "重构",
+  "issue.detail.labelQuestion": "问题",
+  "issue.detail.labelHelpWanted": "需要帮助",
+  "issue.detail.labelGoodFirstIssue": "适合新手"
 }

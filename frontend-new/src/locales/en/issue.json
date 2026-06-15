@@ -220,5 +220,21 @@
   "issue.toolbar.filter.backlog": "Backlog",
   "issue.toolbar.filterIssues": "Filter issues",
   "issue.toolbar.importDisabled": "Connect a GitHub repository to import issues",
-  "issue.toolbar.importIssues": "Import issues"
+  "issue.toolbar.importIssues": "Import issues",
+  "issue.detail.attachmentsHeading": "Attachments:",
+  "issue.detail.prompt.currentMatter": "Current item is {label}",
+  "issue.detail.prompt.title": "Issue title: {title}",
+  "issue.detail.prompt.description": "Issue description: {description}",
+  "issue.detail.unknownUser": "unknown",
+  "issue.detail.you": "you",
+  "issue.detail.labelBug": "Bug",
+  "issue.detail.labelFeature": "Feature",
+  "issue.detail.labelTask": "Task",
+  "issue.detail.labelDeploy": "Deploy",
+  "issue.detail.labelTest": "Test",
+  "issue.detail.labelDocumentation": "Documentation",
+  "issue.detail.labelRefactor": "Refactor",
+  "issue.detail.labelQuestion": "Question",
+  "issue.detail.labelHelpWanted": "Help Wanted",
+  "issue.detail.labelGoodFirstIssue": "Good First Issue"
 }

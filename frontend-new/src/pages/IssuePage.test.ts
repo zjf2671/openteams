@@ -91,7 +91,7 @@ const githubRestClientSource = readFileSync(
   'utf8',
 );
 const detailPanelUsages =
-  issueDetailSource.match(/<DetailPanel title=/g)?.length ?? 0;
+  issueDetailSource.match(/<DetailPanel/g)?.length ?? 0;
 const sourceBetween = (start: string, end: string) =>
   issueDetailSource.slice(
     issueDetailSource.indexOf(start),
@@ -125,7 +125,7 @@ check(
   'issue detail project panel links and creates sessions from issue context',
   issueDetailSource.includes('function SessionDropdown') &&
     issueDetailSource.includes("from '@/components/CommandSelectMenu'") &&
-    issueDetailSource.includes('placeholder="Link session..."') &&
+    issueDetailSource.includes('issue.detail.linkSessionPlaceholder') &&
     commandSelectMenuSource.includes('max-h-[220px]') &&
     issueDetailSource.includes('options={filteredSessionOptions}') &&
     issueDetailSource.includes('linkedSessionLinks.length === 0 &&') &&
@@ -263,7 +263,7 @@ check(
 );
 
 const externalLinkPanelStart = issueDetailSource.indexOf(
-  '<DetailPanel title="External link">',
+  'panelId="external-link"',
 );
 const externalLinkPanelEnd = issueDetailSource.indexOf(
   '</DetailPanel>',
@@ -277,7 +277,7 @@ check(
   'issue detail external link shows github icon with issue number only',
   externalLinkPanelSource.includes('<DetailStaticRow icon={Github}>') &&
     externalLinkPanelSource.includes(
-      'GitHub Issue #{linkedGitHubIssueNumber}',
+      'issue.detail.githubIssueNumber',
     ) &&
     !externalLinkPanelSource.includes('<DetailStaticRow icon={Box}>') &&
     !externalLinkPanelSource.includes('titleCaseToken(current.source)'),

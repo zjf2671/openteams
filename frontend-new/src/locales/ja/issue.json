@@ -220,5 +220,21 @@
   "issue.toolbar.filter.backlog": "バックログ",
   "issue.toolbar.filterIssues": "課題をフィルター",
   "issue.toolbar.importDisabled": "課題をインポートするには GitHub リポジトリを連携してください",
-  "issue.toolbar.importIssues": "課題をインポート"
+  "issue.toolbar.importIssues": "課題をインポート",
+  "issue.detail.attachmentsHeading": "添付ファイル:",
+  "issue.detail.prompt.currentMatter": "現在の項目は{label}です",
+  "issue.detail.prompt.title": "Issue タイトル: {title}",
+  "issue.detail.prompt.description": "Issue 説明: {description}",
+  "issue.detail.unknownUser": "不明なユーザー",
+  "issue.detail.you": "あなた",
+  "issue.detail.labelBug": "バグ",
+  "issue.detail.labelFeature": "機能",
+  "issue.detail.labelTask": "タスク",
+  "issue.detail.labelDeploy": "デプロイ",
+  "issue.detail.labelTest": "テスト",
+  "issue.detail.labelDocumentation": "ドキュメント",
+  "issue.detail.labelRefactor": "リファクタリング",
+  "issue.detail.labelQuestion": "質問",
+  "issue.detail.labelHelpWanted": "協力募集",
+  "issue.detail.labelGoodFirstIssue": "初心者向け"
 }

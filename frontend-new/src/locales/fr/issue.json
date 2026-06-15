@@ -220,5 +220,21 @@
   "issue.toolbar.filter.backlog": "Backlog",
   "issue.toolbar.filterIssues": "Filtrer les tickets",
   "issue.toolbar.importDisabled": "Connectez un dépôt GitHub pour importer des tickets",
-  "issue.toolbar.importIssues": "Importer des tickets"
+  "issue.toolbar.importIssues": "Importer des tickets",
+  "issue.detail.attachmentsHeading": "Pièces jointes :",
+  "issue.detail.prompt.currentMatter": "L’élément actuel est {label}",
+  "issue.detail.prompt.title": "Titre du ticket : {title}",
+  "issue.detail.prompt.description": "Description du ticket : {description}",
+  "issue.detail.unknownUser": "utilisateur inconnu",
+  "issue.detail.you": "vous",
+  "issue.detail.labelBug": "Bug",
+  "issue.detail.labelFeature": "Fonctionnalité",
+  "issue.detail.labelTask": "Tâche",
+  "issue.detail.labelDeploy": "Déploiement",
+  "issue.detail.labelTest": "Test",
+  "issue.detail.labelDocumentation": "Documentation",
+  "issue.detail.labelRefactor": "Refactorisation",
+  "issue.detail.labelQuestion": "Question",
+  "issue.detail.labelHelpWanted": "Aide souhaitée",
+  "issue.detail.labelGoodFirstIssue": "Bon premier ticket"
 }

@@ -22,8 +22,28 @@ const dynamicKeys = [
   "issue.linkDialog.provider.linear.description",
   "issue.linkDialog.provider.linear.name",
 ] as const;
-const dialogPrefixes = ["issue.linkDialog.", "issue.importDialog."] as const;
+const localePrefixes = [
+  "issue.detail.",
+  "issue.linkDialog.",
+  "issue.importDialog.",
+] as const;
 const requiredPlaceholders: Record<string, readonly string[]> = {
+  "issue.detail.action.attachmentsSelected": ["count"],
+  "issue.detail.action.moreOptionsOpened": ["id"],
+  "issue.detail.action.priorityUpdated": ["priority"],
+  "issue.detail.action.statusUpdated": ["status"],
+  "issue.detail.action.subIssuesOpened": ["id"],
+  "issue.detail.commentFocused": ["id"],
+  "issue.detail.collapsePanel": ["title"],
+  "issue.detail.expandPanel": ["title"],
+  "issue.detail.githubIssueNumber": ["number"],
+  "issue.detail.openedBy": ["date", "name"],
+  "issue.detail.prompt.currentMatter": ["label"],
+  "issue.detail.prompt.description": ["description"],
+  "issue.detail.prompt.title": ["title"],
+  "issue.detail.removeLabel": ["label"],
+  "issue.detail.sourceProvider": ["provider"],
+  "issue.detail.unlinkSessionAria": ["title"],
   "issue.linkDialog.auth.deviceCode": ["code"],
   "issue.linkDialog.auth.status": ["status"],
   "issue.linkDialog.auth.switchAccountFrom": ["login"],
@@ -66,18 +86,18 @@ const readText = readTextForTest;
 
 const readLocale = readSplitLocaleForTest;
 
-const issueDialogKeys = (dict: LocaleDict) =>
+const issueLocaleKeys = (dict: LocaleDict) =>
   Object.keys(dict)
-    .filter((key) => dialogPrefixes.some((prefix) => key.startsWith(prefix)))
+    .filter((key) => localePrefixes.some((prefix) => key.startsWith(prefix)))
     .sort();
 
-const usedIssueDialogKeys = () => {
+const usedIssueLocaleKeys = () => {
   const keys = new Set<string>(dynamicKeys);
 
   for (const file of sourceFiles) {
     const text = readText(file);
     for (const match of text.matchAll(
-      /tr\(\s*["'](issue\.(?:linkDialog|importDialog)\.[^"']+)["']/g,
+      /tr\(\s*["'](issue\.(?:detail|linkDialog|importDialog)\.[^"']+)["']/g,
     )) {
       keys.add(match[1]);
     }
@@ -85,6 +105,21 @@ const usedIssueDialogKeys = () => {
 
   return Array.from(keys).sort();
 };
+
+const issueDetailHardcodedPatterns: Array<[string, RegExp]> = [
+  [
+    "literal placeholders",
+    /placeholder="(?:Add a description|Leave a comment|Change status|Set priority|Add labels|Link session)\.\.\."/,
+  ],
+  ["literal sync aria labels", /aria-label="Sync (?:description|comments)/],
+  ["literal sync titles", /title="Sync (?:description|comments)/],
+  ["literal detail panel titles", /<DetailPanel title="/],
+  [
+    "literal detail page text nodes",
+    />\s*(?:Loading description|Add a description|Add sub-issues|Activity|No comments yet|Clear|Attach|Open GitHub issue|Create session|Issues)\s*</,
+  ],
+  ["literal issue prompt", /`当前事项是\$\{label\}`/],
+];
 
 const placeholders = (value: string) =>
   Array.from(value.matchAll(/\{([a-zA-Z0-9_]+)\}/g))
@@ -95,22 +130,22 @@ const same = (left: unknown, right: unknown) =>
   JSON.stringify(left) === JSON.stringify(right);
 
 // eslint-disable-next-line no-console
-console.log("Issue dialog locale sync");
+console.log("Issue page locale sync");
 
 const dictionaries = Object.fromEntries(
   locales.map((locale) => [locale, readLocale(locale)]),
 ) as Record<Locale, LocaleDict>;
-const baselineKeys = issueDialogKeys(dictionaries.en);
-const usedKeys = usedIssueDialogKeys();
+const baselineKeys = issueLocaleKeys(dictionaries.en);
+const usedKeys = usedIssueLocaleKeys();
 
 check(
-  "en defines every Issue dialog key used by the Issue page",
+  "en defines every Issue detail/dialog key used by the Issue page",
   usedKeys.every((key) => baselineKeys.includes(key)),
   usedKeys.filter((key) => !baselineKeys.includes(key)),
 );
 
 check(
-  "en keeps required Issue dialog placeholders",
+  "en keeps required Issue detail/dialog placeholders",
   Object.entries(requiredPlaceholders).every(([key, expected]) =>
     same(placeholders(dictionaries.en[key]), [...expected].sort()),
   ),
@@ -127,10 +162,21 @@ check(
     })),
 );
 
+const issueDetailSource = readText("./pages/IssueDetailPage.tsx");
+const hardcodedMatches = issueDetailHardcodedPatterns
+  .filter(([, pattern]) => pattern.test(issueDetailSource))
+  .map(([label]) => label);
+
+check(
+  "Issue detail page removes known untranslated hardcoded strings",
+  hardcodedMatches.length === 0,
+  hardcodedMatches,
+);
+
 for (const locale of locales) {
-  const keys = issueDialogKeys(dictionaries[locale]);
+  const keys = issueLocaleKeys(dictionaries[locale]);
   check(
-    `${locale} has the same Issue dialog keys as en`,
+    `${locale} has the same Issue detail/dialog keys as en`,
     same(keys, baselineKeys),
     {
       missing: baselineKeys.filter((key) => !keys.includes(key)),
@@ -154,7 +200,7 @@ for (const locale of locales) {
     }));
 
   check(
-    `${locale} keeps Issue dialog placeholders aligned with en`,
+    `${locale} keeps Issue detail/dialog placeholders aligned with en`,
     placeholderMismatches.length === 0,
     placeholderMismatches,
   );

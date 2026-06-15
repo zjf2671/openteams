@@ -212,6 +212,40 @@ const labelColorByName: Record<string, string> = {
   'good first issue': '#7edc8f',
 };
 
+const labelDisplayKeysByName: Record<
+  string,
+  { key: string; fallback: string }
+> = {
+  bug: { key: 'issue.detail.labelBug', fallback: 'Bug' },
+  feature: { key: 'issue.detail.labelFeature', fallback: 'Feature' },
+  task: { key: 'issue.detail.labelTask', fallback: 'Task' },
+  deploy: { key: 'issue.detail.labelDeploy', fallback: 'Deploy' },
+  test: { key: 'issue.detail.labelTest', fallback: 'Test' },
+  doc: { key: 'issue.detail.labelDocumentation', fallback: 'Documentation' },
+  refactor: { key: 'issue.detail.labelRefactor', fallback: 'Refactor' },
+  enhancement: {
+    key: 'issue.detail.labelImprovement',
+    fallback: 'Improvement',
+  },
+  improvement: {
+    key: 'issue.detail.labelImprovement',
+    fallback: 'Improvement',
+  },
+  documentation: {
+    key: 'issue.detail.labelDocumentation',
+    fallback: 'Documentation',
+  },
+  question: { key: 'issue.detail.labelQuestion', fallback: 'Question' },
+  'help wanted': {
+    key: 'issue.detail.labelHelpWanted',
+    fallback: 'Help Wanted',
+  },
+  'good first issue': {
+    key: 'issue.detail.labelGoodFirstIssue',
+    fallback: 'Good First Issue',
+  },
+};
+
 const remoteProviderIcons: Record<RemoteProviderId, RemoteProviderIconConfig> =
   {
     github: {
@@ -254,26 +288,35 @@ function truncateIssueSessionTitle(title: string, fallback: string) {
 function issuePromptLabel(
   labels: string[],
   issueType: ProjectWorkItem['type'],
+  tr: IssueDetailTranslator,
 ) {
   const cleanLabels = labels.map((label) => label.trim()).filter(Boolean);
   return cleanLabels.length > 0
     ? cleanLabels.join(', ')
-    : labelDisplayName(issueType);
+    : labelDisplayName(issueType, tr);
 }
 
 function buildIssueSessionPrompt({
   label,
   title,
   description,
+  tr,
 }: {
   label: string;
   title: string;
   description: string;
+  tr: IssueDetailTranslator;
 }) {
   return [
-    `当前事项是${label}`,
-    `issue标题：${title.trim()}`,
-    `issue描述：${description.trim()}`,
+    tr('issue.detail.prompt.currentMatter', 'Current item is {label}', {
+      label,
+    }),
+    tr('issue.detail.prompt.title', 'Issue title: {title}', {
+      title: title.trim(),
+    }),
+    tr('issue.detail.prompt.description', 'Issue description: {description}', {
+      description: description.trim(),
+    }),
   ].join('\n');
 }
 
@@ -368,10 +411,10 @@ export function IssueDetailPage({
       setDetailLoading(false);
     } catch (error) {
       if (detailRequestIdRef.current !== requestId) return;
-      setDetailError(errorMessage(error));
+      setDetailError(errorMessage(error, tr));
       setDetailLoading(false);
     }
-  }, [issue.workItemId, projectId]);
+  }, [issue.workItemId, projectId, tr]);
 
   useEffect(() => {
     if (!syncNotice) return;
@@ -394,7 +437,7 @@ export function IssueDetailPage({
         if (!cancelled) setProjectSessions(sessions);
       })
       .catch((error) => {
-        if (!cancelled) setActionError(errorMessage(error));
+        if (!cancelled) setActionError(errorMessage(error, tr));
       })
       .finally(() => {
         if (!cancelled) setSessionsLoading(false);
@@ -402,7 +445,7 @@ export function IssueDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, tr]);
 
   useEffect(() => {
     void loadDetail();
@@ -470,7 +513,10 @@ export function IssueDetailPage({
   const issueStatus = current.status;
   const statusMenuOptions = useMemo(() => buildStatusMenuOptions(tr), [tr]);
   const priorityMenuOptions = useMemo(() => buildPriorityMenuOptions(tr), [tr]);
-  const localCreatorIdentity = defaultIssueUserIdentity(githubAccount ?? null);
+  const localCreatorIdentity = defaultIssueUserIdentity(
+    githubAccount ?? null,
+    tr,
+  );
   const creatorName = githubIssue?.summary.author ?? localCreatorIdentity.name;
   const creatorAvatarUrl =
     githubIssue?.summary.author_avatar_url ??
@@ -543,7 +589,7 @@ export function IssueDetailPage({
     try {
       await task();
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(errorMessage(error, tr));
     } finally {
       setAction(null);
     }
@@ -597,7 +643,7 @@ export function IssueDetailPage({
       onAction(tr('issue.detail.action.nameUpdated', 'Issue name updated'));
       return true;
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(errorMessage(error, tr));
       return false;
     } finally {
       setAction(null);
@@ -620,7 +666,7 @@ export function IssueDetailPage({
       onIssueDeleted?.(current.id);
       return true;
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(errorMessage(error, tr));
       return false;
     } finally {
       setAction(null);
@@ -673,19 +719,32 @@ export function IssueDetailPage({
             : existing,
         );
         clearPendingIssueStatusSync(projectId, current.id);
-        onAction(tr('issue.detail.action.statusSynced', 'GitHub issue status synced'));
+        onAction(
+          tr('issue.detail.action.statusSynced', 'GitHub issue status synced'),
+        );
         showSyncNotice(
           tr('issue.detail.syncNotice.complete.title', 'GitHub sync complete'),
-          tr('issue.detail.syncNotice.statusSynced.message', 'Status synced to GitHub.'),
+          tr(
+            'issue.detail.syncNotice.statusSynced.message',
+            'Status synced to GitHub.',
+          ),
           'success',
         );
       })
       .catch((error) => {
-        setActionError(errorMessage(error));
-        onAction(tr('issue.detail.action.statusSyncFailed', 'GitHub issue status sync failed'));
+        setActionError(errorMessage(error, tr));
+        onAction(
+          tr(
+            'issue.detail.action.statusSyncFailed',
+            'GitHub issue status sync failed',
+          ),
+        );
         showSyncNotice(
           tr('issue.detail.syncNotice.pending.title', 'GitHub sync pending'),
-          tr('issue.detail.syncNotice.pending.message', 'Could not sync status to GitHub. It will retry when you reopen this issue.'),
+          tr(
+            'issue.detail.syncNotice.pending.message',
+            'Could not sync status to GitHub. It will retry when you reopen this issue.',
+          ),
           'warning',
         );
       })
@@ -711,14 +770,25 @@ export function IssueDetailPage({
     setSelectedFiles(files);
     if (files.length > 0) {
       onAction(
-        `${files.length} attachment${files.length === 1 ? '' : 's'} selected`,
+        tr(
+          'issue.detail.action.attachmentsSelected',
+          '{count} attachment(s) selected',
+          {
+            count: files.length,
+          },
+        ),
       );
     }
   };
 
   const handleSubmitDescription = async () => {
     if (!targetRepoIntegrationId || !linkedGitHubIssueNumber) {
-      onAction('Connect a GitHub issue to sync description');
+      onAction(
+        tr(
+          'issue.detail.action.connectGithubDescription',
+          'Connect a GitHub issue to sync description',
+        ),
+      );
       return;
     }
     await runAction('description', async () => {
@@ -745,10 +815,18 @@ export function IssueDetailPage({
           : existing,
       );
       patchCurrentWorkItem(updated);
-      onAction('Description synced to GitHub');
+      onAction(
+        tr(
+          'issue.detail.action.descriptionSynced',
+          'Description synced to GitHub',
+        ),
+      );
       showSyncNotice(
-        'GitHub sync complete',
-        'Description synced to GitHub.',
+        tr('issue.detail.syncNotice.complete.title', 'GitHub sync complete'),
+        tr(
+          'issue.detail.syncNotice.descriptionSynced.message',
+          'Description synced to GitHub.',
+        ),
         'success',
       );
     });
@@ -781,15 +859,20 @@ export function IssueDetailPage({
         workItem: updated,
         labels: githubIssue ? issueLabels : undefined,
       });
-      onAction('Description saved');
+      onAction(tr('issue.detail.action.descriptionSaved', 'Description saved'));
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(errorMessage(error, tr));
     }
   };
 
   const handleSyncActivity = async () => {
     if (!targetRepoIntegrationId || !linkedGitHubIssueNumber) {
-      onAction('Connect a GitHub issue to sync activity');
+      onAction(
+        tr(
+          'issue.detail.action.connectGithubActivity',
+          'Connect a GitHub issue to sync activity',
+        ),
+      );
       return;
     }
     await runAction('activity-sync', async () => {
@@ -803,17 +886,25 @@ export function IssueDetailPage({
           ? { ...existing, github_issue_detail: githubDetail }
           : existing,
       );
-      onAction('Activity synced from GitHub');
+      onAction(
+        tr(
+          'issue.detail.action.activitySynced',
+          'Activity synced from GitHub',
+        ),
+      );
       showSyncNotice(
-        'GitHub sync complete',
-        'Activity synced from GitHub.',
+        tr('issue.detail.syncNotice.complete.title', 'GitHub sync complete'),
+        tr(
+          'issue.detail.syncNotice.activitySynced.message',
+          'Activity synced from GitHub.',
+        ),
         'success',
       );
     });
   };
 
   const handleSubmitComment = async () => {
-    const body = composeIssueCommentBody(commentText, selectedFiles);
+    const body = composeIssueCommentBody(commentText, selectedFiles, tr);
     if (!body || !targetRepoIntegrationId || !linkedGitHubIssueNumber) return;
     await runAction('comment', async () => {
       await projectGithubApi.commentIssue(
@@ -835,10 +926,15 @@ export function IssueDetailPage({
           ? { ...existing, github_issue_detail: githubDetail }
           : existing,
       );
-      onAction('Comment synced to GitHub');
+      onAction(
+        tr('issue.detail.action.commentSynced', 'Comment synced to GitHub'),
+      );
       showSyncNotice(
-        'GitHub sync complete',
-        'Comment synced to GitHub.',
+        tr('issue.detail.syncNotice.complete.title', 'GitHub sync complete'),
+        tr(
+          'issue.detail.syncNotice.commentSynced.message',
+          'Comment synced to GitHub.',
+        ),
         'success',
       );
     });
@@ -873,7 +969,15 @@ export function IssueDetailPage({
       });
       patchCurrentWorkItem(updated);
       clearPendingIssueStatusSync(projectId, current.id);
-      onAction(`Issue status updated to ${statusLabel(nextStatus)}`);
+      onAction(
+        tr(
+          'issue.detail.action.statusUpdated',
+          'Issue status updated to {status}',
+          {
+            status: statusLabel(nextStatus, tr),
+          },
+        ),
+      );
     });
   };
 
@@ -884,7 +988,15 @@ export function IssueDetailPage({
         priority,
       });
       patchCurrentWorkItem(updated);
-      onAction(`Priority updated to ${titleCaseToken(priority)}`);
+      onAction(
+        tr(
+          'issue.detail.action.priorityUpdated',
+          'Priority updated to {priority}',
+          {
+            priority: priorityLabel(priority, tr),
+          },
+        ),
+      );
     });
   };
 
@@ -900,7 +1012,12 @@ export function IssueDetailPage({
     setPriorityQuery('');
     setLabelQuery('');
     if (priority === 'none') {
-      onAction('Project work items require a priority');
+      onAction(
+        tr(
+          'issue.detail.action.priorityRequired',
+          'Project work items require a priority',
+        ),
+      );
       return;
     }
     void handlePriorityChange(priority);
@@ -931,7 +1048,9 @@ export function IssueDetailPage({
             : existing,
         );
         onIssueSync?.({ workItem: current, labels: nextLabels });
-        onAction('Labels synced to GitHub');
+        onAction(
+          tr('issue.detail.action.labelsSynced', 'Labels synced to GitHub'),
+        );
         return;
       }
 
@@ -939,7 +1058,7 @@ export function IssueDetailPage({
         labels_json: JSON.stringify(labels),
       });
       patchCurrentWorkItem(updated);
-      onAction('Labels updated');
+      onAction(tr('issue.detail.action.labelsUpdated', 'Labels updated'));
     });
   };
 
@@ -948,7 +1067,12 @@ export function IssueDetailPage({
     setLabelDraft(nextLabels.join(', '));
     setLabelQuery('');
     if (!canEditLabels) {
-      onAction('Connect a GitHub issue to sync labels');
+      onAction(
+        tr(
+          'issue.detail.action.connectGithubLabels',
+          'Connect a GitHub issue to sync labels',
+        ),
+      );
       return;
     }
     void handleSaveLabels(nextLabels);
@@ -987,7 +1111,7 @@ export function IssueDetailPage({
           return;
         }
         const option = filterMenuOptions(
-          buildLabelMenuOptions(labelDraftToList(labelDraft)),
+          buildLabelMenuOptions(labelDraftToList(labelDraft), tr),
           labelQuery,
         )[0];
         if (option) handleLabelMenuSelect(option.value);
@@ -1016,9 +1140,10 @@ export function IssueDetailPage({
         return;
       }
 
-      const option = buildLabelMenuOptions(labelDraftToList(labelDraft)).find(
-        (candidate) => candidate.shortcut === event.key,
-      );
+      const option = buildLabelMenuOptions(
+        labelDraftToList(labelDraft),
+        tr,
+      ).find((candidate) => candidate.shortcut === event.key);
       if (option) {
         event.preventDefault();
         handleLabelMenuSelect(option.value);
@@ -1056,7 +1181,9 @@ export function IssueDetailPage({
       await linkSession(sessionId);
       setOpenPropertyMenu(null);
       setSessionQuery('');
-      onAction('Session linked to issue');
+      onAction(
+        tr('issue.detail.action.sessionLinked', 'Session linked to issue'),
+      );
     });
   };
 
@@ -1065,9 +1192,10 @@ export function IssueDetailPage({
       const labelsForPrompt =
         issueLabels.length > 0 ? issueLabels : labelDraftToList(labelDraft);
       const prompt = buildIssueSessionPrompt({
-        label: issuePromptLabel(labelsForPrompt, current.type),
+        label: issuePromptLabel(labelsForPrompt, current.type, tr),
         title: issueTitle,
         description: descriptionForPrompt,
+        tr,
       });
       const useWorkflowMode = shouldUseWorkflowModeForIssue(
         labelsForPrompt,
@@ -1079,7 +1207,7 @@ export function IssueDetailPage({
       const createdSession = await projectApi.createSession(projectId, {
         title: truncateIssueSessionTitle(
           issueTitle,
-          tr('issue.detail.sessionFallbackTitle', 'Issue session'),
+          tr('issue.detail.issueSessionDefault', 'Issue session'),
         ),
         workspace_path: projectWorkspacePath,
       });
@@ -1118,8 +1246,14 @@ export function IssueDetailPage({
       void refreshSessions().catch(() => undefined);
       onAction(
         mode === 'workflow'
-          ? 'Session created and workflow prompt prepared'
-          : 'Session created and prompt prepared',
+          ? tr(
+              'issue.detail.action.sessionCreatedWorkflow',
+              'Session created and workflow prompt prepared',
+            )
+          : tr(
+              'issue.detail.action.sessionCreated',
+              'Session created and prompt prepared',
+            ),
       );
     });
   };
@@ -1137,13 +1271,15 @@ export function IssueDetailPage({
             }
           : existing,
       );
-      onAction('Session unlinked from issue');
+      onAction(
+        tr('issue.detail.action.sessionUnlinked', 'Session unlinked from issue'),
+      );
     });
   };
 
-  const commentBody = composeIssueCommentBody(commentText, selectedFiles);
+  const commentBody = composeIssueCommentBody(commentText, selectedFiles, tr);
   const labelList = labelDraftToList(labelDraft);
-  const labelMenuOptions = buildLabelMenuOptions(labelList);
+  const labelMenuOptions = buildLabelMenuOptions(labelList, tr);
   const filteredLabelOptions = filterMenuOptions(labelMenuOptions, labelQuery);
   const filteredSessionOptions = filterMenuOptions(
     sessionMenuOptions,
@@ -1237,8 +1373,10 @@ export function IssueDetailPage({
                 size="normal"
               />
               <span className="min-w-0 truncate">
-                {creatorName} opened this issue on{' '}
-                {formatSimpleDate(creatorDate)}
+                {tr('issue.detail.openedBy', '{name} opened this issue on {date}', {
+                  name: creatorName,
+                  date: formatSimpleDate(creatorDate),
+                })}
               </span>
             </div>
 
@@ -1259,13 +1397,19 @@ export function IssueDetailPage({
 
             {detailLoading ? (
               <div className="mt-[22px] rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] font-medium leading-relaxed text-[var(--ink-tertiary)]">
-                Loading description...
+                {tr(
+                  'issue.detail.loadingDescription',
+                  'Loading description...',
+                )}
               </div>
             ) : descriptionEditing ? (
               <textarea
                 autoFocus
                 value={descriptionDraft}
-                placeholder="Add a description..."
+                placeholder={tr(
+                  'issue.detail.addDescription',
+                  'Add a description...',
+                )}
                 className="mt-[22px] min-h-[126px] w-full resize-y rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-muted)] outline-none transition placeholder:text-[var(--ink-tertiary)] focus:border-[var(--hairline-strong)]"
                 onChange={(event) => setDescriptionDraft(event.target.value)}
                 onBlur={() => {
@@ -1285,7 +1429,10 @@ export function IssueDetailPage({
                 className="mt-[22px] cursor-text rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[14px] leading-relaxed text-[var(--ink-tertiary)]"
                 onClick={() => setDescriptionEditing(true)}
               >
-                Add a description...
+                {tr(
+                  'issue.detail.addDescription',
+                  'Add a description...',
+                )}
               </div>
             )}
 
@@ -1294,8 +1441,14 @@ export function IssueDetailPage({
                 type="button"
                 disabled={action === 'description' || !canWriteGitHub}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45"
-                aria-label="Sync description to GitHub"
-                title="Sync description to GitHub"
+                aria-label={tr(
+                  'issue.detail.syncDescriptionToGithub',
+                  'Sync description to GitHub',
+                )}
+                title={tr(
+                  'issue.detail.syncDescriptionToGithub',
+                  'Sync description to GitHub',
+                )}
                 onClick={() => void handleSubmitDescription()}
               >
                 <CloudUpload
@@ -1309,23 +1462,37 @@ export function IssueDetailPage({
             <button
               type="button"
               className="mt-[22px] flex items-center gap-2 text-[13px] font-medium leading-none text-[var(--ink-subtle)] transition hover:text-[var(--ink)]"
-              onClick={() => onAction(`Sub-issues opened for ${issue.id}`)}
+              onClick={() =>
+                onAction(
+                  tr(
+                    'issue.detail.action.subIssuesOpened',
+                    'Sub-issues opened for {id}',
+                    { id: issue.id },
+                  ),
+                )
+              }
             >
               <Plus aria-hidden="true" className="h-[14px] w-[14px]" />
-              <span>Add sub-issues</span>
+              <span>{tr('issue.detail.addSubIssues', 'Add sub-issues')}</span>
             </button>
 
             <div className="mt-3 border-t border-[var(--hairline)] pt-5">
               <div className="mb-6 flex items-center justify-between">
                 <h3 className="text-[17px] font-bold leading-none text-[var(--ink)]">
-                  Activity
+                  {tr('issue.detail.activity', 'Activity')}
                 </h3>
                 <button
                   type="button"
                   disabled={action === 'activity-sync' || !canSyncActivity}
                   className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-45"
-                  aria-label="Sync comments from GitHub"
-                  title="Sync comments from GitHub"
+                  aria-label={tr(
+                    'issue.detail.syncCommentsFromGithub',
+                    'Sync comments from GitHub',
+                  )}
+                  title={tr(
+                    'issue.detail.syncCommentsFromGithub',
+                    'Sync comments from GitHub',
+                  )}
                   onClick={() => void handleSyncActivity()}
                 >
                   <RefreshCw
@@ -1346,7 +1513,8 @@ export function IssueDetailPage({
                   size="normal"
                 />
                 <span>
-                  {creatorName} created the issue{' '}
+                  {creatorName}{' '}
+                  {tr('issue.detail.createdIssue', 'created the issue')}{' '}
                   <span className="text-[var(--ink-tertiary)]">
                     {formatSimpleDate(creatorDate)}
                   </span>
@@ -1365,19 +1533,23 @@ export function IssueDetailPage({
                           comment,
                           githubAccount ?? null,
                         )}
-                        name={comment.author ?? 'unknown'}
+                        name={
+                          comment.author ??
+                          tr('issue.detail.unknownUser', 'unknown')
+                        }
                         size="large"
                       />
                       <div className="min-w-0 flex-1">
                         <p className="text-[13px] font-semibold text-[var(--ink-subtle)]">
-                          {comment.author ?? 'unknown'}{' '}
+                          {comment.author ??
+                            tr('issue.detail.unknownUser', 'unknown')}{' '}
                           <span className="font-medium text-[var(--ink-tertiary)]">
                             {formatSimpleDate(comment.created_at)}
                           </span>
                         </p>
                         <div className="mt-2">
                           <AgentMarkdown
-                            content={commentBodyText(comment.body)}
+                            content={commentBodyText(comment.body, tr)}
                             fontSize={14}
                           />
                         </div>
@@ -1387,17 +1559,28 @@ export function IssueDetailPage({
                 </div>
               ) : (
                 <p className="mt-5 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] p-[15px] text-[13px] font-medium text-[var(--ink-tertiary)]">
-                  No comments yet.
+                  {tr('issue.detail.noComments', 'No comments yet.')}
                 </p>
               )}
 
               <div className="mt-6 rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-2)] p-[12px]">
                 <textarea
                   value={commentText}
-                  placeholder="Leave a comment..."
+                  placeholder={tr(
+                    'issue.detail.commentPlaceholder',
+                    'Leave a comment...',
+                  )}
                   className="min-h-[82px] w-full resize-y bg-transparent text-[14px] leading-relaxed text-[var(--ink-muted)] outline-none placeholder:text-[var(--ink-tertiary)]"
                   onChange={(event) => setCommentText(event.target.value)}
-                  onFocus={() => onAction(`Comment focused for ${issue.id}`)}
+                  onFocus={() =>
+                    onAction(
+                      tr(
+                        'issue.detail.commentFocused',
+                        'Comment focused for {id}',
+                        { id: issue.id },
+                      ),
+                    )
+                  }
                 />
                 {selectedFiles.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -1424,7 +1607,7 @@ export function IssueDetailPage({
                           fileInputRef.current.value = '';
                       }}
                     >
-                      Clear
+                      {tr('issue.detail.clear', 'Clear')}
                     </button>
                   </div>
                 )}
@@ -1438,7 +1621,7 @@ export function IssueDetailPage({
                       aria-hidden="true"
                       className="h-[14px] w-[14px]"
                     />
-                    Attach
+                    {tr('issue.detail.attach', 'Attach')}
                   </button>
                   <button
                     type="button"
@@ -1453,7 +1636,9 @@ export function IssueDetailPage({
                       className="h-[14px] w-[14px]"
                       strokeWidth={2.4}
                     />
-                    {action === 'comment' ? 'Sending...' : 'Comment'}
+                    {action === 'comment'
+                      ? tr('issue.detail.sending', 'Sending...')
+                      : tr('issue.detail.comment', 'Comment')}
                   </button>
                 </div>
               </div>
@@ -1461,13 +1646,18 @@ export function IssueDetailPage({
           </section>
 
           <aside className="min-w-0 pt-4">
-            <DetailPanel title="Properties">
+            <DetailPanel
+              panelId="properties"
+              title={tr('issue.detail.panel.properties', 'Properties')}
+              tr={tr}
+            >
               <div ref={propertyMenuRef} className="relative space-y-3">
                 <StatusDropdown
                   disabled={Boolean(action?.startsWith('status-'))}
                   open={openPropertyMenu === 'status'}
                   options={filteredStatusOptions}
                   query={statusQuery}
+                  tr={tr}
                   value={issueStatus}
                   onOpenChange={(open) => {
                     setOpenPropertyMenu(open ? 'status' : null);
@@ -1484,6 +1674,7 @@ export function IssueDetailPage({
                   open={openPropertyMenu === 'priority'}
                   options={filteredPriorityOptions}
                   query={priorityQuery}
+                  tr={tr}
                   value={current.priority}
                   onOpenChange={(open) => {
                     setOpenPropertyMenu(open ? 'priority' : null);
@@ -1498,7 +1689,11 @@ export function IssueDetailPage({
               </div>
             </DetailPanel>
 
-            <DetailPanel title="Labels">
+            <DetailPanel
+              panelId="labels"
+              title={tr('issue.detail.panel.labels', 'Labels')}
+              tr={tr}
+            >
               <LabelDropdown
                 menuRef={labelMenuRef}
                 disabled={action === 'labels' || !canEditLabels}
@@ -1507,6 +1702,7 @@ export function IssueDetailPage({
                 options={filteredLabelOptions}
                 query={labelQuery}
                 saving={action === 'labels'}
+                tr={tr}
                 onOpenChange={(open) => {
                   setOpenPropertyMenu(open ? 'labels' : null);
                   setLabelQuery('');
@@ -1519,7 +1715,11 @@ export function IssueDetailPage({
               />
             </DetailPanel>
 
-            <DetailPanel title="Project">
+            <DetailPanel
+              panelId="project"
+              title={tr('issue.detail.panel.project', 'Project')}
+              tr={tr}
+            >
               {linkedSessionLinks.length > 0 ? (
                 <div className="space-y-2">
                   {linkedSessionLinks.map(({ linkId, sessionId }) => {
@@ -1554,8 +1754,17 @@ export function IssueDetailPage({
                           type="button"
                           disabled={unlinking}
                           className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-4)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label={`Unlink ${sessionTitle(projectSessions, sessionId)}`}
-                          title="Unlink session"
+                          aria-label={tr(
+                            'issue.detail.unlinkSessionAria',
+                            'Unlink {title}',
+                            {
+                              title: sessionTitle(projectSessions, sessionId),
+                            },
+                          )}
+                          title={tr(
+                            'issue.detail.unlinkSession',
+                            'Unlink session',
+                          )}
                           onClick={() => void handleUnlinkSession(linkId)}
                         >
                           <X
@@ -1582,6 +1791,7 @@ export function IssueDetailPage({
                   open={openPropertyMenu === 'session'}
                   options={filteredSessionOptions}
                   query={sessionQuery}
+                  tr={tr}
                   onOpenChange={(open) => {
                     setOpenPropertyMenu(open ? 'session' : null);
                     setSessionQuery('');
@@ -1612,16 +1822,26 @@ export function IssueDetailPage({
                         strokeWidth={2.4}
                       />
                     )}
-                    <span className="min-w-0 truncate">Create session</span>
+                    <span className="min-w-0 truncate">
+                      {tr('issue.detail.createSession', 'Create session')}
+                    </span>
                   </button>
                 )}
               </div>
             </DetailPanel>
 
-            <DetailPanel title="External link">
+            <DetailPanel
+              panelId="external-link"
+              title={tr('issue.detail.panel.externalLink', 'External link')}
+              tr={tr}
+            >
               {linkedGitHubIssueNumber && (
                 <DetailStaticRow icon={Github}>
-                  GitHub Issue #{linkedGitHubIssueNumber}
+                  {tr(
+                    'issue.detail.githubIssueNumber',
+                    'GitHub Issue #{number}',
+                    { number: linkedGitHubIssueNumber },
+                  )}
                 </DetailStaticRow>
               )}
               {(githubIssue?.summary.url ?? githubIssueLink?.url) && (
@@ -1632,7 +1852,7 @@ export function IssueDetailPage({
                   className="inline-flex items-center gap-2 text-[13px] font-bold text-[#8d97ff] transition hover:text-[#b8bfff]"
                 >
                   <Link2 aria-hidden="true" className="h-[14px] w-[14px]" />
-                  Open GitHub issue
+                  {tr('issue.detail.openGithubIssue', 'Open GitHub issue')}
                 </a>
               )}
             </DetailPanel>
@@ -1708,7 +1928,11 @@ function IssueDetailHeader({
         <button
           type="button"
           className="truncate text-[16px] font-semibold leading-none text-[var(--ink)] transition hover:text-[var(--ink)]"
-          onClick={() => onAction('Project breadcrumb selected')}
+          onClick={() =>
+            onAction(
+              tr('issue.detail.projectBreadcrumb', 'Project breadcrumb selected'),
+            )
+          }
         >
           {projectName}
         </button>
@@ -1722,7 +1946,7 @@ function IssueDetailHeader({
           className="truncate text-[16px] font-semibold leading-none text-[var(--ink)] transition hover:text-[var(--ink)]"
           onClick={onBack}
         >
-          Issues
+          {tr('issue.header.title', 'Issues')}
         </button>
         <ChevronRight
           aria-hidden="true"
@@ -1746,7 +1970,13 @@ function IssueDetailHeader({
             aria-label={tr('issue.detail.actions.more', 'More issue options')}
             onClick={() => {
               setMenuOpen((open) => !open);
-              onAction(`More options opened for ${issue.id}`);
+              onAction(
+                tr(
+                  'issue.detail.action.moreOptionsOpened',
+                  'More options opened for {id}',
+                  { id: issue.id },
+                ),
+              );
             }}
           >
             <MoreHorizontal aria-hidden="true" className="h-[17px] w-[17px]" />
@@ -1827,7 +2057,7 @@ function IssueDetailHeader({
               : tr('issue.detail.actions.confirmDelete', 'Confirm delete')
           }
           cancelLabel={tr('issue.detail.actions.cancelDelete', 'Cancel')}
-          escLabel="Esc to cancel"
+          escLabel={tr('issue.detail.actions.escToCancel', 'Esc to cancel')}
           tone="danger"
           confirming={deleting}
           idPrefix="issue-delete-dialog"
@@ -1912,16 +2142,18 @@ function DetailRoundButton({
 }
 
 function DetailPanel({
+  panelId,
   title,
+  tr,
   children,
 }: {
+  panelId: string;
   title: string;
+  tr: IssueDetailTranslator;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(true);
-  const contentId = `issue-detail-panel-${title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')}`;
+  const contentId = `issue-detail-panel-${panelId}`;
 
   return (
     <section className="mb-[9px] rounded-[8px] border border-[var(--hairline)] bg-[var(--surface-1)] px-4 py-[15px]">
@@ -1933,7 +2165,11 @@ function DetailPanel({
         )}
         aria-expanded={open}
         aria-controls={contentId}
-        aria-label={`${open ? 'Collapse' : 'Expand'} ${title}`}
+        aria-label={
+          open
+            ? tr('issue.detail.collapsePanel', 'Collapse {title}', { title })
+            : tr('issue.detail.expandPanel', 'Expand {title}', { title })
+        }
         onClick={() => setOpen((current) => !current)}
       >
         <span className="min-w-0 flex-1 truncate">{title}</span>
@@ -1959,6 +2195,7 @@ function StatusDropdown({
   open,
   options,
   query,
+  tr,
   value,
   onOpenChange,
   onQueryChange,
@@ -1968,6 +2205,7 @@ function StatusDropdown({
   open: boolean;
   options: StatusMenuOption[];
   query: string;
+  tr: IssueDetailTranslator;
   value: IssueDetailStatus;
   onOpenChange: (open: boolean) => void;
   onQueryChange: (query: string) => void;
@@ -1984,13 +2222,13 @@ function StatusDropdown({
         onClick={() => onOpenChange(!open)}
       >
         <StatusMenuIcon status={value} />
-        <span className="min-w-0 truncate">{statusLabel(value)}</span>
+        <span className="min-w-0 truncate">{statusLabel(value, tr)}</span>
       </button>
 
       {open && (
         <CommandMenuShell>
           <CommandSearchRow
-            placeholder="Change status..."
+            placeholder={tr('issue.detail.changeStatus', 'Change status...')}
             shortcut="S"
             value={query}
             onChange={onQueryChange}
@@ -2041,7 +2279,7 @@ function StatusDropdown({
                 );
               })
             ) : (
-              <CommandNoMatches />
+              <CommandNoMatches tr={tr} />
             )}
           </div>
         </CommandMenuShell>
@@ -2055,6 +2293,7 @@ function PriorityDropdown({
   open,
   options,
   query,
+  tr,
   value,
   onOpenChange,
   onQueryChange,
@@ -2064,6 +2303,7 @@ function PriorityDropdown({
   open: boolean;
   options: PriorityMenuOption[];
   query: string;
+  tr: IssueDetailTranslator;
   value: ProjectWorkItemPriority;
   onOpenChange: (open: boolean) => void;
   onQueryChange: (query: string) => void;
@@ -2080,13 +2320,13 @@ function PriorityDropdown({
         onClick={() => onOpenChange(!open)}
       >
         <PriorityMenuIcon priority={value} selected={value === 'urgent'} />
-        <span className="min-w-0 truncate">{priorityLabel(value)}</span>
+        <span className="min-w-0 truncate">{priorityLabel(value, tr)}</span>
       </button>
 
       {open && (
         <CommandMenuShell>
           <CommandSearchRow
-            placeholder="Set priority to..."
+            placeholder={tr('issue.detail.setPriority', 'Set priority to...')}
             shortcut="P"
             value={query}
             onChange={onQueryChange}
@@ -2129,7 +2369,7 @@ function PriorityDropdown({
                 );
               })
             ) : (
-              <CommandNoMatches />
+              <CommandNoMatches tr={tr} />
             )}
           </div>
         </CommandMenuShell>
@@ -2173,10 +2413,10 @@ function CommandSearchRow({
   );
 }
 
-function CommandNoMatches() {
+function CommandNoMatches({ tr }: { tr: IssueDetailTranslator }) {
   return (
     <div className="px-3 py-2.5 text-[13px] font-semibold text-[var(--ink-tertiary)]">
-      No matches
+      {tr('issue.detail.noMatches', 'No matches')}
     </div>
   );
 }
@@ -2362,6 +2602,7 @@ function LabelDropdown({
   options,
   query,
   saving,
+  tr,
   onOpenChange,
   onQueryChange,
   onSelect,
@@ -2373,11 +2614,14 @@ function LabelDropdown({
   options: LabelMenuOption[];
   query: string;
   saving: boolean;
+  tr: IssueDetailTranslator;
   onOpenChange: (open: boolean) => void;
   onQueryChange: (query: string) => void;
   onSelect: (label: string) => void;
 }) {
   const hasLabels = labels.length > 0;
+  const addLabelLabel = tr('issue.detail.addLabel', 'Add label');
+  const savingLabelsLabel = tr('issue.detail.savingLabels', 'Saving labels');
 
   return (
     <div ref={menuRef} className="relative">
@@ -2387,6 +2631,7 @@ function LabelDropdown({
             key={label}
             disabled={disabled}
             label={label}
+            tr={tr}
             onRemove={() => onSelect(label)}
           />
         ))}
@@ -2395,8 +2640,8 @@ function LabelDropdown({
           disabled={disabled}
           aria-haspopup="listbox"
           aria-expanded={open}
-          aria-label={saving ? 'Saving labels' : 'Add label'}
-          title={saving ? 'Saving labels' : 'Add label'}
+          aria-label={saving ? savingLabelsLabel : addLabelLabel}
+          title={saving ? savingLabelsLabel : addLabelLabel}
           className={cn(
             'inline-flex h-7 max-w-full items-center rounded-full bg-[var(--surface-4)] text-[12px] font-bold leading-normal text-[var(--ink)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
             hasLabels ? 'w-7 justify-center px-0' : 'gap-1.5 px-2.5',
@@ -2417,7 +2662,9 @@ function LabelDropdown({
                 strokeWidth={2.3}
               />
               <span className="min-w-0 truncate">
-                {saving ? 'Saving...' : 'Add label'}
+                {saving
+                  ? tr('issue.detail.saving', 'Saving...')
+                  : addLabelLabel}
               </span>
             </>
           )}
@@ -2427,7 +2674,10 @@ function LabelDropdown({
       {open && (
         <div className="absolute right-0 top-full z-50 mt-2 w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[8px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
           <LabelSearchRow
-            placeholder="Add labels..."
+            placeholder={tr(
+              'issue.detail.addLabelsPlaceholder',
+              'Add labels...',
+            )}
             shortcut="L"
             value={query}
             onChange={onQueryChange}
@@ -2477,7 +2727,7 @@ function LabelDropdown({
                 );
               })
             ) : (
-              <CommandNoMatches />
+              <CommandNoMatches tr={tr} />
             )}
           </div>
         </div>
@@ -2493,6 +2743,7 @@ function SessionDropdown({
   open,
   options,
   query,
+  tr,
   onOpenChange,
   onQueryChange,
   onSelect,
@@ -2503,6 +2754,7 @@ function SessionDropdown({
   open: boolean;
   options: SessionMenuOption[];
   query: string;
+  tr: IssueDetailTranslator;
   onOpenChange: (open: boolean) => void;
   onQueryChange: (query: string) => void;
   onSelect: (sessionId: string) => void;
@@ -2523,14 +2775,19 @@ function SessionDropdown({
           strokeWidth={2.3}
         />
         <span className="min-w-0 truncate">
-          {loading ? 'Loading sessions...' : 'Link session'}
+          {loading
+            ? tr('issue.detail.loadingSessions', 'Loading sessions...')
+            : tr('issue.detail.linkSession', 'Link session')}
         </span>
       </button>
 
       {open && (
         <CommandSelectMenu>
           <CommandSelectSearchRow
-            placeholder="Link session..."
+            placeholder={tr(
+              'issue.detail.linkSessionPlaceholder',
+              'Link session...',
+            )}
             shortcut="S"
             value={query}
             onChange={onQueryChange}
@@ -2560,7 +2817,9 @@ function SessionDropdown({
                 </button>
               ))
             ) : (
-              <CommandSelectNoMatches />
+              <CommandSelectNoMatches>
+                {tr('issue.detail.noMatches', 'No matches')}
+              </CommandSelectNoMatches>
             )}
           </CommandSelectList>
         </CommandSelectMenu>
@@ -2620,21 +2879,27 @@ function DetailStaticRow({
 function LabelChip({
   disabled,
   label,
+  tr,
   onRemove,
 }: {
   disabled: boolean;
   label: string;
+  tr: IssueDetailTranslator;
   onRemove: () => void;
 }) {
+  const displayLabel = labelDisplayName(label, tr);
+
   return (
     <span className="inline-flex h-7 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--surface-4)] px-2.5 text-[12px] font-bold leading-normal text-[var(--ink-muted)]">
       <LabelColorDot color={labelColor(label)} />
-      <span className="min-w-0 truncate">{labelDisplayName(label)}</span>
+      <span className="min-w-0 truncate">{displayLabel}</span>
       <button
         type="button"
         disabled={disabled}
         className="rounded-full text-[var(--ink-tertiary)] transition hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
-        aria-label={`Remove ${label}`}
+        aria-label={tr('issue.detail.removeLabel', 'Remove {label}', {
+          label: displayLabel,
+        })}
         onClick={onRemove}
       >
         <X aria-hidden="true" className="h-[10px] w-[10px]" />
@@ -2865,13 +3130,17 @@ function IssueDisplayId({
 export function composeIssueCommentBody(
   comment: string,
   attachments: ReadonlyArray<IssueCommentAttachment>,
+  tr?: IssueDetailTranslator,
 ) {
   const body = comment.trim();
   if (attachments.length === 0) return body;
   const attachmentLines = attachments.map(
     (file) => `- ${file.name} (${formatFileSize(file.size)})`,
   );
-  const attachmentBlock = `Attachments:\n${attachmentLines.join('\n')}`;
+  const attachmentHeading = tr
+    ? tr('issue.detail.attachmentsHeading', 'Attachments:')
+    : 'Attachments:';
+  const attachmentBlock = `${attachmentHeading}\n${attachmentLines.join('\n')}`;
   return body ? `${body}\n\n${attachmentBlock}` : attachmentBlock;
 }
 
@@ -2902,7 +3171,10 @@ export function projectWorkItemLabelList(value?: string | null) {
   }
 }
 
-function buildLabelMenuOptions(selectedLabels: string[]): LabelMenuOption[] {
+function buildLabelMenuOptions(
+  selectedLabels: string[],
+  tr: IssueDetailTranslator,
+): LabelMenuOption[] {
   const values: string[] = [];
   const seen = new Set<string>();
 
@@ -2915,7 +3187,7 @@ function buildLabelMenuOptions(selectedLabels: string[]): LabelMenuOption[] {
 
   return values.map((value, index) => ({
     value,
-    label: labelDisplayName(value),
+    label: labelDisplayName(value, tr),
     color: labelColor(value),
     shortcut: index < 9 ? String(index + 1) : '',
   }));
@@ -2937,10 +3209,11 @@ function labelKey(label: string) {
 
 function labelDisplayName(label: string, tr?: IssueDetailTranslator) {
   const normalized = labelKey(label);
-  if (normalized === 'enhancement') {
+  const displayConfig = labelDisplayKeysByName[normalized];
+  if (displayConfig) {
     return tr
-      ? tr('issue.detail.labelImprovement', 'Improvement')
-      : 'Improvement';
+      ? tr(displayConfig.key, displayConfig.fallback)
+      : displayConfig.fallback;
   }
   return label
     .trim()
@@ -3031,7 +3304,10 @@ function priorityLabel(
   return titleCaseToken(priority);
 }
 
-export function defaultIssueUserIdentity(account: GitHubAccount | null): {
+export function defaultIssueUserIdentity(
+  account: GitHubAccount | null,
+  tr?: IssueDetailTranslator,
+): {
   name: string;
   avatarUrl: string | null;
   fallback: 'initials' | 'user';
@@ -3043,7 +3319,11 @@ export function defaultIssueUserIdentity(account: GitHubAccount | null): {
       fallback: account.avatar_url ? 'initials' : 'user',
     };
   }
-  return { name: 'you', avatarUrl: null, fallback: 'user' };
+  return {
+    name: tr ? tr('issue.detail.you', 'you') : 'you',
+    avatarUrl: null,
+    fallback: 'user',
+  };
 }
 
 function commentAvatarUrl(
@@ -3110,7 +3390,7 @@ function sessionTitle(sessions: BackendChatSession[], sessionId: string) {
   return session?.title?.trim() || sessionId;
 }
 
-function errorMessage(error: unknown) {
+function errorMessage(error: unknown, tr?: IssueDetailTranslator) {
   if (error && typeof error === 'object') {
     const data = (error as { errorData?: { message?: string; code?: string } })
       .errorData;
@@ -3120,5 +3400,7 @@ function errorMessage(error: unknown) {
       return error.message;
     }
   }
-  return 'Request failed. Please try again.';
+  return tr
+    ? tr('issue.error.requestFailed', 'Request failed. Please try again.')
+    : 'Request failed. Please try again.';
 }

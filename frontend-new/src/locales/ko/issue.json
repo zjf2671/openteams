@@ -220,5 +220,21 @@
   "issue.toolbar.filter.backlog": "백로그",
   "issue.toolbar.filterIssues": "이슈 필터",
   "issue.toolbar.importDisabled": "이슈를 가져오려면 GitHub 리포지토리를 연결하세요",
-  "issue.toolbar.importIssues": "이슈 가져오기"
+  "issue.toolbar.importIssues": "이슈 가져오기",
+  "issue.detail.attachmentsHeading": "첨부 파일:",
+  "issue.detail.prompt.currentMatter": "현재 항목은 {label}입니다",
+  "issue.detail.prompt.title": "이슈 제목: {title}",
+  "issue.detail.prompt.description": "이슈 설명: {description}",
+  "issue.detail.unknownUser": "알 수 없는 사용자",
+  "issue.detail.you": "나",
+  "issue.detail.labelBug": "버그",
+  "issue.detail.labelFeature": "기능",
+  "issue.detail.labelTask": "작업",
+  "issue.detail.labelDeploy": "배포",
+  "issue.detail.labelTest": "테스트",
+  "issue.detail.labelDocumentation": "문서",
+  "issue.detail.labelRefactor": "리팩터링",
+  "issue.detail.labelQuestion": "질문",
+  "issue.detail.labelHelpWanted": "도움 필요",
+  "issue.detail.labelGoodFirstIssue": "첫 이슈 추천"
 }
