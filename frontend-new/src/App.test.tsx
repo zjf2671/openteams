@@ -120,6 +120,31 @@ check(
   source,
 );
 check(
+  "creates a blank-team starter member from the first available runtime",
+  source.includes("agentRuntimeApi.list()") &&
+    source.includes('getRuntimeDisplayState(runner) === "available"') &&
+    source.includes("chatAgentsApi.create({") &&
+    source.includes("owner_project_id: projectId") &&
+    source.includes("projectApi.addMember(projectId"),
+  source,
+);
+check(
+  "creates selected team preset members during project creation",
+  source.includes("createTeamPresetMembers") &&
+    source.includes("teamPresets.find") &&
+    source.includes("memberPreset.system_prompt") &&
+    source.includes("memberPreset.selected_skill_ids") &&
+    source.includes("toast.projectCreatedWithTeam"),
+  source,
+);
+check(
+  "passes configured team presets through sidebar props",
+  source.includes("chat_presets?: ChatPresetConfigView") &&
+    source.includes("const teamPresets =") &&
+    source.includes("teamPresets,"),
+  source,
+);
+check(
   "updates and deletes projects through project API",
   source.includes("projectApi.updateProject(projectId, data)") &&
     source.includes("projectApi.deleteProject(projectId)") &&

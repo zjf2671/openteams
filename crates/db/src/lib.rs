@@ -12,6 +12,7 @@ pub mod models;
 const WORKFLOW_EXECUTION_STATUS_MIGRATION_VERSION: i64 = 20260422120000;
 const WORKFLOW_AGENT_SESSION_STATE_MIGRATION_VERSION: i64 = 20260423100000;
 const PROJECT_CENTRIC_BACKEND_SCHEMA_MIGRATION_VERSION: i64 = 20260531120000;
+const CACHE_TOKEN_PRICING_MIGRATION_VERSION: i64 = 20260602120000;
 const MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION: i64 = 20260603120000;
 
 async fn apply_workflow_execution_status_migration_shim(
@@ -1006,8 +1007,6 @@ async fn apply_project_centric_backend_schema_migration_shim(
             test_count     INTEGER DEFAULT 0,
             input_tokens   BIGINT DEFAULT 0,
             output_tokens  BIGINT DEFAULT 0,
-            cache_read_tokens BIGINT DEFAULT 0,
-            reasoning_output_tokens BIGINT DEFAULT 0,
             total_tokens   BIGINT DEFAULT 0,
             cost_total     DECIMAL,
             updated_at     TIMESTAMPTZ NOT NULL DEFAULT (datetime('now', 'subsec'))
@@ -1063,6 +1062,118 @@ async fn apply_project_centric_backend_schema_migration_shim(
         "CREATE INDEX IF NOT EXISTS idx_chat_session_agents_project_member_id ON chat_session_agents(project_member_id)",
     )
     .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO _sqlx_migrations (
+            version,
+            description,
+            success,
+            checksum,
+            execution_time
+        )
+        VALUES (?1, ?2, 1, ?3, ?4)
+        ON CONFLICT(version) DO UPDATE SET
+            description = excluded.description,
+            success = excluded.success,
+            checksum = excluded.checksum,
+            execution_time = excluded.execution_time
+        "#,
+    )
+    .bind(migration.version)
+    .bind(migration.description.clone())
+    .bind(&*migration.checksum)
+    .bind(started.elapsed().as_nanos() as i64)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn apply_cache_token_pricing_migration_shim(
+    pool: &Pool<Sqlite>,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<(), Error> {
+    let Some(migration) = migrator
+        .iter()
+        .find(|migration| migration.version == CACHE_TOKEN_PRICING_MIGRATION_VERSION)
+    else {
+        return Ok(());
+    };
+
+    if !table_exists(pool, "_sqlx_migrations").await?
+        || !table_exists(pool, "model_price_cache").await?
+        || !table_exists(pool, "model_pricing").await?
+        || !table_exists(pool, "project_stats").await?
+    {
+        return Ok(());
+    }
+
+    let already_applied = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?1 AND success = 1",
+    )
+    .bind(CACHE_TOKEN_PRICING_MIGRATION_VERSION)
+    .fetch_one(pool)
+    .await?;
+    if already_applied > 0 {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Applying compatibility shim for migration {} before sqlx migrator runs",
+        CACHE_TOKEN_PRICING_MIGRATION_VERSION
+    );
+
+    let started = Instant::now();
+    add_column_if_missing(
+        pool,
+        "model_price_cache",
+        "cache_read_price_per_1m",
+        "cache_read_price_per_1m REAL",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "model_price_cache",
+        "litellm_cache_read_price",
+        "litellm_cache_read_price REAL",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "model_price_cache",
+        "openrouter_cache_read_price",
+        "openrouter_cache_read_price REAL",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "model_pricing",
+        "cache_read_price_per_1m",
+        "cache_read_price_per_1m REAL",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "model_pricing",
+        "custom_cache_read_price",
+        "custom_cache_read_price REAL",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "project_stats",
+        "cache_read_tokens",
+        "cache_read_tokens BIGINT DEFAULT 0",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "project_stats",
+        "reasoning_output_tokens",
+        "reasoning_output_tokens BIGINT DEFAULT 0",
+    )
     .await?;
 
     sqlx::query(
@@ -1188,6 +1299,7 @@ async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
     apply_workflow_execution_status_migration_shim(pool, &migrator).await?;
     apply_workflow_agent_session_state_migration_shim(pool, &migrator).await?;
     apply_project_centric_backend_schema_migration_shim(pool, &migrator).await?;
+    apply_cache_token_pricing_migration_shim(pool, &migrator).await?;
     apply_member_execution_config_migration_shim(pool, &migrator).await?;
     let mut processed_versions: HashSet<i64> = HashSet::new();
 
@@ -1316,7 +1428,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION,
+        CACHE_TOKEN_PRICING_MIGRATION_VERSION, MEMBER_EXECUTION_CONFIG_MIGRATION_VERSION,
         PROJECT_CENTRIC_BACKEND_SCHEMA_MIGRATION_VERSION, run_migrations,
     };
     use crate::models::{
@@ -1549,6 +1661,52 @@ mod tests {
         .await
         .expect("read project stats period index");
         assert_eq!(project_stats_period_index, 1);
+    }
+
+    #[tokio::test]
+    async fn cache_token_pricing_migration_reruns_after_columns_exist() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        run_migrations(&pool).await.expect("run migrations");
+
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = ?1")
+            .bind(CACHE_TOKEN_PRICING_MIGRATION_VERSION)
+            .execute(&pool)
+            .await
+            .expect("delete cache token pricing migration ledger row");
+
+        run_migrations(&pool)
+            .await
+            .expect("rerun cache token pricing migration idempotently");
+
+        for (table, column) in [
+            ("model_price_cache", "cache_read_price_per_1m"),
+            ("model_price_cache", "litellm_cache_read_price"),
+            ("model_price_cache", "openrouter_cache_read_price"),
+            ("model_pricing", "cache_read_price_per_1m"),
+            ("model_pricing", "custom_cache_read_price"),
+            ("project_stats", "cache_read_tokens"),
+            ("project_stats", "reasoning_output_tokens"),
+        ] {
+            let count = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await
+                .expect("read table columns")
+                .into_iter()
+                .filter(|row| row.get::<String, _>("name") == column)
+                .count();
+            assert_eq!(count, 1, "{table}.{column} should exist once");
+        }
+
+        let ledger_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?1 AND success = 1",
+        )
+        .bind(CACHE_TOKEN_PRICING_MIGRATION_VERSION)
+        .fetch_one(&pool)
+        .await
+        .expect("read cache token pricing migration ledger row");
+        assert_eq!(ledger_count, 1);
     }
 
     #[tokio::test]

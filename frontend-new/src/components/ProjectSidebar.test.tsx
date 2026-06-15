@@ -213,8 +213,8 @@ check(
 );
 check(
   "removes back and forward controls",
-  !componentSource.includes("ArrowLeft") &&
-    !componentSource.includes("ArrowRight") &&
+  !/\bArrowLeft\b/u.test(componentSource) &&
+    !/\bArrowRight\b/u.test(componentSource) &&
     !html.includes("Go back") &&
     !html.includes("Go forward"),
   componentSource,
@@ -305,7 +305,7 @@ check(
   "opens a horizontal project action submenu from project rows",
   componentSource.includes(
     "openProjectActionMenu(project, event.currentTarget)",
-  ) && componentSource.includes("fixed z-[1001] w-[180px]"),
+  ) && componentSource.includes("fixed z-[1001] w-[200px]"),
   componentSource,
 );
 check(
@@ -314,10 +314,10 @@ check(
     !componentSource.includes(
       "project.description ?? project.default_workspace_path",
     ) &&
-    componentSource.includes('translate("sidebar.projectPath"') &&
     componentSource.includes("actionMenuProject.repository") &&
     componentSource.includes('translate("sidebar.projectPathEmpty"') &&
-    !componentSource.includes("{actionMenuProject.label}"),
+    componentSource.includes("{actionMenuProject.label}") &&
+    componentSource.includes("font-mono text-[11px]"),
   componentSource,
 );
 check(
@@ -336,7 +336,8 @@ check(
 check(
   "supports editing and deleting projects from sidebar",
   componentSource.includes("onUpdateProject(editingProject.id") &&
-    componentSource.includes("onDeleteProject(actionMenuProject.id)"),
+    componentSource.includes("startDeleteProject(actionMenuProject)") &&
+    componentSource.includes("onDeleteProject(deletingProjectDraft.id)"),
   componentSource,
 );
 check(
@@ -367,6 +368,23 @@ check(
   componentSource.includes("<DropdownSelect") &&
     componentSource.includes('selectionMode="single"') &&
     componentSource.includes('"sidebar.searchTeams"'),
+  componentSource,
+);
+check(
+  "create project modal defaults to a blank starter team",
+  componentSource.includes('const blankTeamId = "blank_team"') &&
+    componentSource.includes('label: "Blank team"') &&
+    componentSource.includes('description: "One starter AI member"') &&
+    componentSource.includes("{ teamId: selectedTeamId || blankTeamId }") &&
+    !componentSource.includes("fullstack_delivery"),
+  componentSource,
+);
+check(
+  "create project modal keeps configured team templates after blank team",
+  componentSource.includes("teamPresets.filter") &&
+    componentSource.includes("preset.member_ids.length") &&
+    componentSource.includes("...blankTeamOptions") &&
+    !componentSource.includes("fallbackTeamOptions"),
   componentSource,
 );
 check(

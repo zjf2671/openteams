@@ -346,30 +346,10 @@ async fn default_chat_agent_rows(pool: &SqlitePool) -> Result<Vec<sqlx::sqlite::
             .fetch_all(pool)
             .await?);
         }
-        (false, true) => {
-            return Ok(sqlx::query(
-                r#"
-                SELECT id
-                FROM chat_agents
-                WHERE owner_project_id IS NULL
-                ORDER BY name ASC
-                "#,
-            )
-            .fetch_all(pool)
-            .await?);
-        }
-        (false, false) => {}
+        (false, true) | (false, false) => {}
     }
 
-    Ok(sqlx::query(
-        r#"
-        SELECT id
-        FROM chat_agents
-        ORDER BY name ASC
-        "#,
-    )
-    .fetch_all(pool)
-    .await?)
+    Ok(Vec::new())
 }
 
 async fn chat_agents_has_column(pool: &SqlitePool, column_name: &str) -> Result<bool> {
@@ -1073,14 +1053,14 @@ mod tests {
         let pool = setup_pool().await;
         let service = ProjectMemberService::new();
         let project_id = Uuid::new_v4();
-        let agent = create_agent(&pool).await;
+        create_agent(&pool).await;
 
         let members = service
             .initialize_default_members(&pool, project_id, "user-1")
             .await
             .expect("initialize project members");
 
-        assert_eq!(members.len(), 2);
+        assert_eq!(members.len(), 1);
         assert!(
             members
                 .iter()
@@ -1088,11 +1068,9 @@ mod tests {
                     && member.user_id.as_deref() == Some("user-1"))
         );
         assert!(
-            members
+            !members
                 .iter()
-                .any(|member| member.member_type == ProjectMemberType::Agent
-                    && member.agent_id == Some(agent.id)
-                    && member.is_default)
+                .any(|member| member.member_type == ProjectMemberType::Agent)
         );
     }
 
@@ -1116,9 +1094,9 @@ mod tests {
             .await
             .expect("list project members");
 
-        assert_eq!(first.len(), 2);
+        assert_eq!(first.len(), 1);
         assert!(second.is_empty());
-        assert_eq!(all_members.len(), 2);
+        assert_eq!(all_members.len(), 1);
     }
 
     #[tokio::test]
@@ -1151,7 +1129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_default_members_excludes_project_owned_agents() {
+    async fn initialize_default_members_without_default_column_adds_no_agents() {
         let pool = setup_pool().await;
         sqlx::query("ALTER TABLE chat_agents ADD COLUMN owner_project_id BLOB")
             .execute(&pool)
@@ -1159,9 +1137,8 @@ mod tests {
             .expect("add owner_project_id column");
         let source_project_id = Uuid::new_v4();
         let target_project_id = Uuid::new_v4();
-        let global_agent = create_named_agent(&pool, "global-agent").await;
-        let owned_agent =
-            create_named_agent_with_owner(&pool, "owned-agent", Some(source_project_id)).await;
+        create_named_agent(&pool, "global-agent").await;
+        create_named_agent_with_owner(&pool, "owned-agent", Some(source_project_id)).await;
 
         let members = ProjectMemberService::new()
             .initialize_default_members(&pool, target_project_id, "user-1")
@@ -1172,8 +1149,6 @@ mod tests {
             .filter(|member| member.member_type == ProjectMemberType::Agent)
             .collect::<Vec<_>>();
 
-        assert_eq!(agent_members.len(), 1);
-        assert_eq!(agent_members[0].agent_id, Some(global_agent.id));
-        assert_ne!(agent_members[0].agent_id, Some(owned_agent.id));
+        assert!(agent_members.is_empty());
     }
 }

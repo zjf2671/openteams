@@ -41,6 +41,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  agentRuntimeApi,
   chatAgentsApi,
   chatMessagesApi,
   chatSessionsApi,
@@ -57,21 +58,29 @@ import { notifyLinkedWorkItemsChanged } from "@/lib/linkedWorkItemsEvents";
 import { mapSession } from "@/lib/mappers";
 import { mockFrontendApi } from "@/lib/mockFrontendApi";
 import { projectDisplayName } from "@/lib/projectDisplay";
+import {
+  getRunnerLabel,
+  getRuntimeDisplayState,
+} from "@/pages/agent-runtime/agentRuntimeViewModel";
 import type { ShellOptionsMock } from "@/mockApiData";
 import {
-  ProjectMemberType,
+  type BaseCodingAgent as ProjectBaseCodingAgent,
+  type ChatMemberPreset,
   type ChatTeamPreset,
+  ProjectMemberType,
   type CreateProjectRequest,
   type ProjectMemberWithRuntime,
   type UpdateProject,
 } from "../../shared/types";
 import type {
+  AgentRuntimeStatus,
   JsonValue,
   Member,
   SidebarNavigationItem,
   SidebarNavigationTarget,
   SidebarPrimaryAction,
   SourceControlDiffArea,
+  UpdateChatSession,
 } from "@/types";
 import { monogramFromName } from "@/lib/mappers";
 
@@ -147,6 +156,44 @@ const minAppScale = 0.8;
 const maxAppScale = 1.2;
 const compactViewportLayoutRelief = 0.06;
 const compactViewportFontScale = 1.06;
+const blankTeamId = "blank_team";
+
+type CreateProjectOptions = {
+  teamId?: string;
+};
+
+type ChatPresetConfigView = {
+  members?: ChatMemberPreset[];
+  teams?: ChatTeamPreset[];
+};
+
+const isObjectRecord = (value: unknown): value is Record<string, JsonValue> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
+const runtimeConfiguredModel = (
+  runtime?: AgentRuntimeStatus | null,
+): string => {
+  return (
+    isObjectRecord(runtime?.executor_options) &&
+    typeof runtime.executor_options.model === "string"
+      ? runtime.executor_options.model.trim()
+      : ""
+  );
+};
+
+const chatSessionUpdatePayload = (
+  patch: Partial<UpdateChatSession>,
+): UpdateChatSession => ({
+  title: null,
+  status: null,
+  summary_text: null,
+  archive_ref: null,
+  last_seen_diff_key: null,
+  team_protocol: null,
+  team_protocol_enabled: null,
+  default_workspace_path: null,
+  ...patch,
+});
 
 const findWorkflowProjectAgent = (projectMembers: ProjectMemberWithRuntime[]) =>
   projectMembers.find(
@@ -398,6 +445,154 @@ function WorkspaceLayout() {
   ) => {
     const translated = t(key, replacements);
     return translated && translated !== key ? translated : fallback;
+  };
+
+  const firstAvailableRuntime = (
+    runtimes: AgentRuntimeStatus[],
+  ): AgentRuntimeStatus | undefined =>
+    runtimes.find((runner) => getRuntimeDisplayState(runner) === "available");
+
+  const loadRuntimeStatuses = async (): Promise<AgentRuntimeStatus[]> => {
+    try {
+      return (await agentRuntimeApi.list()).runners;
+    } catch (err) {
+      console.error("Failed to load agent runtimes", err);
+      return [];
+    }
+  };
+
+  const createProjectAgentMember = async ({
+    projectId,
+    workspacePath,
+    name,
+    runnerType,
+    systemPrompt,
+    toolsEnabled,
+    modelName,
+    allowedSkillIds,
+    role,
+    displayOrder,
+  }: {
+    projectId: string;
+    workspacePath: string | null;
+    name: string;
+    runnerType: string;
+    systemPrompt: string | null;
+    toolsEnabled: JsonValue;
+    modelName: string | null;
+    allowedSkillIds: string[];
+    role: string;
+    displayOrder: number;
+  }) => {
+    const agent = await chatAgentsApi.create({
+      name,
+      runner_type: runnerType,
+      system_prompt: systemPrompt,
+      tools_enabled: toolsEnabled,
+      model_name: modelName,
+      owner_project_id: projectId,
+    });
+
+    await projectApi.addMember(projectId, {
+      member_type: ProjectMemberType.agent,
+      user_id: null,
+      agent_id: agent.id,
+      member_name: agent.name,
+      role,
+      display_order: displayOrder as unknown as bigint,
+      default_workspace_path: workspacePath,
+      allowed_skill_ids: allowedSkillIds,
+      execution_config: {
+        runner_type: runnerType as unknown as ProjectBaseCodingAgent,
+        model_name: modelName,
+        thinking_effort: null,
+        model_variant: null,
+      },
+      is_default: true,
+    });
+  };
+
+  const createBlankTeamStarterMember = async (
+    projectId: string,
+    workspacePath: string | null,
+    runtimes: AgentRuntimeStatus[],
+  ): Promise<boolean> => {
+    const runtime = firstAvailableRuntime(runtimes);
+    if (!runtime) return false;
+
+    const modelName =
+      runtimeConfiguredModel(runtime) || runtime.discovered_models[0] || null;
+    await createProjectAgentMember({
+      projectId,
+      workspacePath,
+      name: `${getRunnerLabel(runtime.runner_type)} Agent`,
+      runnerType: runtime.runner_type,
+      systemPrompt: null,
+      toolsEnabled: {},
+      modelName,
+      allowedSkillIds: [],
+      role: "lead",
+      displayOrder: 1,
+    });
+
+    return true;
+  };
+
+  const createTeamPresetMembers = async (
+    projectId: string,
+    workspacePath: string | null,
+    teamPreset: ChatTeamPreset,
+    memberPresets: ChatMemberPreset[],
+    runtimes: AgentRuntimeStatus[],
+  ): Promise<number> => {
+    const memberPresetById = new Map(
+      memberPresets
+        .filter((preset) => preset.enabled !== false)
+        .map((preset) => [preset.id, preset]),
+    );
+    const selectedMembers = teamPreset.member_ids
+      .map((memberId) => memberPresetById.get(memberId))
+      .filter((preset): preset is ChatMemberPreset => !!preset);
+    const leadMemberId =
+      teamPreset.lead_member_id &&
+      selectedMembers.some((member) => member.id === teamPreset.lead_member_id)
+        ? teamPreset.lead_member_id
+        : selectedMembers[0]?.id;
+
+    let created = 0;
+    for (const [index, memberPreset] of selectedMembers.entries()) {
+      const configuredRunnerType = memberPreset.runner_type?.trim() ?? "";
+      const runtime = configuredRunnerType
+        ? runtimes.find((runner) => runner.runner_type === configuredRunnerType)
+        : firstAvailableRuntime(runtimes);
+      const runnerType = configuredRunnerType || runtime?.runner_type;
+      if (!runnerType) continue;
+
+      const recommendedModel = memberPreset.recommended_model?.trim() ?? "";
+      const modelName =
+        recommendedModel ||
+        (runtime
+          ? runtimeConfiguredModel(runtime) || runtime.discovered_models[0]
+          : "") ||
+        null;
+
+      await createProjectAgentMember({
+        projectId,
+        workspacePath:
+          memberPreset.default_workspace_path?.trim() || workspacePath,
+        name: memberPreset.name,
+        runnerType,
+        systemPrompt: memberPreset.system_prompt,
+        toolsEnabled: (memberPreset.tools_enabled ?? {}) as JsonValue,
+        modelName,
+        allowedSkillIds: memberPreset.selected_skill_ids,
+        role: memberPreset.id === leadMemberId ? "lead" : "agent",
+        displayOrder: index + 1,
+      });
+      created += 1;
+    }
+
+    return created;
   };
 
   const getPageTabLabel = (page: SidebarNavigationTarget) =>
@@ -940,12 +1135,70 @@ function WorkspaceLayout() {
     closeMobileSidebar();
   };
 
-  const handleCreateProject = async (data: CreateProjectRequest) => {
+  const chatPresets =
+    (config as { chat_presets?: ChatPresetConfigView } | null)
+      ?.chat_presets ?? {};
+  const memberPresets = chatPresets.members ?? [];
+  const teamPresets = (chatPresets.teams ?? []).filter(
+    (preset) => preset.enabled !== false,
+  );
+
+  const handleCreateProject = async (
+    data: CreateProjectRequest,
+    options?: CreateProjectOptions,
+  ) => {
     const project = await createProject(data);
-    const session = await projectApi.createSession(project.id, {
+    let session = await projectApi.createSession(project.id, {
       title: null,
       workspace_path: data.default_workspace_path,
     });
+    const selectedTeamId = options?.teamId || blankTeamId;
+    const selectedTeamPreset = teamPresets.find(
+      (preset) => preset.id === selectedTeamId,
+    );
+    const runtimes = await loadRuntimeStatuses();
+    let starterMemberCreated = false;
+    let templateMemberCount: number | null = null;
+    let teamSetupFailed = false;
+
+    if (selectedTeamPreset) {
+      try {
+        templateMemberCount = await createTeamPresetMembers(
+          project.id,
+          data.default_workspace_path,
+          selectedTeamPreset,
+          memberPresets,
+          runtimes,
+        );
+        if (templateMemberCount === 0) {
+          teamSetupFailed = true;
+        }
+        const teamProtocol = selectedTeamPreset.team_protocol?.trim() ?? "";
+        if (teamProtocol) {
+          session = await chatSessionsApi.update(
+            session.id,
+            chatSessionUpdatePayload({
+              team_protocol: teamProtocol,
+              team_protocol_enabled: true,
+            }),
+          );
+        }
+      } catch (err) {
+        teamSetupFailed = true;
+        console.error("Failed to create team preset members", err);
+      }
+    } else {
+      try {
+        starterMemberCreated = await createBlankTeamStarterMember(
+          project.id,
+          data.default_workspace_path,
+          runtimes,
+        );
+      } catch (err) {
+        console.error("Failed to create blank team starter member", err);
+        teamSetupFailed = true;
+      }
+    }
     const mappedSession = mapSession(session, {
       activeSessionId: session.id,
     });
@@ -957,11 +1210,36 @@ function WorkspaceLayout() {
     ]);
     replaceActiveTab(createSessionTab(session.id));
     setActiveSessionId(session.id);
-    showToast(
-      translate("toast.projectCreated", `Created ${project.name}`, {
-        name: project.name,
-      }),
-    );
+    const createdProjectToast = teamSetupFailed
+      ? translate(
+          "toast.projectCreatedTeamSetupFailed",
+          `Created ${project.name}, but team setup failed`,
+          {
+            name: project.name,
+          },
+        )
+      : selectedTeamPreset && templateMemberCount
+        ? translate(
+            "toast.projectCreatedWithTeam",
+            `Created ${project.name} with ${selectedTeamPreset.name}`,
+            {
+              name: project.name,
+              team: selectedTeamPreset.name,
+              count: templateMemberCount,
+            },
+          )
+        : starterMemberCreated
+          ? translate(
+              "toast.projectCreatedWithStarter",
+              `Created ${project.name} with a starter AI member`,
+              {
+                name: project.name,
+              },
+            )
+          : translate("toast.projectCreated", `Created ${project.name}`, {
+              name: project.name,
+            });
+    showToast(createdProjectToast);
     closeMobileSidebar();
   };
 
@@ -999,10 +1277,6 @@ function WorkspaceLayout() {
       }),
     );
   };
-
-  const teamPresets =
-    (config as { chat_presets?: { teams?: ChatTeamPreset[] } } | null)
-      ?.chat_presets?.teams ?? [];
 
   const currentProject = projects.find(
     (project) => project.id === selectedProjectId,

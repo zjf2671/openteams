@@ -87,7 +87,10 @@ interface ProjectSidebarProps {
   onPrimaryAction: (action: SidebarPrimaryAction) => void;
   onProjectAction: (actionId: string) => void;
   onProjectSelect?: (projectId: string) => void;
-  onCreateProject?: (data: CreateProjectRequest) => Promise<void>;
+  onCreateProject?: (
+    data: CreateProjectRequest,
+    options?: { teamId?: string },
+  ) => Promise<void>;
   onUpdateProject?: (projectId: string, data: UpdateProject) => Promise<void>;
   onDeleteProject?: (projectId: string) => Promise<void>;
   teamPresets?: ChatTeamPreset[];
@@ -117,22 +120,14 @@ const sidebarItemClass =
   "flex w-full items-center gap-[6px] rounded-sm border px-[7px] py-[4px] text-left text-[14px] leading-[1.4] transition";
 
 const visibleSessionLimit = 6;
+const blankTeamId = "blank_team";
 
-const fallbackTeamOptions: DropdownSelectOption[] = [
+const blankTeamOptions: DropdownSelectOption[] = [
   {
-    id: "fullstack_delivery",
-    label: "Full-stack delivery",
-    description: "Lead, backend, frontend, QA",
-  },
-  {
-    id: "rapid_bugfix",
-    label: "Rapid bugfix",
-    description: "Triage, implementation, review",
-  },
-  {
-    id: "product_discovery",
-    label: "Product discovery",
-    description: "PM, design, research",
+    id: blankTeamId,
+    label: "Blank team",
+    description: "One starter AI member",
+    hint: "1",
   },
 ];
 
@@ -346,13 +341,15 @@ export function ProjectSidebar({
     const enabledTeamPresets = teamPresets.filter(
       (preset) => preset.enabled !== false,
     );
-    if (enabledTeamPresets.length === 0) return fallbackTeamOptions;
-    return enabledTeamPresets.map((preset) => ({
-      id: preset.id,
-      label: preset.name,
-      description: preset.description,
-      hint: `${preset.member_ids.length}`,
-    }));
+    return [
+      ...blankTeamOptions,
+      ...enabledTeamPresets.map((preset) => ({
+        id: preset.id,
+        label: preset.name,
+        description: preset.description,
+        hint: `${preset.member_ids.length}`,
+      })),
+    ];
   }, [teamPresets]);
 
   const translate = (
@@ -745,14 +742,17 @@ export function ProjectSidebar({
         });
       } else {
         if (!onCreateProject) return;
-        await onCreateProject({
-          name,
-          repositories: [],
-          description: null,
-          status: "active",
-          default_workspace_path: projectWorkspacePath.trim() || null,
-          active_repo_id: null,
-        });
+        await onCreateProject(
+          {
+            name,
+            repositories: [],
+            description: null,
+            status: "active",
+            default_workspace_path: projectWorkspacePath.trim() || null,
+            active_repo_id: null,
+          },
+          { teamId: selectedTeamId || blankTeamId },
+        );
       }
       resetProjectForm();
       setCreateFormOpen(false);
@@ -1053,7 +1053,7 @@ export function ProjectSidebar({
                     options={teamOptions}
                     placeholder={translate(
                       "sidebar.assignTeamPlaceholder",
-                      "Select a team preset",
+                      "Select a team",
                     )}
                     searchPlaceholder={translate(
                       "sidebar.searchTeams",
@@ -1061,7 +1061,7 @@ export function ProjectSidebar({
                     )}
                     emptyLabel={translate(
                       "sidebar.noTeamMatch",
-                      "No team presets match this search.",
+                      "No teams match this search.",
                     )}
                     triggerIcon={
                       <Users className="h-3.5 w-3.5 text-[var(--ink-tertiary)]" />
