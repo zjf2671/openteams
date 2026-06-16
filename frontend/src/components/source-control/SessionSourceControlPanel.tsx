@@ -507,11 +507,6 @@ export const SessionSourceControlPanel: React.FC<
           count: externalStagedCount,
         })
       : "";
-  const externalStagedTooltip =
-    externalStagedCount > 0
-      ? `${tr("sourceControl.externalStagedFiles", "External staged files:")}\n${viewModel.externalStagedPaths.join("\n")}`
-      : "";
-
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col">
@@ -618,9 +613,6 @@ export const SessionSourceControlPanel: React.FC<
                   <div className="flex items-center gap-1.5">
                     <Info className="h-3.5 w-3.5 shrink-0" />
                     <span>{externalStagedHint}</span>
-                  </div>
-                  <div className="mt-1 pl-4.5 whitespace-pre-wrap text-[11px] text-amber-700/90">
-                    {externalStagedTooltip}
                   </div>
                 </div>
               )}
