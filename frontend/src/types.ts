@@ -61,6 +61,7 @@ export interface Message {
   isAgentRunning?: boolean;
   runId?: string;
   sessionAgentId?: string;
+  sourceMessageId?: string;
   activityLines?: ChatRunActivityLine[];
   activityLoadState?: ActivityLoadState;
   workflowCard?: WorkflowCardMessageReference;

@@ -120,13 +120,14 @@ check(
   { pendingPlaceholderIndex, sendApiIndex },
 );
 check(
-  'pending agent placeholders are matched by agent session instead of first item',
+  'pending agent placeholders are matched by correlation ids before fallback',
   source.includes('findPendingAgentPlaceholderIndex') &&
-    source.includes('message.sessionAgentId === sessionAgentId') &&
-    source.includes('findPendingAgentPlaceholderIndex(current, incoming.sessionAgentId)') &&
-    source.includes('findPendingAgentPlaceholderIndex(') &&
-    source.includes('line.session_agent_id') &&
-    source.includes('event.session_agent_id') &&
+    source.includes('pendingPlaceholderMatches') &&
+    source.includes('message.clientMessageId === match.clientMessageId') &&
+    source.includes('message.sourceMessageId === match.sourceMessageId') &&
+    source.includes('message.sessionAgentId === match.sessionAgentId') &&
+    source.includes('clientMessageId: incoming.clientMessageId') &&
+    source.includes('clientMessageId: event.client_message_id') &&
     !source.includes('current.findIndex(isPendingAgentPlaceholder)'),
   source,
 );
@@ -218,6 +219,16 @@ check(
   source.includes('isOptimisticPendingAgentPlaceholder') &&
     source.includes('PENDING_AGENT_MESSAGE_PREFIX}${OPTIMISTIC_USER_MESSAGE_PREFIX}') &&
     source.includes('!isOptimisticPendingAgentPlaceholder(message)'),
+  source,
+);
+check(
+  'pending placeholders are correlated and protected across refresh and stale agent state',
+  source.includes('PendingPlaceholderMatch') &&
+    source.includes('pendingPlaceholderMatches') &&
+    source.includes('clientMessageId: event.client_message_id') &&
+    source.includes('sourceMessageId: event.source_message_id') &&
+    source.includes('msg.runId === parsed.run_id') &&
+    source.includes("parsed.type === 'mention_error'"),
   source,
 );
 check(

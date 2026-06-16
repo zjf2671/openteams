@@ -1246,6 +1246,7 @@ impl ChatRunner {
         compression_warning: Option<chat::CompressionWarning>,
         runner: ChatRunner,
         source_message_id: Uuid,
+        client_message_id: Option<String>,
         source_message_created_at: chrono::DateTime<Utc>,
         source_message_content: String,
         agent_name: String,
@@ -1617,6 +1618,8 @@ impl ChatRunner {
                             "session_id": session_id,
                             "session_agent_id": session_agent_id,
                             "agent_id": agent_id,
+                            "source_message_id": source_message_id,
+                            "client_message_id": client_message_id,
                             "agent_session_id": agent_session_id,
                             "agent_message_id": agent_message_id,
                             "finished_at": finished_at.to_rfc3339(),
@@ -1753,6 +1756,7 @@ impl ChatRunner {
                                 &agent_name,
                                 run_id,
                                 source_message_id,
+                                client_message_id.as_deref(),
                                 chain_depth,
                                 prompt_language,
                                 &latest_assistant,
@@ -1879,6 +1883,7 @@ impl ChatRunner {
                                             run_id,
                                             &agent_name,
                                             source_message_id,
+                                            client_message_id.as_deref(),
                                             chain_depth,
                                             prompt_language,
                                             &latest_assistant,
@@ -1983,6 +1988,7 @@ impl ChatRunner {
                                     run_id,
                                     &agent_name,
                                     source_message_id,
+                                    client_message_id.as_deref(),
                                     visible_error_content,
                                     error_type.as_ref(),
                                 )
@@ -2090,6 +2096,7 @@ impl ChatRunner {
                             session_agent_id,
                             agent_id,
                             state: final_state.clone(),
+                            run_id: Some(run_id),
                             started_at: None,
                         });
 
@@ -2956,6 +2963,8 @@ impl ChatRunner {
                 session_agent_id: recovered.id,
                 agent_id: recovered.agent_id,
                 state: recovered.state,
+                // Orphan recovery has no associated in-memory run.
+                run_id: None,
                 started_at: None,
             },
         );
@@ -3016,6 +3025,10 @@ impl ChatRunner {
 
         if control_found && session_agent.state != ChatSessionAgentState::Stopping {
             let running_started_at = session_agent.updated_at;
+            let active_run_id = self
+                .run_controls
+                .get(&session_agent_id)
+                .map(|control| control.run_id);
             let updated = ChatSessionAgent::update_state(
                 &self.db.pool,
                 session_agent_id,
@@ -3029,6 +3042,7 @@ impl ChatRunner {
                     session_agent_id,
                     agent_id: updated.agent_id,
                     state: ChatSessionAgentState::Stopping,
+                    run_id: active_run_id,
                     started_at: Some(running_started_at),
                 },
             );

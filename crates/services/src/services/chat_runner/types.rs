@@ -139,6 +139,11 @@ pub enum ChatStreamEvent {
         agent_id: Uuid,
         agent_name: String,
         run_id: Uuid,
+        /// User (or upstream) message whose processing triggered this run.
+        source_message_id: Uuid,
+        /// Frontend-supplied id from the source message meta (`client_message_id`).
+        /// Lets the frontend correlate this run with its pending placeholder.
+        client_message_id: Option<String>,
         started_at: Option<chrono::DateTime<Utc>>,
     },
     AgentActivityLine {
@@ -148,6 +153,11 @@ pub enum ChatStreamEvent {
         session_agent_id: Uuid,
         agent_id: Uuid,
         state: ChatSessionAgentState,
+        /// Run that triggered this state change. Run-scoped transitions
+        /// (running/idle/dead/stopping driven by a concrete run) carry the
+        /// active run id; states with no associated run (e.g. orphan
+        /// recovery) leave this `None`.
+        run_id: Option<Uuid>,
         started_at: Option<chrono::DateTime<Utc>>,
     },
     MentionAcknowledged {

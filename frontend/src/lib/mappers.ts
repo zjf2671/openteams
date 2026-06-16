@@ -147,6 +147,14 @@ const sessionAgentIdFromMeta = (
   return typeof sessionAgentId === 'string' ? sessionAgentId : undefined;
 };
 
+const sourceMessageIdFromMeta = (
+  meta: JsonValue | undefined,
+): string | undefined => {
+  const obj = jsonObject(meta);
+  const sourceMessageId = obj?.source_message_id;
+  return typeof sourceMessageId === 'string' ? sourceMessageId : undefined;
+};
+
 const referenceMessageIdFromMeta = (
   meta: JsonValue | undefined,
 ): string | undefined => {
@@ -286,6 +294,7 @@ export const mapMessage = (
     attachments: attachmentsFromMeta(backend.meta),
     runId: runIdFromMeta(backend.meta),
     sessionAgentId: sessionAgentIdFromMeta(backend.meta),
+    sourceMessageId: sourceMessageIdFromMeta(backend.meta),
     workflowCard: workflowCardType
       ? {
           messageId: backend.id,

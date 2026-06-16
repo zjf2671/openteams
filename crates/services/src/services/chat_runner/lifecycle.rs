@@ -593,6 +593,17 @@ impl ChatRunner {
             .unwrap_or(0)
     }
 
+    /// Extract the frontend-supplied `client_message_id` from a source message's
+    /// metadata. Used to correlate an agent run and its final message back to the
+    /// pending placeholder the frontend optimistically rendered.
+    pub(super) fn extract_client_message_id(
+        meta: &sqlx::types::Json<serde_json::Value>,
+    ) -> Option<String> {
+        meta.get("client_message_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
     /// Extract the protocol retry attempt count from a source message's metadata.
     /// Returns 0 if the message is not a retry (normal first attempt).
     fn extract_protocol_retry_attempt(meta: &sqlx::types::Json<serde_json::Value>) -> u32 {
@@ -950,6 +961,10 @@ impl ChatRunner {
         let agent_id = agent.id;
         let run_started_at = session_agent.updated_at;
         let run_id = Uuid::new_v4();
+        // Correlation ids that let the frontend stitch "user message -> run ->
+        // final agent message" together precisely instead of guessing by
+        // `session_agent_id`.
+        let client_message_id = Self::extract_client_message_id(&source_message.meta);
         // Register the stop control before broadcasting the running state so an
         // immediate user stop request cannot miss the active run.
         let stop = self.register_run_control(session_agent_id, run_id);
@@ -960,6 +975,7 @@ impl ChatRunner {
                 session_agent_id,
                 agent_id,
                 state: ChatSessionAgentState::Running,
+                run_id: Some(run_id),
                 started_at: Some(session_agent.updated_at),
             },
         );
@@ -971,6 +987,8 @@ impl ChatRunner {
                 agent_id,
                 agent_name: agent.name.clone(),
                 run_id,
+                source_message_id: source_message.id,
+                client_message_id: client_message_id.clone(),
                 started_at: Some(session_agent.updated_at),
             },
         );
@@ -1217,6 +1235,7 @@ impl ChatRunner {
                 context_snapshot.compression_warning.clone(),
                 self.clone(),
                 source_message.id,
+                client_message_id.clone(),
                 source_message.created_at,
                 source_message.content.clone(),
                 agent.name.clone(),
@@ -1288,6 +1307,7 @@ impl ChatRunner {
                     session_agent_id,
                     agent_id,
                     state: ChatSessionAgentState::Dead,
+                    run_id: Some(run_id),
                     started_at: None,
                 },
             );

@@ -786,11 +786,14 @@ async fn stop_agent_without_run_control_recovers_agent_to_idle() {
             session_agent_id: emitted_session_agent_id,
             agent_id: emitted_agent_id,
             state,
+            run_id,
             started_at,
         } => {
             assert_eq!(emitted_session_agent_id, session_agent_id);
             assert_eq!(emitted_agent_id, agent_id);
             assert_eq!(state, ChatSessionAgentState::Idle);
+            // Recovering an agent with no in-memory run control carries no run id.
+            assert_eq!(run_id, None);
             assert_eq!(started_at, None);
         }
         other => panic!("unexpected event: {other:?}"),
@@ -1027,6 +1030,7 @@ async fn process_agent_protocol_output_requests_retry_for_first_json_shape_failu
             "coder",
             Uuid::new_v4(),
             Uuid::new_v4(),
+            None,
             0,
             ResolvedPromptLanguage {
                 setting: "english",
@@ -1071,6 +1075,7 @@ async fn process_agent_protocol_output_uses_raw_output_after_retry_exhaustion() 
             "coder",
             run_id,
             Uuid::new_v4(),
+            None,
             0,
             ResolvedPromptLanguage {
                 setting: "english",
@@ -1113,6 +1118,7 @@ async fn process_agent_protocol_output_uses_conclusion_when_no_send() {
             "coder",
             Uuid::new_v4(),
             Uuid::new_v4(),
+            None,
             0,
             ResolvedPromptLanguage {
                 setting: "english",
@@ -1157,6 +1163,7 @@ async fn process_agent_protocol_output_uses_record_when_no_send_or_conclusion() 
             "coder",
             Uuid::new_v4(),
             Uuid::new_v4(),
+            None,
             0,
             ResolvedPromptLanguage {
                 setting: "english",
@@ -1197,6 +1204,7 @@ async fn process_agent_protocol_output_persists_error_when_output_empty() {
             "coder",
             Uuid::new_v4(),
             Uuid::new_v4(),
+            None,
             0,
             ResolvedPromptLanguage {
                 setting: "english",
@@ -1237,6 +1245,7 @@ async fn process_agent_protocol_output_persists_failure_hint_when_output_empty()
             "coder",
             Uuid::new_v4(),
             Uuid::new_v4(),
+            None,
             0,
             ResolvedPromptLanguage {
                 setting: "english",
@@ -1409,6 +1418,7 @@ fn build_protocol_send_message_meta_includes_token_usage() {
         Uuid::nil(),
         Uuid::nil(),
         Uuid::nil(),
+        Some("client-message-1"),
         0,
         "you",
         0,
@@ -1421,6 +1431,7 @@ fn build_protocol_send_message_meta_includes_token_usage() {
     assert_eq!(meta["protocol"]["type"], json!("send"));
     assert_eq!(meta["protocol"]["to"], json!("you"));
     assert_eq!(meta["protocol"]["intent"], json!("reply"));
+    assert_eq!(meta["client_message_id"], json!("client-message-1"));
     assert_eq!(
         meta["token_usage"]["total_tokens"],
         json!(token_usage.total_tokens)

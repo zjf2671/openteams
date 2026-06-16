@@ -1975,6 +1975,7 @@ impl ChatRunner {
         run_id: Uuid,
         session_agent_id: Uuid,
         source_message_id: Uuid,
+        client_message_id: Option<&str>,
         chain_depth: u32,
         target: &str,
         index: usize,
@@ -1999,6 +2000,7 @@ impl ChatRunner {
             "run_id": run_id,
             "session_agent_id": session_agent_id,
             "source_message_id": source_message_id,
+            "client_message_id": client_message_id,
             "chain_depth": chain_depth + 1,
             "protocol": protocol_meta
         });
