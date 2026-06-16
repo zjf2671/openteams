@@ -114,6 +114,7 @@ import type {
   Repo,
   UpdateProject,
   UpdateProjectMemberRequest,
+  ChatRunFilesResponse,
 } from "../../../shared/types";
 import {
   ApiError,
@@ -545,6 +546,23 @@ export const chatRunsApi = {
       })}`,
     );
     return handleApiResponse<ChatRunActivityResponse>(r);
+  },
+  /**
+   * Structured per-run changed-file list (modified / added / deleted /
+   * untracked) with `+`/`-` counts. The per-run counterpart of the
+   * session-level workspace-changes endpoint. Pass `includeDiff: true` to also
+   * receive inline unified-diff text for each file.
+   */
+  getFiles: async (
+    runId: string,
+    opts?: { includeDiff?: boolean },
+  ): Promise<ChatRunFilesResponse> => {
+    const r = await makeRequest(
+      `/api/chat/runs/${encodeURIComponent(runId)}/files${qs({
+        include_diff: opts?.includeDiff,
+      })}`,
+    );
+    return handleApiResponse<ChatRunFilesResponse>(r);
   },
 };
 

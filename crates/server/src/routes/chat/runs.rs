@@ -26,6 +26,8 @@ use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError};
 
+use super::sessions::{WorkspaceChanges, collect_run_files};
+
 const DEFAULT_LOG_CHUNK_BYTES: u64 = 256 * 1024;
 const MAX_LOG_CHUNK_BYTES: u64 = 2 * 1024 * 1024;
 const RUN_ACTIVITY_FILE_NAME: &str = "activity.jsonl";
@@ -307,6 +309,58 @@ pub async fn get_run_diff(
     };
 
     Ok(([(CONTENT_TYPE, "text/plain; charset=utf-8")], content).into_response())
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct ChatRunFilesQuery {
+    /// When true, include the per-file unified diff text for each changed file.
+    /// Defaults to false (paths + counts only) to keep the response light.
+    pub include_diff: Option<bool>,
+}
+
+/// Structured per-run changed-file list. Mirrors the session-level
+/// `WorkspaceChangesResponse` shape but scoped to a single chat run, so the
+/// frontend can reuse `WorkspaceChangedFile` / `flattenWorkspaceChanges`.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ChatRunFilesResponse {
+    pub run_id: Uuid,
+    pub workspace_path: Option<String>,
+    pub is_git_repo: bool,
+    pub changes: WorkspaceChanges,
+    pub error: Option<String>,
+}
+
+/// Returns the structured changed-file list for a single chat run (the per-run
+/// counterpart of `GET /chat/sessions/{id}/workspace-changes`). Each file
+/// carries its path, `+`/`-` counts and (optionally) inline unified diff,
+/// classified into modified / added / deleted / untracked.
+pub async fn get_run_files(
+    State(deployment): State<DeploymentImpl>,
+    Path(run_id): Path<Uuid>,
+    Query(query): Query<ChatRunFilesQuery>,
+) -> Result<ResponseJson<ApiResponse<ChatRunFilesResponse>>, ApiError> {
+    let Some(run) = ChatRun::find_by_id(&deployment.db().pool, run_id).await? else {
+        return Err(ApiError::BadRequest("Chat run not found".to_string()));
+    };
+
+    let include_diff = query.include_diff.unwrap_or(false);
+    let workspace_path = run.workspace_path.clone();
+    let is_git_repo = workspace_path
+        .as_deref()
+        .map(|path| git2::Repository::open(path).is_ok())
+        .unwrap_or(false);
+
+    let changes = collect_run_files(&run, include_diff);
+
+    Ok(ResponseJson(ApiResponse::success(ChatRunFilesResponse {
+        run_id,
+        workspace_path,
+        is_git_repo,
+        changes,
+        error: None,
+    })))
 }
 
 #[derive(Debug, Deserialize)]

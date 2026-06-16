@@ -245,6 +245,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             .route("/runs/{run_id}/log", get(runs::get_run_log))
             .route("/runs/{run_id}/activity", get(runs::get_run_activity))
             .route("/runs/{run_id}/diff", get(runs::get_run_diff))
+            .route("/runs/{run_id}/files", get(runs::get_run_files))
             .route(
                 "/runs/{run_id}/untracked",
                 get(runs::get_run_untracked_file),

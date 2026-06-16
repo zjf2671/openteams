@@ -835,6 +835,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   // Cache the latest activeSessionId so async callbacks see the live value.
   const activeSessionIdRef = useRef(activeSessionId);
   const selectedProjectIdRef = useRef(selectedProjectId);
+  // Cache the active session's workspace path so the WebSocket
+  // `file_change_refresh` handler can refresh workspace changes without a stale
+  // closure (the socket effect does not re-subscribe on every sessions update).
+  const activeWorkspacePathRef = useRef<string | null>(null);
   const sessionLeadAgentIdBySessionIdRef = useRef<Record<
     string,
     string | null
@@ -854,6 +858,17 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  // Keep the cached workspace path in sync with the active session so the
+  // WebSocket `file_change_refresh` handler always refreshes the right path.
+  // Mirrors FreeChatWorkspace's `reloadRelatedFiles` (currentProject workspace).
+  useEffect(() => {
+    activeWorkspacePathRef.current = selectedProjectId
+      ? projectsAsync.data?.find(
+          (project) => project.id === selectedProjectId,
+        )?.default_workspace_path ?? null
+      : null;
+  }, [selectedProjectId, projectsAsync]);
   useEffect(() => {
     setWorkflowRuntimeLinesByExecution({});
   }, [activeSessionId]);
@@ -1769,7 +1784,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         parsed.type === 'file_change_refresh' &&
         parsed.session_id === sid
       ) {
-        void refreshWorkspaceChanges();
+        const workspacePath = activeWorkspacePathRef.current;
+        if (workspacePath) {
+          void refreshWorkspaceChanges(sid, workspacePath, true);
+        }
         return;
       }
 

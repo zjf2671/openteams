@@ -456,7 +456,11 @@ export type AgentRuntimeRefreshResponse = { runners: Array<AgentRuntimeStatus>, 
 
 export type AgentRuntimeDiagnostics = { runner_type: BaseCodingAgent, installed: boolean, executable: boolean, availability: AvailabilityInfo, config_path: string, install_indicator_path: string | null, discovered_models: Array<string>, model_source: AgentRuntimeModelSource, version: string | null, last_checked_at: string | null, last_error: string | null, run_mode: AgentRunMode, env_summary: Array<AgentRuntimeEnvSummary>, executor_options: JsonValue, };
 
-export type ChatStreamEvent = { "type": "message_new", message: ChatMessage, } | { "type": "message_updated", message: ChatMessage, } | { "type": "work_item_new", work_item: ChatWorkItem, } | { "type": "agent_delta", session_id: string, session_agent_id: string, agent_id: string, run_id: string, stream_type: ChatStreamDeltaType, content: string, delta: boolean, is_final: boolean, } | { "type": "agent_run_started", session_id: string, session_agent_id: string, agent_id: string, agent_name: string, run_id: string, started_at: string | null, } | { "type": "agent_activity_line", line: ChatRunActivityLine, } | { "type": "agent_state", session_agent_id: string, agent_id: string, state: ChatSessionAgentState, started_at: string | null, } | { "type": "mention_acknowledged", session_id: string, message_id: string, mentioned_agent: string, agent_id: string, status: MentionStatus, } | { "type": "compression_warning", session_id: string, warning: CompressionWarning, } | { "type": "protocol_notice", session_id: string, session_agent_id: string, agent_id: string, run_id: string, agent_name: string, code: ChatProtocolNoticeCode, target: string | null, detail: string | null, output_is_empty: boolean, } | { "type": "mention_error", session_id: string, message_id: string, agent_name: string, agent_id: string | null, reason: string, } | { "type": "workflow_generate_detected", session_id: string, session_agent_id: string, run_id: string, } | { "type": "workflow_plan_preview_ready", session_id: string, plan_id: string, workflow_card_message: ChatMessage, } | { "type": "workflow_execution_updated", session_id: string, execution_id: string, } | { "type": "workflow_graph_updated", session_id: string, execution_id: string, graph_version: string, reason: string, nodes: Array<WorkflowPlanNode>, edges: Array<WorkflowPlanEdge>, changed_step_ids: Array<string>, } | { "type": "workflow_runtime_line", line_id: string, session_id: string, execution_id: string, workflow_agent_session_id: string | null, step_id: string, step_key: string, agent_id: string, agent_name: string, stream_type: ChatStreamDeltaType, content: string, created_at: string, };
+export type ChatStreamEvent = { "type": "message_new", message: ChatMessage, } | { "type": "message_updated", message: ChatMessage, } | { "type": "work_item_new", work_item: ChatWorkItem, } | { "type": "agent_delta", session_id: string, session_agent_id: string, agent_id: string, run_id: string, stream_type: ChatStreamDeltaType, content: string, delta: boolean, is_final: boolean, } | { "type": "agent_run_started", session_id: string, session_agent_id: string, agent_id: string, agent_name: string, run_id: string, started_at: string | null, } | { "type": "agent_activity_line", line: ChatRunActivityLine, } | { "type": "agent_state", session_agent_id: string, agent_id: string, state: ChatSessionAgentState, started_at: string | null, } | { "type": "mention_acknowledged", session_id: string, message_id: string, mentioned_agent: string, agent_id: string, status: MentionStatus, } | { "type": "compression_warning", session_id: string, warning: CompressionWarning, } | { "type": "protocol_notice", session_id: string, session_agent_id: string, agent_id: string, run_id: string, agent_name: string, code: ChatProtocolNoticeCode, target: string | null, detail: string | null, output_is_empty: boolean, } | { "type": "mention_error", session_id: string, message_id: string, agent_name: string, agent_id: string | null, reason: string, } | { "type": "workflow_generate_detected", session_id: string, session_agent_id: string, run_id: string, } | { "type": "workflow_plan_preview_ready", session_id: string, plan_id: string, workflow_card_message: ChatMessage, } | { "type": "workflow_execution_updated", session_id: string, execution_id: string, } | { "type": "workflow_graph_updated", session_id: string, execution_id: string, graph_version: string, reason: string, nodes: Array<WorkflowPlanNode>, edges: Array<WorkflowPlanEdge>, changed_step_ids: Array<string>, } | { "type": "workflow_runtime_line", line_id: string, session_id: string, execution_id: string, workflow_agent_session_id: string | null, step_id: string, step_key: string, agent_id: string, agent_name: string, stream_type: ChatStreamDeltaType, content: string, created_at: string, } | { "type": "file_change_refresh", session_id: string, session_agent_id: string, agent_id: string, run_id: string, 
+/**
+ * Source message whose processing triggered this run.
+ */
+message_id: string, changed_files: Array<FileChangeEntry>, ts: string, };
 
 export type ChatStreamDeltaType = "assistant" | "thinking" | "error";
 
@@ -469,6 +473,14 @@ export type ChatProtocolNoticeCode = "invalid_json" | "not_json_array" | "empty_
 export type MentionStatus = "received" | "running" | "completed" | "failed";
 
 export type CompressionWarning = { code: string, message: string, split_file_path: string, };
+
+export type FileChangeType = "created" | "modified" | "deleted";
+
+export type FileChangeEntry = { 
+/**
+ * Workspace-relative path (forward slashes).
+ */
+path: string, change_type: FileChangeType, };
 
 export type Image = { id: string, file_path: string, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, created_at: string, updated_at: string, };
 
@@ -587,6 +599,15 @@ export type ChatRunRetentionListQuery = { run_ids: string | null, limit: number 
 export type ChatRunRetentionListResponse = { runs: Array<ChatRunRetentionInfo>, };
 
 export type ChatRunActivityResponse = { run_id: string, lines: Array<ChatRunActivityLine>, next_offset: bigint | null, is_pruned: boolean, };
+
+export type ChatRunFilesQuery = { 
+/**
+ * When true, include the per-file unified diff text for each changed file.
+ * Defaults to false (paths + counts only) to keep the response light.
+ */
+include_diff: boolean | null, };
+
+export type ChatRunFilesResponse = { run_id: string, workspace_path: string | null, is_git_repo: boolean, changes: WorkspaceChanges, error: string | null, };
 
 export type UpdateNativeSkillRequest = { enabled: boolean, };
 
