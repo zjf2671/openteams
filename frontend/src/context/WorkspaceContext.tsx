@@ -2166,10 +2166,17 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     const mainAgentMention = mainAgentName
       ? mainAgentName.replace(/^@/, '').toLowerCase()
       : null;
+    const routeMentions =
+      options.routeMentions ??
+      (explicitMentions.length > 0
+        ? explicitMentions
+        : mainAgentMention
+          ? [mainAgentMention]
+          : []);
     const fallbackMention =
       options.fallbackMention ??
-      (options.routeMentions && options.routeMentions.length > 0
-        ? options.routeMentions[0]
+      (routeMentions.length > 0
+        ? routeMentions[0]
         : explicitMentions.length === 0
           ? mainAgentMention
           : null);
@@ -2182,6 +2189,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       text,
       isUser: true,
       clientMessageId: userMsgId,
+      mentions: effectiveChatInputMode === 'workflow' ? [] : routeMentions,
       quotedMessage: options.quotedMessage,
       referenceMessageId: options.quotedMessage?.id,
     };
@@ -2229,13 +2237,6 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     if (effectiveChatInputMode === 'workflow') {
       meta.chat_input_mode = 'workflow';
     }
-    const routeMentions =
-      options.routeMentions ??
-      (explicitMentions.length > 0
-        ? explicitMentions
-        : mainAgentMention
-          ? [mainAgentMention]
-          : []);
     if (effectiveChatInputMode !== 'workflow' && routeMentions.length > 0) {
       meta.mentions = routeMentions;
     }

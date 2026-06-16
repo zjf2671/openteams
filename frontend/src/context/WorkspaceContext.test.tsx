@@ -113,6 +113,7 @@ check(
     source.includes('sendMessageToSession') &&
     source.includes('stagePendingAgentPlaceholder') &&
     source.includes('const effectiveMentions =') &&
+    source.includes("mentions: effectiveChatInputMode === 'workflow' ? [] : routeMentions") &&
     source.includes('options.routeMentions') &&
     source.includes('meta.client_message_id = userMsgId') &&
     pendingPlaceholderIndex < sendApiIndex,

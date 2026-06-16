@@ -52,6 +52,7 @@ export interface Message {
   cost?: string;
   model?: string;
   clientMessageId?: string;
+  mentions?: string[];
   quotedMessage?: QuotedMessageReference;
   referenceMessageId?: string;
   attachments?: ChatAttachment[];

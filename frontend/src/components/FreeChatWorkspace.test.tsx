@@ -403,9 +403,11 @@ check(
   source,
 );
 check(
-  "user message rendering shows the main agent mention without mutating text",
+  "user message rendering shows routed mention without mutating text",
   source.includes("sendMessage(messageText, {") &&
-    source.includes("implicitMainAgentMentionForUserMessage(msg.text)") &&
+    source.includes("displayMentionForUserMessage(msg)") &&
+    source.includes("message.mentions?.[0]") &&
+    source.includes("implicit-route-mention") &&
     source.includes("renderMentionText(") &&
     source.includes("{formatMsgText(msg.text)}") &&
     !source.includes("`${planModeMainAgentName} ${trimmedInput}`"),

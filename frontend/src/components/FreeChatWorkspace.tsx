@@ -66,6 +66,7 @@ import { PriorityMenuIcon } from "@/pages/IssueDetailPage";
 import type {
   ChatAttachment,
   Member,
+  Message,
   ProjectWorkItem,
   QuotedMessageReference,
   SourceControlDiffArea,
@@ -806,7 +807,9 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
 
         const matchedMemberMentions = extractMentionHandles(
           message.text,
-        ).filter((mention) => memberMentionHandles.has(mention));
+        )
+          .concat((message.mentions ?? []).map(normalizeMentionHandle))
+          .filter((mention) => memberMentionHandles.has(mention));
         if (matchedMemberMentions.length === 0) {
           return (
             normalizeMentionHandle(selectedSidebarMember.name) ===
@@ -1684,8 +1687,19 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     </span>
   );
 
-  const implicitMainAgentMentionForUserMessage = (text: string) =>
-    extractMentionHandles(text).length === 0 ? mainAgentHandle : null;
+  const displayMentionForUserMessage = (message: Message) => {
+    if (extractMentionHandles(message.text).length > 0) return null;
+    const routedMention = message.mentions?.[0];
+    if (routedMention) {
+      const normalized = normalizeMentionHandle(routedMention);
+      return (
+        sidebarMembers.find(
+          (member) => normalizeMentionHandle(member.name) === normalized,
+        )?.name ?? normalized
+      );
+    }
+    return mainAgentHandle;
+  };
 
   // Highlight @mentions while keeping user-entered markdown characters literal.
   const formatMsgText = (text: string) => {
@@ -1920,11 +1934,11 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                       className="whitespace-pre-wrap break-words leading-relaxed text-[var(--ink)] select-text"
                       style={{ fontSize: `${chatMessageFontSize}px` }}
                     >
-                      {implicitMainAgentMentionForUserMessage(msg.text) && (
+                      {displayMentionForUserMessage(msg) && (
                         <>
                           {renderMentionText(
-                            implicitMainAgentMentionForUserMessage(msg.text) ?? "",
-                            "implicit-main-agent",
+                            displayMentionForUserMessage(msg) ?? "",
+                            "implicit-route-mention",
                           )}
                           {" "}
                         </>

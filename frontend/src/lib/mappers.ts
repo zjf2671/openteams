@@ -281,6 +281,7 @@ export const mapMessage = (
     isUser: isUser || undefined,
     model,
     clientMessageId: clientMessageIdFromMeta(backend.meta),
+    mentions: backend.mentions,
     referenceMessageId: referenceMessageIdFromMeta(backend.meta),
     attachments: attachmentsFromMeta(backend.meta),
     runId: runIdFromMeta(backend.meta),
