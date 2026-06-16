@@ -413,9 +413,6 @@ const makePendingAgentPlaceholder = (
       : fallbackMention
         ? [fallbackMention.replace(/^@/, '').toLowerCase()]
         : [];
-  if (effectiveMentions.length === 0) {
-    return null;
-  }
   const mentionedMember = members.find((member) =>
     effectiveMentions.includes(member.name.replace(/^@/, '').toLowerCase()),
   );
