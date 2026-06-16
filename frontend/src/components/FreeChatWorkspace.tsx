@@ -704,6 +704,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     activeSessionId,
     messages,
     sendMessage,
+    stagePendingAgentPlaceholder,
     members,
     locale,
     chatInputMode,
@@ -1427,6 +1428,12 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
           appLanguage: locale,
           referenceMessageId: quotedMessage?.id,
         });
+        if (trimmedInput) {
+          stagePendingAgentPlaceholder(activeSessionId, messageText, {
+            chatInputMode,
+            ...(quotedMessage ? { quotedMessage } : {}),
+          });
+        }
         setInputText("");
         setQuotedMessage(null);
         setAttachedFiles([]);

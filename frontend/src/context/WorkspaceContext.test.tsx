@@ -110,8 +110,10 @@ check(
     source.includes('OPTIMISTIC_USER_MESSAGE_PREFIX') &&
     source.includes('clientMessageId: userMsgId') &&
     source.includes('fallbackMention?: string | null') &&
+    source.includes('sendMessageToSession') &&
+    source.includes('stagePendingAgentPlaceholder') &&
     source.includes('const effectiveMentions =') &&
-    source.includes('explicitMentions.length === 0 ? mainAgentMention : null') &&
+    source.includes('options.routeMentions') &&
     source.includes('meta.client_message_id = userMsgId') &&
     pendingPlaceholderIndex < sendApiIndex,
   { pendingPlaceholderIndex, sendApiIndex },
@@ -169,6 +171,7 @@ check(
     source.includes('resolveChatInputMode(session.chat_input_mode)') &&
     source.includes('chatSessionsApi') &&
     source.includes('chat_input_mode: toSessionChatInputMode(nextMode)') &&
+    source.includes('setSessionChatInputMode') &&
     source.includes("meta.chat_input_mode = 'workflow'") &&
     source.includes('const routeMentions =') &&
     source.includes("effectiveChatInputMode !== 'workflow' && routeMentions.length > 0") &&

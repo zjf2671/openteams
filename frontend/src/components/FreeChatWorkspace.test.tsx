@@ -428,6 +428,7 @@ check(
   source.includes(
     "chatMessagesApi.uploadAttachment(activeSessionId, attachedFiles",
   ) &&
+    source.includes("stagePendingAgentPlaceholder(activeSessionId, messageText") &&
     source.includes("chatInputMode,") &&
     source.includes("ensureWorkflowRouteToMainAgent") &&
     source.includes('if (chatInputMode === "workflow")') &&

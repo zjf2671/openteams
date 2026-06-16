@@ -43,7 +43,6 @@ import {
 import {
   agentRuntimeApi,
   chatAgentsApi,
-  chatMessagesApi,
   chatSessionsApi,
   projectApi,
   projectWorkItemsApi,
@@ -342,9 +341,10 @@ function WorkspaceLayout() {
     refreshMembers,
     activeSessionId,
     setActiveSessionId,
+    setSessionChatInputMode,
+    sendMessageToSession,
     weeklyCost,
     showToast,
-    locale,
   } = useWorkspace();
   const appScale = React.useContext(AppScaleContext);
 
@@ -991,11 +991,10 @@ function WorkspaceLayout() {
     try {
       let workspacePath: string | null = null;
       let workflowLeadAgentId: string | null = null;
-      let freeChatMainAgentName: string | null = null;
+      let freeChatSelectedAgentName: string | null = null;
       try {
         const projectMembers = await projectApi.listMembers(selectedProjectId);
         const workflowProjectAgent = findWorkflowProjectAgent(projectMembers);
-        freeChatMainAgentName = workflowProjectAgent?.member_name ?? null;
         if (options.taskMode === 'workflow') {
           workspacePath = workflowProjectAgent?.default_workspace_path ?? null;
           workflowLeadAgentId = workflowProjectAgent?.agent_id ?? null;
@@ -1008,6 +1007,8 @@ function WorkspaceLayout() {
             return false;
           });
           workspacePath = matched?.default_workspace_path ?? null;
+          freeChatSelectedAgentName =
+            matched?.member_name ?? options.memberName ?? null;
         }
       } catch {}
 
@@ -1018,8 +1019,59 @@ function WorkspaceLayout() {
           workspace_path: workspacePath,
         },
       );
+      let sessionForUi = backendSession;
 
-      const mappedSession = mapSession(backendSession, {
+      if (options.taskMode === 'workflow') {
+        await chatSessionsApi
+          .update(backendSession.id, {
+            title: null,
+            status: null,
+            ...(workflowLeadAgentId
+              ? { lead_agent_id: workflowLeadAgentId }
+              : {}),
+            summary_text: null,
+            archive_ref: null,
+            last_seen_diff_key: null,
+            team_protocol: null,
+            team_protocol_enabled: null,
+            default_workspace_path: null,
+            chat_input_mode: 'workflow',
+          })
+          .then((updatedSession) => {
+            sessionForUi = updatedSession;
+          })
+          .catch(() => undefined);
+      }
+
+      const nextChatInputMode =
+        options.taskMode === 'workflow' ? 'workflow' : 'free';
+      setSessionChatInputMode(backendSession.id, nextChatInputMode);
+
+      if (prompt.trim()) {
+        const content = prompt;
+        const mentions = extractAgentMentions(content);
+        const routeMentions =
+          options.taskMode === 'freeChat'
+            ? mentions.length > 0
+              ? mentions
+              : freeChatSelectedAgentName
+                ? [freeChatSelectedAgentName.replace(/^@/, '').toLowerCase()]
+                : []
+            : undefined;
+        const fallbackMention =
+          routeMentions && routeMentions.length > 0
+            ? routeMentions[0]
+            : (options.memberName ?? null);
+
+        sendMessageToSession(backendSession.id, content, {
+          chatInputMode: nextChatInputMode,
+          routeMentions,
+          fallbackMention,
+          workflowLeadAgentId,
+        });
+      }
+
+      const mappedSession = mapSession(sessionForUi, {
         activeSessionId: backendSession.id,
       });
 
@@ -1031,55 +1083,6 @@ function WorkspaceLayout() {
       replaceActiveTab(createSessionTab(backendSession.id));
       setActiveSessionId(backendSession.id);
       closeMobileSidebar();
-
-      if (prompt.trim()) {
-        try {
-          const content = prompt;
-          const meta: { [key: string]: JsonValue } = {
-            app_language: locale,
-          };
-
-          if (options.taskMode === 'workflow') {
-            meta.chat_input_mode = 'workflow';
-            if (workflowLeadAgentId) {
-              await chatSessionsApi
-                .update(backendSession.id, {
-                  title: null,
-                  status: null,
-                  lead_agent_id: workflowLeadAgentId,
-                  summary_text: null,
-                  archive_ref: null,
-                  last_seen_diff_key: null,
-                  team_protocol: null,
-                  team_protocol_enabled: null,
-                  default_workspace_path: null,
-                  chat_input_mode: null,
-                })
-                .catch(() => undefined);
-            }
-          }
-
-          const mentions = extractAgentMentions(content);
-          if (options.taskMode === 'freeChat') {
-            const routeMentions =
-              mentions.length > 0
-                ? mentions
-                : freeChatMainAgentName
-                  ? [freeChatMainAgentName.replace(/^@/, '').toLowerCase()]
-                  : [];
-            if (routeMentions.length > 0) {
-              meta.mentions = routeMentions;
-            }
-          }
-
-          await chatMessagesApi.send(backendSession.id, {
-            sender_type: 'user',
-            sender_id: null,
-            content,
-            meta: Object.keys(meta).length > 0 ? meta : null,
-          });
-        } catch {}
-      }
 
       if (options.workItemId) {
         await projectWorkItemsApi.linkExecution(

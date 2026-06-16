@@ -95,6 +95,9 @@ const chatSessionUpdatePayload = (
 interface SendMessageOptions {
   chatInputMode?: ChatInputMode;
   quotedMessage?: QuotedMessageReference;
+  routeMentions?: string[];
+  fallbackMention?: string | null;
+  workflowLeadAgentId?: string | null;
 }
 
 export type ToastTone = 'info' | 'success' | 'warning' | 'error';
@@ -418,8 +421,9 @@ const makePendingAgentPlaceholder = (
   );
   const fallbackMember =
     mentionedMember ??
-    members.find((member) => member.status === 'run') ??
-    members[0];
+    (effectiveMentions.length === 0
+      ? (members.find((member) => member.status === 'run') ?? members[0])
+      : undefined);
   const fallbackName = effectiveMentions[0]
     ? asAgentHandle(effectiveMentions[0])
     : '@agent';
@@ -646,6 +650,7 @@ interface WorkspaceContextProps {
   setActiveSessionId: (id: string) => void;
   chatInputMode: ChatInputMode;
   setChatInputMode: (mode?: ChatInputMode) => void;
+  setSessionChatInputMode: (sessionId: string, mode: ChatInputMode) => void;
   ensureWorkflowRouteToMainAgent: () => Promise<void>;
   mainAgentName: string | null;
   providers: Provider[];
@@ -680,6 +685,16 @@ interface WorkspaceContextProps {
 
   // Active Simulation Utilities
   sendMessage: (text: string, options?: SendMessageOptions) => void;
+  sendMessageToSession: (
+    sessionId: string,
+    text: string,
+    options?: SendMessageOptions,
+  ) => void;
+  stagePendingAgentPlaceholder: (
+    sessionId: string,
+    text: string,
+    options?: SendMessageOptions,
+  ) => void;
   addNewTask: (title: string, details: string, chosenMembers: string[]) => void;
   retryWorkflowFromStep3: () => void;
   addMemberToOrganization: (name: string, model: string) => void;
@@ -1045,6 +1060,17 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     const agentId = workflowRouteAgentIdRef.current;
     await syncSessionLeadAgent(sid, agentId);
   }, [syncSessionLeadAgent]);
+
+  const setSessionChatInputMode = useCallback(
+    (sessionId: string, mode: ChatInputMode) => {
+      if (!sessionId) return;
+      setChatInputModeBySessionId((prev) => ({
+        ...prev,
+        [sessionId]: mode,
+      }));
+    },
+    [],
+  );
 
   const setChatInputMode = useCallback(
     (mode?: ChatInputMode) => {
@@ -1979,7 +2005,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   // backend is unavailable, the session is mock-only, or the request errors.
   // ---------------------------------------------------------------------------
 
-  const dispatchMockReply = (text: string) => {
+  const dispatchMockReply = (
+    text: string,
+    sessionId = activeSessionIdRef.current,
+  ) => {
     const words = text.split(/\s+/);
     const mentions = words.filter((w) => w.startsWith('@'));
     let responderMention = '@claude';
@@ -2035,7 +2064,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       isThinking: true,
     };
 
-    const sid = activeSessionIdRef.current;
+    const sid = sessionId;
     setTimeout(() => {
       setAllMessages((prev) => {
         const cur = prev[sid] || [];
@@ -2070,15 +2099,77 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }, 600);
   };
 
-  const sendMessage = (text: string, options: SendMessageOptions = {}) => {
+  const stagePendingAgentPlaceholder = (
+    sessionId: string,
+    text: string,
+    options: SendMessageOptions = {},
+  ) => {
+    if (!sessionId || sessionsAsync.source !== 'api') return;
+    const fallbackMention =
+      options.fallbackMention ??
+      (options.routeMentions && options.routeMentions.length > 0
+        ? options.routeMentions[0]
+        : null);
+    const pendingAgentMsg = makePendingAgentPlaceholder(
+      text,
+      `${OPTIMISTIC_USER_MESSAGE_PREFIX}${Date.now()}`,
+      sessionId === activeSessionIdRef.current ? membersAsync.data : [],
+      fallbackMention,
+    );
+    if (!pendingAgentMsg) return;
+
+    setAllMessages((prev) => {
+      const cur = prev[sessionId] || [];
+      if (
+        cur.some(
+          (message) =>
+            message.isAgentRunning && !isPendingAgentPlaceholder(message),
+        )
+      ) {
+        return prev;
+      }
+      const withoutStalePending = pendingAgentMsg.sessionAgentId
+        ? cur.filter(
+            (message) =>
+              !(
+                isPendingAgentPlaceholder(message) &&
+                message.sessionAgentId === pendingAgentMsg.sessionAgentId
+              ),
+          )
+        : cur.filter((message) => !isPendingAgentPlaceholder(message));
+      return {
+        ...prev,
+        [sessionId]: [...withoutStalePending, pendingAgentMsg],
+      };
+    });
+  };
+
+  const sendMessageToSession = (
+    sessionId: string,
+    text: string,
+    options: SendMessageOptions = {},
+  ) => {
     if (!text.trim()) return;
 
-    const sid = activeSessionIdRef.current;
-    const effectiveChatInputMode = options.chatInputMode ?? chatInputMode;
+    const sid = sessionId;
+    if (!sid) return;
+    const effectiveChatInputMode =
+      options.chatInputMode ??
+      chatInputModeBySessionId[sid] ??
+      (sid === activeSessionIdRef.current
+        ? chatInputMode
+        : DEFAULT_CHAT_INPUT_MODE);
     const explicitMentions = extractAgentMentions(text);
     const mainAgentMention = mainAgentName
       ? mainAgentName.replace(/^@/, '').toLowerCase()
       : null;
+    const fallbackMention =
+      options.fallbackMention ??
+      (options.routeMentions && options.routeMentions.length > 0
+        ? options.routeMentions[0]
+        : explicitMentions.length === 0
+          ? mainAgentMention
+          : null);
     const userMsgId = `msg-user-${Date.now()}`;
     const userMsg: Message = {
       id: userMsgId,
@@ -2096,8 +2187,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         ? makePendingAgentPlaceholder(
             text,
             userMsgId,
-            membersAsync.data,
-            explicitMentions.length === 0 ? mainAgentMention : null,
+            sid === activeSessionIdRef.current ? membersAsync.data : [],
+            fallbackMention,
           )
         : null;
     setAllMessages((prev) => {
@@ -2123,7 +2214,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
     // Mock-only session (e.g., backend offline): use the local cascade.
     if (sessionsAsync.source !== 'api') {
-      dispatchMockReply(text);
+      dispatchMockReply(text, sid);
       return;
     }
 
@@ -2136,11 +2227,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       meta.chat_input_mode = 'workflow';
     }
     const routeMentions =
-      explicitMentions.length > 0
+      options.routeMentions ??
+      (explicitMentions.length > 0
         ? explicitMentions
         : mainAgentMention
           ? [mainAgentMention]
-          : [];
+          : []);
     if (effectiveChatInputMode !== 'workflow' && routeMentions.length > 0) {
       meta.mentions = routeMentions;
     }
@@ -2149,9 +2241,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       meta.reference = { message_id: options.quotedMessage.id };
     }
     const workflowLeadAgentId =
-      effectiveChatInputMode === 'workflow'
-        ? workflowRouteAgentIdRef.current
-        : null;
+      options.workflowLeadAgentId !== undefined
+        ? options.workflowLeadAgentId
+        : effectiveChatInputMode === 'workflow'
+          ? workflowRouteAgentIdRef.current
+          : null;
 
     const persistMessage = async () => {
       await syncSessionLeadAgent(sid, workflowLeadAgentId);
@@ -2184,8 +2278,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             ? `Send failed: ${err.message} (using mock reply)`
             : 'Send failed (using mock reply)',
         );
-        dispatchMockReply(text);
+        dispatchMockReply(text, sid);
       });
+  };
+
+  const sendMessage = (text: string, options: SendMessageOptions = {}) => {
+    sendMessageToSession(activeSessionIdRef.current, text, options);
   };
 
   // Add new workflow task representing Prototype 4 action into Prototype 1 List
@@ -2335,6 +2433,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         setActiveSessionId,
         chatInputMode,
         setChatInputMode,
+        setSessionChatInputMode,
         ensureWorkflowRouteToMainAgent,
         mainAgentName,
         providers,
@@ -2366,6 +2465,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         setIsAddProviderModalOpen,
 
         sendMessage,
+        sendMessageToSession,
+        stagePendingAgentPlaceholder,
         addNewTask,
         retryWorkflowFromStep3,
         addMemberToOrganization,

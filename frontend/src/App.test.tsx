@@ -227,20 +227,24 @@ check(
   source,
 );
 check(
-  "new free-chat session routes to main agent without prefixing content",
+  "new free-chat session routes to selected member without prefixing content",
   source.includes("const extractAgentMentions = (text: string): string[]") &&
     source.includes("const mentions = extractAgentMentions(content)") &&
-    source.includes("let freeChatMainAgentName: string | null = null") &&
+    source.includes("let freeChatSelectedAgentName: string | null = null") &&
+    source.includes("freeChatSelectedAgentName =") &&
     source.includes("const routeMentions =") &&
-    source.includes("meta.mentions = routeMentions") &&
+    source.includes("freeChatSelectedAgentName.replace(/^@/, '').toLowerCase()") &&
+    source.includes("sendMessageToSession(backendSession.id, content") &&
+    !source.includes("let freeChatMainAgentName: string | null = null") &&
     !source.includes("content = `${handle} ${content}`"),
   source,
 );
 check(
-  "new session first prompt sends the current app language",
-  source.includes("locale,") &&
-    source.includes("app_language: locale") &&
-    source.includes("chatMessagesApi.send(backendSession.id"),
+  "new session first prompt uses shared optimistic send pipeline",
+  source.includes("sendMessageToSession,") &&
+    source.includes("sendMessageToSession(backendSession.id, content") &&
+    source.includes("fallbackMention") &&
+    !source.includes("chatMessagesApi.send(backendSession.id"),
   source,
 );
 check(
@@ -248,9 +252,18 @@ check(
   source.includes("chatSessionsApi") &&
     source.includes("let workflowLeadAgentId: string | null = null") &&
     source.includes("workflowLeadAgentId = workflowProjectAgent?.agent_id ?? null") &&
-    source.includes("meta.chat_input_mode = 'workflow'") &&
-    source.includes("lead_agent_id: workflowLeadAgentId") &&
-    source.includes("chatMessagesApi.send(backendSession.id"),
+    source.includes("chat_input_mode: 'workflow'") &&
+    source.includes("setSessionChatInputMode(backendSession.id, nextChatInputMode)") &&
+    source.includes("workflowLeadAgentId,") &&
+    source.includes("chatInputMode: nextChatInputMode"),
+  source,
+);
+check(
+  "new session stages the initial message before activation",
+  source.indexOf("sendMessageToSession(backendSession.id, content") <
+    source.indexOf("setActiveSessionId(backendSession.id)") &&
+    source.indexOf("setSessionChatInputMode(backendSession.id, nextChatInputMode)") <
+      source.indexOf("sendMessageToSession(backendSession.id, content"),
   source,
 );
 check(
