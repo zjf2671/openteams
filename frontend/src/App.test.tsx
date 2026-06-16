@@ -244,6 +244,7 @@ check(
   source.includes("sendMessageToSession,") &&
     source.includes("sendMessageToSession(backendSession.id, content") &&
     source.includes("fallbackMention") &&
+    source.includes("persistToBackend: true") &&
     !source.includes("chatMessagesApi.send(backendSession.id"),
   source,
 );

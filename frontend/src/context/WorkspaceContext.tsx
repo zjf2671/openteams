@@ -98,6 +98,7 @@ interface SendMessageOptions {
   routeMentions?: string[];
   fallbackMention?: string | null;
   workflowLeadAgentId?: string | null;
+  persistToBackend?: boolean;
 }
 
 export type ToastTone = 'info' | 'success' | 'warning' | 'error';
@@ -2229,7 +2230,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     text: string,
     options: SendMessageOptions = {},
   ) => {
-    if (!sessionId || sessionsAsync.source !== 'api') return;
+    const shouldUseBackend =
+      sessionsAsync.source === 'api' || options.persistToBackend === true;
+    if (!sessionId || !shouldUseBackend) return;
     const fallbackMention =
       options.fallbackMention ??
       (options.routeMentions && options.routeMentions.length > 0
@@ -2315,8 +2318,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       quotedMessage: options.quotedMessage,
       referenceMessageId: options.quotedMessage?.id,
     };
+    const shouldPersistToBackend =
+      sessionsAsync.source === 'api' || options.persistToBackend === true;
     const pendingAgentMsg =
-      sessionsAsync.source === 'api'
+      shouldPersistToBackend
         ? makePendingAgentPlaceholder(
             text,
             userMsgId,
@@ -2346,7 +2351,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     });
 
     // Mock-only session (e.g., backend offline): use the local cascade.
-    if (sessionsAsync.source !== 'api') {
+    if (!shouldPersistToBackend) {
       dispatchMockReply(text, sid);
       return;
     }

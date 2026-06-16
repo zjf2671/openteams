@@ -112,6 +112,8 @@ check(
     source.includes('fallbackMention?: string | null') &&
     source.includes('sendMessageToSession') &&
     source.includes('stagePendingAgentPlaceholder') &&
+    source.includes('persistToBackend?: boolean') &&
+    source.includes('const shouldPersistToBackend =') &&
     source.includes('const effectiveMentions =') &&
     source.includes("mentions: effectiveChatInputMode === 'workflow' ? [] : routeMentions") &&
     source.includes('options.routeMentions') &&
