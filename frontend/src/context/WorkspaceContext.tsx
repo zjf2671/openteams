@@ -861,6 +861,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   });
   const [allMessages, setAllMessages] = useState<Record<string, Message[]>>({});
+  const allMessagesRef = useRef<Record<string, Message[]>>({});
   const [workflowRuntimeLinesByExecution, setWorkflowRuntimeLinesByExecution] =
     useState<Record<string, WorkflowRuntimeLine[]>>({});
   const [messagesAsync, setMessagesAsync] = useState<
@@ -885,6 +886,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const [workspaceChangesAsync, setWorkspaceChangesAsync] = useState<
     AsyncResourceState<WorkspaceChangesResponse | null>
   >(() => initialAsync(null));
+  const messagesRequestIdRef = useRef(0);
   const workspaceChangesRequestIdRef = useRef(0);
   const [chatInputModeBySessionId, setChatInputModeBySessionId] = useState<
     Record<string, ChatInputMode>
@@ -949,6 +951,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     new Set(),
   );
   useEffect(() => {
+    allMessagesRef.current = allMessages;
+  }, [allMessages]);
+
+  useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
     try {
       if (activeSessionId) {
@@ -957,6 +963,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         localStorage.removeItem(ACTIVE_SESSION_ID_STORAGE_KEY);
       }
     } catch {}
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    messagesRequestIdRef.current += 1;
+    setMessagesAsync(
+      succeed(
+        activeSessionId ? (allMessagesRef.current[activeSessionId] ?? []) : [],
+      ),
+    );
   }, [activeSessionId]);
 
   // Keep the cached workspace path in sync with the active session so the
@@ -1283,8 +1298,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const refreshMessages = useCallback(async (): Promise<void> => {
     const sid = activeSessionIdRef.current;
+    const requestId = messagesRequestIdRef.current + 1;
+    messagesRequestIdRef.current = requestId;
+    const shouldUpdateActiveMessages = () =>
+      messagesRequestIdRef.current === requestId &&
+      activeSessionIdRef.current === sid;
+
     if (!sid) {
-      setMessagesAsync(succeed([]));
+      if (shouldUpdateActiveMessages()) {
+        setMessagesAsync(succeed([]));
+      }
       return;
     }
 
@@ -1381,12 +1404,19 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             activeSessionAgentIds,
           ),
         );
-        setMessagesAsync(succeed(next));
+        if (shouldUpdateActiveMessages()) {
+          setMessagesAsync(succeed(next));
+        }
         return { ...prev, [sid]: next };
       });
     } catch (err) {
       const mock = mockBootstrapRef.current?.messagesBySession[sid] ?? [];
-      setMessagesAsync((prev) => fail(prev, err, mock));
+      setAllMessages((prev) =>
+        mock.length > 0 && !prev[sid] ? { ...prev, [sid]: mock } : prev,
+      );
+      if (shouldUpdateActiveMessages()) {
+        setMessagesAsync((prev) => fail(prev, err, mock));
+      }
     }
   }, []);
 
@@ -2124,7 +2154,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const projects = projectsAsync.data;
   const members = membersAsync.data;
   const providers = providersAsync.data;
-  const messages = allMessages[activeSessionId] || messagesAsync.data;
+  const messages = activeSessionId ? (allMessages[activeSessionId] ?? []) : [];
 
   // ---------------------------------------------------------------------------
   // sendMessage: try the real API first; fall back to mock cascade when the

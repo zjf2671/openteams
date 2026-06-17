@@ -217,6 +217,16 @@ check(
   source,
 );
 check(
+  'visible messages are scoped to the active session cache',
+  source.includes('const allMessagesRef = useRef<Record<string, Message[]>>({})') &&
+    source.includes('messagesRequestIdRef') &&
+    source.includes('shouldUpdateActiveMessages') &&
+    source.includes('activeSessionId ? (allMessages[activeSessionId] ?? []) : []') &&
+    source.includes('allMessagesRef.current[activeSessionId] ?? []') &&
+    source.includes('activeSessionIdRef.current === sid'),
+  source,
+);
+check(
   'message refresh does not drop the immediate pending placeholder before agent state catches up',
   source.includes('isOptimisticPendingAgentPlaceholder') &&
     source.includes('PENDING_AGENT_MESSAGE_PREFIX}${OPTIMISTIC_USER_MESSAGE_PREFIX}') &&
