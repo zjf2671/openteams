@@ -24,6 +24,39 @@ pub struct QueuedMessage {
     pub failure_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MemberQueueStatus {
+    Empty,
+    Queued,
+    Processing,
+    Running,
+    Blocked,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueuedMessageListItem {
+    pub message: QueuedMessage,
+    pub can_delete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MemberQueueSnapshot {
+    pub session_id: Uuid,
+    pub session_agent_id: Uuid,
+    pub agent_id: Uuid,
+    pub status: MemberQueueStatus,
+    pub blocked: bool,
+    pub paused: bool,
+    pub can_continue: bool,
+    pub queued_count: i64,
+    pub items: Vec<QueuedMessageListItem>,
+}
+
 /// Frontend-facing queue state derived from durable member queue rows.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -90,6 +123,74 @@ impl QueuedMessageService {
         }
     }
 
+    fn active_messages(messages: Vec<QueuedMessage>) -> Vec<QueuedMessage> {
+        messages
+            .into_iter()
+            .filter(|message| {
+                matches!(
+                    message.status,
+                    QueuedMessageStatus::Queued
+                        | QueuedMessageStatus::Processing
+                        | QueuedMessageStatus::Running
+                        | QueuedMessageStatus::Failed
+                )
+            })
+            .collect()
+    }
+
+    fn snapshot_from_messages(
+        session_id: Uuid,
+        session_agent_id: Uuid,
+        agent_id: Uuid,
+        messages: Vec<QueuedMessage>,
+    ) -> MemberQueueSnapshot {
+        let active_messages = Self::active_messages(messages);
+        let queued_count = active_messages
+            .iter()
+            .filter(|message| message.status == QueuedMessageStatus::Queued)
+            .count() as i64;
+        let has_failed = active_messages
+            .iter()
+            .any(|message| message.status == QueuedMessageStatus::Failed);
+        let status = if has_failed && queued_count > 0 {
+            MemberQueueStatus::Blocked
+        } else if has_failed {
+            MemberQueueStatus::Paused
+        } else if active_messages
+            .iter()
+            .any(|message| message.status == QueuedMessageStatus::Running)
+        {
+            MemberQueueStatus::Running
+        } else if active_messages
+            .iter()
+            .any(|message| message.status == QueuedMessageStatus::Processing)
+        {
+            MemberQueueStatus::Processing
+        } else if queued_count > 0 {
+            MemberQueueStatus::Queued
+        } else {
+            MemberQueueStatus::Empty
+        };
+
+        MemberQueueSnapshot {
+            session_id,
+            session_agent_id,
+            agent_id,
+            status,
+            blocked: has_failed,
+            paused: status == MemberQueueStatus::Paused,
+            can_continue: has_failed,
+            queued_count,
+            items: active_messages
+                .into_iter()
+                .map(|message| QueuedMessageListItem {
+                    can_delete: message.status == QueuedMessageStatus::Queued,
+                    message,
+                })
+                .collect(),
+        }
+    }
+
     fn create_data(data: &CreateQueuedMessage) -> CreateChatMessageQueue {
         CreateChatMessageQueue {
             session_id: data.session_id,
@@ -99,14 +200,24 @@ impl QueuedMessageService {
         }
     }
 
+    pub async fn find_by_id(
+        &self,
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<QueuedMessage>, sqlx::Error> {
+        Ok(ChatMessageQueue::find_by_id(pool, id)
+            .await?
+            .map(Self::from_row))
+    }
+
     /// Persist a queued row for a member. The user message itself remains in `chat_messages`.
     pub async fn create_queued(
         &self,
         pool: &SqlitePool,
         data: &CreateQueuedMessage,
     ) -> Result<QueuedMessage, sqlx::Error> {
-        let row = ChatMessageQueue::create_queued(pool, &Self::create_data(data), Uuid::new_v4())
-            .await?;
+        let row =
+            ChatMessageQueue::create_queued(pool, &Self::create_data(data), Uuid::new_v4()).await?;
         Ok(Self::from_row(row))
     }
 
@@ -129,6 +240,14 @@ impl QueuedMessageService {
         Ok(ChatMessageQueue::count_queued_for_member(pool, session_agent_id).await? > 0)
     }
 
+    pub async fn has_blocking_failure(
+        &self,
+        pool: &SqlitePool,
+        session_agent_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        ChatMessageQueue::has_blocking_failure(pool, session_agent_id).await
+    }
+
     /// Atomically claim the oldest queued row for a member and move it to `processing`.
     pub async fn claim_next(
         &self,
@@ -136,6 +255,30 @@ impl QueuedMessageService {
         session_agent_id: Uuid,
     ) -> Result<Option<QueuedMessage>, sqlx::Error> {
         Ok(ChatMessageQueue::claim_next(pool, session_agent_id)
+            .await?
+            .map(Self::from_row))
+    }
+
+    pub async fn start_or_create_running(
+        &self,
+        pool: &SqlitePool,
+        data: &CreateQueuedMessage,
+        id: Uuid,
+        run_id: Uuid,
+    ) -> Result<QueuedMessage, sqlx::Error> {
+        Ok(
+            ChatMessageQueue::start_or_create_running(pool, &Self::create_data(data), id, run_id)
+                .await
+                .map(Self::from_row)?,
+        )
+    }
+
+    pub async fn find_by_run_id(
+        &self,
+        pool: &SqlitePool,
+        run_id: Uuid,
+    ) -> Result<Option<QueuedMessage>, sqlx::Error> {
+        Ok(ChatMessageQueue::find_by_run_id(pool, run_id)
             .await?
             .map(Self::from_row))
     }
@@ -150,6 +293,17 @@ impl QueuedMessageService {
         Ok(ChatMessageQueue::bind_run(pool, id, run_id)
             .await?
             .map(Self::from_row))
+    }
+
+    pub async fn complete_run_and_claim_next(
+        &self,
+        pool: &SqlitePool,
+        run_id: Uuid,
+        session_agent_id: Uuid,
+    ) -> Result<Option<QueuedMessage>, sqlx::Error> {
+        let (_completed, claimed) =
+            ChatMessageQueue::complete_run_and_claim_next(pool, run_id, session_agent_id).await?;
+        Ok(claimed.map(Self::from_row))
     }
 
     /// Mark `processing` or `running` as `completed` after success or a normal stop.
@@ -187,6 +341,30 @@ impl QueuedMessageService {
     /// Delete a queued row that has not started yet.
     pub async fn delete_queued(&self, pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
         ChatMessageQueue::delete_queued(pool, id).await
+    }
+
+    pub async fn requeue_stale_inflight(
+        &self,
+        pool: &SqlitePool,
+        session_agent_id: Uuid,
+    ) -> Result<u64, sqlx::Error> {
+        ChatMessageQueue::requeue_stale_inflight(pool, session_agent_id).await
+    }
+
+    pub async fn snapshot_for_member(
+        &self,
+        pool: &SqlitePool,
+        session_id: Uuid,
+        session_agent_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<MemberQueueSnapshot, sqlx::Error> {
+        let messages = self.list_for_member(pool, session_agent_id).await?;
+        Ok(Self::snapshot_from_messages(
+            session_id,
+            session_agent_id,
+            agent_id,
+            messages,
+        ))
     }
 
     /// Derive member queue state from persisted rows. Failed rows take precedence because they
@@ -420,12 +598,81 @@ mod tests {
         }
         assert!(service.claim_next(&pool, member).await.unwrap().is_none());
 
-        assert_eq!(service.skip_failed_for_member(&pool, member).await.unwrap(), 1);
+        assert_eq!(
+            service.skip_failed_for_member(&pool, member).await.unwrap(),
+            1
+        );
         let next = service
             .claim_next(&pool, member)
             .await
             .unwrap()
             .expect("claim after continue");
+        assert_eq!(next.status, QueuedMessageStatus::Processing);
+    }
+
+    #[tokio::test]
+    async fn snapshot_exposes_blocked_state_and_item_actions() {
+        let pool = setup_pool().await;
+        let service = QueuedMessageService::new();
+        let member = Uuid::new_v4();
+        let first = create_with_order(&service, &pool, member, 1).await;
+        let second = create_with_order(&service, &pool, member, 2).await;
+
+        let claimed = service
+            .claim_next(&pool, member)
+            .await
+            .unwrap()
+            .expect("claim first");
+        service
+            .mark_failed(&pool, claimed.id, Some("boom".to_string()))
+            .await
+            .unwrap()
+            .expect("fail");
+
+        let snapshot = service
+            .snapshot_for_member(&pool, first.session_id, member, first.agent_id)
+            .await
+            .expect("snapshot");
+
+        assert_eq!(snapshot.status, MemberQueueStatus::Blocked);
+        assert!(snapshot.blocked);
+        assert!(!snapshot.paused);
+        assert!(snapshot.can_continue);
+        assert_eq!(snapshot.queued_count, 1);
+        assert_eq!(snapshot.items.len(), 2);
+        assert_eq!(snapshot.items[0].message.id, first.id);
+        assert!(!snapshot.items[0].can_delete);
+        assert_eq!(snapshot.items[1].message.id, second.id);
+        assert!(snapshot.items[1].can_delete);
+    }
+
+    #[tokio::test]
+    async fn complete_run_and_claim_next_returns_processing_entry() {
+        let pool = setup_pool().await;
+        let service = QueuedMessageService::new();
+        let member = Uuid::new_v4();
+        let first = create_with_order(&service, &pool, member, 1).await;
+        let second = create_with_order(&service, &pool, member, 2).await;
+        let claimed = service
+            .claim_next(&pool, member)
+            .await
+            .unwrap()
+            .expect("claim first");
+        assert_eq!(claimed.id, first.id);
+        let run_id = Uuid::new_v4();
+        service
+            .bind_run(&pool, claimed.id, run_id)
+            .await
+            .unwrap()
+            .expect("bind run");
+
+        let next = service
+            .complete_run_and_claim_next(&pool, run_id, member)
+            .await
+            .unwrap()
+            .expect("claim next");
+
+        assert_eq!(next.id, second.id);
         assert_eq!(next.status, QueuedMessageStatus::Processing);
     }
 

@@ -174,7 +174,8 @@ check(
       "normalizeMentionHandle(selectedSidebarMember.name)",
     ) &&
     source.includes("{displayedMessages.map((msg) => (") &&
-    source.includes("key={msg.clientMessageId ?? msg.id}") &&
+    source.includes("key={msg.id}") &&
+    !source.includes("key={msg.clientMessageId ?? msg.id}") &&
     source.includes(
       "(!messagesAsync.loading || displayedMessages.length === 0)",
     ) &&
@@ -375,6 +376,21 @@ check(
     composerAttachmentIndex > composerQuoteIndex &&
     composerAttachmentIndex < composerInputIndex,
   { composerQuoteIndex, composerAttachmentIndex, composerInputIndex },
+);
+check(
+  "renders message queue outside the composer shell with icon actions",
+  source.includes("visibleQueueGroups") &&
+    source.includes("消息正在等待执行") &&
+    source.includes("<Trash2") &&
+    source.includes("<Play") &&
+    source.includes("queue.can_continue") &&
+    source.includes("item.message.session_id === activeSessionId") &&
+    source.includes('status === "queued"') &&
+    source.includes("handleDeleteQueuedMessage") &&
+    source.includes("handleContinueMemberQueue") &&
+    source.indexOf("{visibleQueueGroups.length > 0") < composerInputIndex &&
+    source.indexOf("消息正在等待执行") < composerInputIndex,
+  { composerInputIndex, source },
 );
 check(
   "composer textarea auto-grows up to 2.5x the current input shell height",

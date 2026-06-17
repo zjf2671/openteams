@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env, fs, path::Path};
 
-use schemars::{generate::SchemaSettings, JsonSchema, Schema, SchemaGenerator};
+use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings};
 use services::services::config::{DEFAULT_COMMIT_REMINDER_PROMPT, DEFAULT_PR_DESCRIPTION_PROMPT};
 use ts_rs::TS;
 
@@ -384,7 +384,14 @@ fn generate_types_content() -> String {
         git::GitBranch::decl(),
         db::models::chat_message_queue::QueuedMessageStatus::decl(),
         services::services::queued_message::QueuedMessage::decl(),
+        services::services::queued_message::QueuedMessageListItem::decl(),
+        services::services::queued_message::MemberQueueStatus::decl(),
+        services::services::queued_message::MemberQueueSnapshot::decl(),
         services::services::queued_message::QueueStatus::decl(),
+        server::routes::chat::queues::ChatQueueListResponse::decl(),
+        server::routes::chat::queues::ChatMemberQueueResponse::decl(),
+        server::routes::chat::queues::DeleteQueuedMessageResponse::decl(),
+        server::routes::chat::queues::ContinueQueuedMessageResponse::decl(),
         git::ConflictOp::decl(),
         executors::actions::ExecutorAction::decl(),
         executors::mcp_config::McpConfig::decl(),
@@ -460,7 +467,15 @@ fn generate_types_content() -> String {
         serde_json::to_string(DEFAULT_COMMIT_REMINDER_PROMPT).unwrap()
     );
 
-    format!("{HEADER}\n\n{body}\n\n{constants}")
+    strip_trailing_line_whitespace(format!("{HEADER}\n\n{body}\n\n{constants}"))
+}
+
+fn strip_trailing_line_whitespace(content: String) -> String {
+    content
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn generate_json_schema<T: JsonSchema>() -> Result<String, serde_json::Error> {

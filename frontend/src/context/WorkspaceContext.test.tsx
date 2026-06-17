@@ -219,11 +219,24 @@ check(
 check(
   'visible messages are scoped to the active session cache',
   source.includes('const allMessagesRef = useRef<Record<string, Message[]>>({})') &&
+    source.includes('withSessionIdsBySession') &&
+    source.includes('filterMessagesForSession') &&
+    source.includes('userIndexByClientId') &&
+    source.includes('isOptimisticUserMessage(existing)') &&
     source.includes('messagesRequestIdRef') &&
     source.includes('shouldUpdateActiveMessages') &&
-    source.includes('activeSessionId ? (allMessages[activeSessionId] ?? []) : []') &&
-    source.includes('allMessagesRef.current[activeSessionId] ?? []') &&
+    /filterMessagesForSession\(\s*activeSessionId/.test(source) &&
+    source.includes('filterMessagesForSession(sid, prev[sid] ?? [])') &&
     source.includes('activeSessionIdRef.current === sid'),
+  source,
+);
+check(
+  'optimistic user messages carry their owning session id',
+  source.includes('sessionId?: string') &&
+    source.includes('sessionId: sid') &&
+    source.includes('sessionId,') &&
+    source.includes('sessionId: line.session_id') &&
+    source.includes('sessionId: event.session_id'),
   source,
 );
 check(
@@ -276,6 +289,31 @@ check(
     source.includes('chatMessageFontSize') &&
     source.includes('setChatMessageFontSize') &&
     source.includes('normalizeChatMessageFontSize'),
+  source,
+);
+
+check(
+  'syncs member queue snapshots from REST and websocket updates',
+  source.includes('memberQueuesBySessionAgentId') &&
+    source.includes('chatQueuesApi.listSession(sid)') &&
+    source.includes("parsed.type === 'queue_updated'") &&
+    source.includes('mergeMemberQueueSnapshot(parsed.queue)') &&
+    source.includes('void refreshMemberQueues()') &&
+    source.includes('chatQueuesApi.deleteQueued(sessionId, queueId)') &&
+    source.includes('chatQueuesApi.continueMember('),
+  source,
+);
+
+check(
+  'stages optimistic queued state for sends that target busy or blocked members',
+  source.includes('stageOptimisticQueuedMessage') &&
+    source.includes('current?.session_id === sessionId') &&
+    source.includes('session_id: sessionId') &&
+    source.includes("targetMember?.status === 'run'") &&
+    source.includes('existingQueue?.blocked') &&
+    source.includes('existingQueue?.paused') &&
+    source.includes('queued_count: BigInt(') &&
+    source.includes('void refreshMemberQueues()'),
   source,
 );
 

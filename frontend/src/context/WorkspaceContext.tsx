@@ -23,6 +23,9 @@ import {
   Strategy,
   BackendChatSkill,
   Config,
+  MemberQueuesBySessionAgentId,
+  MemberQueueSnapshot,
+  QueuedMessageStatus,
   UpdateChatSession,
   WorkflowCardProjection,
   WorkspaceChangesResponse,
@@ -34,6 +37,7 @@ import type { WorkspaceBootstrapMock } from '@/mockApiData';
 import {
   chatAgentsApi,
   chatMessagesApi,
+  chatQueuesApi,
   chatRunsApi,
   chatSessionsApi,
   cliConfigApi,
@@ -187,6 +191,12 @@ type ChatStreamEvent =
       message_id: string;
       changed_files: FileChangeEntry[];
       ts: string;
+    }
+  | {
+      type: 'queue_updated';
+      session_id: string;
+      session_agent_id: string;
+      queue: MemberQueueSnapshot;
     };
 
 const chatStreamWebSocketUrl = (path: string): string => {
@@ -451,6 +461,7 @@ const makePendingAgentPlaceholder = (
   userMsgId: string,
   members: Member[],
   fallbackMention?: string | null,
+  sessionId?: string,
 ): Message | null => {
   const mentions = extractAgentMentions(text);
   const effectiveMentions =
@@ -474,6 +485,7 @@ const makePendingAgentPlaceholder = (
 
   return {
     id: `${PENDING_AGENT_MESSAGE_PREFIX}${userMsgId}`,
+    sessionId,
     avatar: fallbackMember?.avatar ?? monogramFromName(sender),
     sender,
     model: fallbackMember?.modelName,
@@ -516,6 +528,50 @@ const resolveQuotedMessageReferences = (messages: Message[]): Message[] => {
       },
     };
   });
+};
+
+const withSessionId = (sessionId: string, message: Message): Message =>
+  message.sessionId === sessionId ? message : { ...message, sessionId };
+
+const withSessionIdsBySession = (
+  messagesBySession: Record<string, Message[]>,
+): Record<string, Message[]> =>
+  Object.fromEntries(
+    Object.entries(messagesBySession).map(([sessionId, messages]) => [
+      sessionId,
+      messages.map((message) => withSessionId(sessionId, message)),
+    ]),
+  );
+
+const filterMessagesForSession = (
+  sessionId: string,
+  messages: Message[],
+): Message[] => {
+  const scoped = messages.filter((message) => message.sessionId === sessionId);
+  const userIndexByClientId = new Map<string, number>();
+  const deduped: Message[] = [];
+
+  for (const message of scoped) {
+    if (message.isUser) {
+      const clientMessageId = userMessageClientId(message);
+      if (clientMessageId) {
+        const existingIndex = userIndexByClientId.get(clientMessageId);
+        if (existingIndex !== undefined) {
+          const existing = deduped[existingIndex];
+          deduped[existingIndex] =
+            isOptimisticUserMessage(existing) &&
+            !isOptimisticUserMessage(message)
+              ? message
+              : existing;
+          continue;
+        }
+        userIndexByClientId.set(clientMessageId, deduped.length);
+      }
+    }
+    deduped.push(message);
+  }
+
+  return deduped;
 };
 
 const mergePersistedWithRunningPlaceholders = (
@@ -654,6 +710,7 @@ const hydrateRunningAgentPlaceholders = async (
         id: run
           ? `run-${run.run_id}`
           : `${PENDING_AGENT_MESSAGE_PREFIX}running-${sessionAgent.id}`,
+        sessionId: sessionAgent.session_id,
         avatar: monogramFromName(agentName),
         sender: asAgentHandle(agentName),
         model: effectiveSessionAgentModelName(agent, sessionAgent) ?? undefined,
@@ -694,6 +751,7 @@ interface WorkspaceContextProps {
   refreshProjects: () => Promise<void>;
   createProject: (data: CreateProjectRequest) => Promise<Project>;
   messages: Message[];
+  memberQueuesBySessionAgentId: MemberQueuesBySessionAgentId;
   workflowRuntimeLinesByExecution: Record<string, WorkflowRuntimeLine[]>;
   activeSessionId: string;
   setActiveSessionId: (id: string) => void;
@@ -771,6 +829,12 @@ interface WorkspaceContextProps {
    * state. Call right when the user requests a stop.
    */
   markSessionAgentStopped: (sessionAgentId: string) => void;
+  refreshMemberQueues: () => Promise<void>;
+  deleteQueuedMessage: (sessionId: string, queueId: string) => Promise<void>;
+  continueMemberQueue: (
+    sessionId: string,
+    sessionAgentId: string,
+  ) => Promise<void>;
   membersAsync: AsyncResourceState<Member[]>;
   refreshMembers: () => Promise<void>;
   providersAsync: AsyncResourceState<Provider[]>;
@@ -862,6 +926,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   });
   const [allMessages, setAllMessages] = useState<Record<string, Message[]>>({});
   const allMessagesRef = useRef<Record<string, Message[]>>({});
+  const [memberQueuesBySessionAgentId, setMemberQueuesBySessionAgentId] =
+    useState<MemberQueuesBySessionAgentId>({});
   const [workflowRuntimeLinesByExecution, setWorkflowRuntimeLinesByExecution] =
     useState<Record<string, WorkflowRuntimeLine[]>>({});
   const [messagesAsync, setMessagesAsync] = useState<
@@ -887,6 +953,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     AsyncResourceState<WorkspaceChangesResponse | null>
   >(() => initialAsync(null));
   const messagesRequestIdRef = useRef(0);
+  const queueRequestIdRef = useRef(0);
   const workspaceChangesRequestIdRef = useRef(0);
   const [chatInputModeBySessionId, setChatInputModeBySessionId] = useState<
     Record<string, ChatInputMode>
@@ -969,7 +1036,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     messagesRequestIdRef.current += 1;
     setMessagesAsync(
       succeed(
-        activeSessionId ? (allMessagesRef.current[activeSessionId] ?? []) : [],
+        activeSessionId
+          ? filterMessagesForSession(
+              activeSessionId,
+              allMessagesRef.current[activeSessionId] ?? [],
+            )
+          : [],
       ),
     );
   }, [activeSessionId]);
@@ -1062,6 +1134,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     setActiveSessionId('');
     setMessagesAsync(succeed([]));
     setMembersAsync(succeed([]));
+    setMemberQueuesBySessionAgentId({});
     setMainAgentName(null);
   }, []);
 
@@ -1187,11 +1260,14 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const applyMockBootstrap = useCallback(
     (bootstrap: WorkspaceBootstrapMock) => {
-      mockBootstrapRef.current = bootstrap;
+      const messagesBySession = withSessionIdsBySession(
+        bootstrap.messagesBySession,
+      );
+      mockBootstrapRef.current = { ...bootstrap, messagesBySession };
       toastDurationMsRef.current = bootstrap.defaults.toastDurationMs;
       setTasks(bootstrap.tasks);
       setSessionsAsync(initialAsync([]));
-      setAllMessages(bootstrap.messagesBySession);
+      setAllMessages(messagesBySession);
       clearSessionScopedState();
       setMembersAsync(initialAsync(bootstrap.members));
       setProvidersAsync(initialAsync(bootstrap.providers));
@@ -1397,10 +1473,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           .map((sessionAgent) => sessionAgent.id),
       );
       setAllMessages((prev) => {
+        const current = filterMessagesForSession(sid, prev[sid] ?? []);
         const next = resolveQuotedMessageReferences(
           mergePersistedWithRunningPlaceholders(
             mapped,
-            [...(prev[sid] ?? []), ...runningPlaceholders],
+            [...current, ...runningPlaceholders],
             activeSessionAgentIds,
           ),
         );
@@ -1432,8 +1509,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     const sid = activeSessionIdRef.current;
     if (!sid) return;
     setAllMessages((prev) => {
-      const current = prev[sid];
-      if (!current) return prev;
+      const current = filterMessagesForSession(sid, prev[sid] ?? []);
+      if (current.length === 0) return prev;
       const updated = current.filter(
         (message) =>
           !(
@@ -1447,6 +1524,126 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       return next;
     });
   }, []);
+
+  const mergeMemberQueueSnapshot = useCallback((queue: MemberQueueSnapshot) => {
+    setMemberQueuesBySessionAgentId((prev) => ({
+      ...prev,
+      [queue.session_agent_id]: queue,
+    }));
+  }, []);
+
+  const refreshMemberQueues = useCallback(async (): Promise<void> => {
+    const sid = activeSessionIdRef.current;
+    const requestId = queueRequestIdRef.current + 1;
+    queueRequestIdRef.current = requestId;
+
+    if (!sid) {
+      setMemberQueuesBySessionAgentId({});
+      return;
+    }
+
+    try {
+      const response = await chatQueuesApi.listSession(sid);
+      if (
+        queueRequestIdRef.current !== requestId ||
+        activeSessionIdRef.current !== sid
+      ) {
+        return;
+      }
+      setMemberQueuesBySessionAgentId((prev) => {
+        const next = { ...prev };
+        for (const [sessionAgentId, queue] of Object.entries(next)) {
+          if (queue.session_id === sid) {
+            delete next[sessionAgentId];
+          }
+        }
+        for (const queue of response.members) {
+          next[queue.session_agent_id] = queue;
+        }
+        return next;
+      });
+    } catch {
+      // Queue state is auxiliary UI; message/member refresh remains authoritative.
+    }
+  }, []);
+
+  const deleteQueuedMessage = useCallback(
+    async (sessionId: string, queueId: string): Promise<void> => {
+      const response = await chatQueuesApi.deleteQueued(sessionId, queueId);
+      mergeMemberQueueSnapshot(response.queue);
+    },
+    [mergeMemberQueueSnapshot],
+  );
+
+  const continueMemberQueue = useCallback(
+    async (sessionId: string, sessionAgentId: string): Promise<void> => {
+      const response = await chatQueuesApi.continueMember(
+        sessionId,
+        sessionAgentId,
+      );
+      mergeMemberQueueSnapshot(response.queue);
+    },
+    [mergeMemberQueueSnapshot],
+  );
+
+  const stageOptimisticQueuedMessage = useCallback(
+    (sessionId: string, sessionAgentId: string, chatMessageId: string) => {
+      const now = new Date().toISOString();
+      const optimisticQueueId = `optimistic-queue-${chatMessageId}`;
+      setMemberQueuesBySessionAgentId((prev) => {
+        const current = prev[sessionAgentId];
+        const currentForSession =
+          current?.session_id === sessionId ? current : undefined;
+        if (
+          currentForSession?.items.some(
+            (item) => item.message.id === optimisticQueueId,
+          )
+        ) {
+          return prev;
+        }
+        const items = [
+          ...(currentForSession?.items ?? []),
+          {
+            message: {
+              id: optimisticQueueId,
+              session_id: sessionId,
+              session_agent_id: sessionAgentId,
+              agent_id: currentForSession?.agent_id ?? '',
+              chat_message_id: chatMessageId,
+              status: 'queued' as QueuedMessageStatus,
+              created_at: now,
+              updated_at: now,
+              processing_started_at: null,
+              run_id: null,
+              failure_reason: null,
+            },
+            can_delete: false,
+          },
+        ];
+        return {
+          ...prev,
+          [sessionAgentId]: {
+            session_id: sessionId,
+            session_agent_id: sessionAgentId,
+            agent_id: currentForSession?.agent_id ?? '',
+            status:
+              currentForSession && currentForSession.status !== 'empty'
+                ? currentForSession.status
+                : 'queued',
+            blocked: currentForSession?.blocked ?? false,
+            paused: currentForSession?.paused ?? false,
+            can_continue: currentForSession?.can_continue ?? false,
+            queued_count: BigInt(
+              items.filter((item) => String(item.message.status) === 'queued')
+                .length,
+            ),
+            items,
+          },
+        };
+      });
+    },
+    [],
+  );
 
   const refreshMembers = useCallback(async (): Promise<void> => {
     const sid = activeSessionIdRef.current;
@@ -1608,6 +1805,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       refreshConfig(),
       refreshMembers(),
       refreshMessages(),
+      refreshMemberQueues(),
     ]);
   }, [
     refreshSessions,
@@ -1617,6 +1815,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     refreshConfig,
     refreshMembers,
     refreshMessages,
+    refreshMemberQueues,
   ]);
 
   // Initial load: hydrate local mock API data first, then try backend-backed
@@ -1642,7 +1841,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const upsertStreamedMessage = useCallback(
     (sid: string, incoming: Message) => {
       setAllMessages((prev) => {
-        const current = prev[sid] || [];
+        const current = filterMessagesForSession(sid, prev[sid] ?? []);
         let carriedLines: ChatRunActivityLine[] | undefined;
         let carriedState = incoming.activityLoadState;
         let carriedSessionAgentId = incoming.sessionAgentId;
@@ -1775,7 +1974,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const appendStreamActivityLine = useCallback((line: ChatRunActivityLine) => {
     setAllMessages((prev) => {
-      const current = prev[line.session_id] || [];
+      const current = filterMessagesForSession(
+        line.session_id,
+        prev[line.session_id] ?? [],
+      );
       const existingIndex = current.findIndex(
         (message) => message.runId === line.run_id,
       );
@@ -1819,6 +2021,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         : `@${line.agent_name}`;
       const placeholder: Message = {
         id: `run-${line.run_id}`,
+        sessionId: line.session_id,
         avatar: monogramFromName(line.agent_name),
         sender: agentName,
         model: agentModelsByIdRef.current[line.agent_id] ?? undefined,
@@ -1859,7 +2062,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         event.session_agent_id,
       );
       setAllMessages((prev) => {
-        const current = prev[event.session_id] || [];
+        const current = filterMessagesForSession(
+          event.session_id,
+          prev[event.session_id] ?? [],
+        );
         if (current.some((message) => message.runId === event.run_id)) {
           return prev;
         }
@@ -1868,6 +2074,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           : `@${event.agent_name}`;
         const placeholder: Message = {
           id: `run-${event.run_id}`,
+          sessionId: event.session_id,
           avatar: monogramFromName(event.agent_name),
           sender: agentName,
           model: agentModelsByIdRef.current[event.agent_id] ?? undefined,
@@ -1942,6 +2149,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     if (!activeSessionId) return;
     void refreshMessages();
     void refreshMembers();
+    void refreshMemberQueues();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId]);
 
@@ -1995,6 +2203,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         return;
       }
 
+      if (parsed.type === 'queue_updated' && parsed.session_id === sid) {
+        mergeMemberQueueSnapshot(parsed.queue);
+        return;
+      }
+
       if (
         (parsed.type === 'message_new' || parsed.type === 'message_updated') &&
         parsed.message.session_id === sid
@@ -2030,8 +2243,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             parsed.session_agent_id,
           );
           setAllMessages((prev) => {
-            const current = prev[sid];
-            if (!current) return prev;
+            const current = filterMessagesForSession(sid, prev[sid] ?? []);
+            if (current.length === 0) return prev;
             const updated = current.filter(
               (msg) =>
                 !(
@@ -2052,8 +2265,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (parsed.type === 'mention_error' && parsed.session_id === sid) {
         setAllMessages((prev) => {
-          const current = prev[sid];
-          if (!current) return prev;
+          const current = filterMessagesForSession(sid, prev[sid] ?? []);
+          if (current.length === 0) return prev;
           const updated = current.filter(
             (msg) =>
               !(
@@ -2082,6 +2295,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         if (hasConnectedOnce) {
           void refreshMessages();
           void refreshMembers();
+          void refreshMemberQueues();
           const workspacePath = activeWorkspacePathRef.current;
           if (workspacePath) {
             void refreshWorkspaceChanges(sid, workspacePath, true);
@@ -2121,7 +2335,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     handleWorkflowRuntimeLine,
     insertRunningPlaceholder,
     mapBackendChatMessage,
+    mergeMemberQueueSnapshot,
     refreshMessages,
+    refreshMemberQueues,
     refreshWorkspaceChanges,
     refreshMembers,
     sessionsAsync.source,
@@ -2154,7 +2370,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const projects = projectsAsync.data;
   const members = membersAsync.data;
   const providers = providersAsync.data;
-  const messages = activeSessionId ? (allMessages[activeSessionId] ?? []) : [];
+  const messages = activeSessionId
+    ? filterMessagesForSession(
+        activeSessionId,
+        allMessages[activeSessionId] ?? [],
+      )
+    : [];
 
   // ---------------------------------------------------------------------------
   // sendMessage: try the real API first; fall back to mock cascade when the
@@ -2210,8 +2431,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     const thinMsgId = `msg-thin-${Date.now()}`;
+    const sid = sessionId;
     const thinkingMsg: Message = {
       id: thinMsgId,
+      sessionId: sid,
       avatar: responderAvatar,
       sender: responderName,
       model: responderLabel,
@@ -2220,10 +2443,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       isThinking: true,
     };
 
-    const sid = sessionId;
     setTimeout(() => {
       setAllMessages((prev) => {
-        const cur = prev[sid] || [];
+        const cur = filterMessagesForSession(sid, prev[sid] ?? []);
         return { ...prev, [sid]: [...cur, thinkingMsg] };
       });
       setTimeout(() => {
@@ -2236,6 +2458,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         const tokenNum = Math.floor(Math.random() * 1500 + 400);
         const realReplyMsg: Message = {
           id: `msg-agent-${Date.now()}`,
+          sessionId: sid,
           avatar: responderAvatar,
           sender: responderName,
           model: responderLabel,
@@ -2244,7 +2467,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           cost: `$${costVal} · ${tokenNum} tokens`,
         };
         setAllMessages((prev) => {
-          const cur = prev[sid] || [];
+          const cur = filterMessagesForSession(sid, prev[sid] ?? []);
           const base = cur.filter((m) => m.id !== thinMsgId);
           return { ...prev, [sid]: [...base, realReplyMsg] };
         });
@@ -2273,11 +2496,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       `${OPTIMISTIC_USER_MESSAGE_PREFIX}${Date.now()}`,
       sessionId === activeSessionIdRef.current ? membersAsync.data : [],
       fallbackMention,
+      sessionId,
     );
     if (!pendingAgentMsg) return;
 
     setAllMessages((prev) => {
-      const cur = prev[sessionId] || [];
+      const cur = filterMessagesForSession(
+        sessionId,
+        prev[sessionId] ?? [],
+      );
       if (
         cur.some(
           (message) =>
@@ -2338,6 +2565,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     const userMsgId = `msg-user-${Date.now()}`;
     const userMsg: Message = {
       id: userMsgId,
+      sessionId: sid,
       avatar: 'YOU',
       sender: 'You',
       time: 'just now',
@@ -2357,10 +2585,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             userMsgId,
             sid === activeSessionIdRef.current ? membersAsync.data : [],
             fallbackMention,
+            sid,
           )
         : null;
     setAllMessages((prev) => {
-      const cur = prev[sid] || [];
+      const cur = filterMessagesForSession(sid, prev[sid] ?? []);
       const withoutStalePending = pendingAgentMsg?.sessionAgentId
         ? cur.filter(
             (message) =>
@@ -2379,6 +2608,25 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           : [...withoutStalePending, userMsg],
       };
     });
+    if (pendingAgentMsg?.sessionAgentId) {
+      const existingQueue =
+        memberQueuesBySessionAgentId[pendingAgentMsg.sessionAgentId];
+      const targetMember = membersAsync.data.find(
+        (member) => member.id === pendingAgentMsg.sessionAgentId,
+      );
+      if (
+        targetMember?.status === 'run' ||
+        existingQueue?.blocked ||
+        existingQueue?.paused ||
+        (existingQueue?.items.length ?? 0) > 0
+      ) {
+        stageOptimisticQueuedMessage(
+          sid,
+          pendingAgentMsg.sessionAgentId,
+          userMsgId,
+        );
+      }
+    }
 
     // Mock-only session (e.g., backend offline): use the local cascade.
     if (!shouldPersistToBackend) {
@@ -2422,11 +2670,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       .then((message) => {
         upsertStreamedMessage(sid, mapBackendChatMessage(message));
         void refreshMessages();
+        void refreshMemberQueues();
       })
       .catch((err) => {
         if (pendingAgentMsg) {
           setAllMessages((prev) => {
-            const cur = prev[sid] || [];
+            const cur = filterMessagesForSession(sid, prev[sid] ?? []);
             return {
               ...prev,
               [sid]: cur.filter((message) => message.id !== pendingAgentMsg.id),
@@ -2589,6 +2838,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         refreshProjects,
         createProject,
         messages,
+        memberQueuesBySessionAgentId,
         workflowRuntimeLinesByExecution,
         activeSessionId,
         setActiveSessionId,
@@ -2644,6 +2894,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         messagesAsync,
         refreshMessages,
         markSessionAgentStopped,
+        refreshMemberQueues,
+        deleteQueuedMessage,
+        continueMemberQueue,
         membersAsync,
         refreshMembers,
         providersAsync,
