@@ -128,6 +128,37 @@ const translatedHtml = renderToStaticMarkup(
     onProjectAction={() => undefined}
   />,
 );
+const runningSessionHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    sessions={[
+      { ...mockWorkspaceBootstrap.sessions[0], hasRunningAgent: true },
+    ]}
+    activeSessionId={mockWorkspaceBootstrap.sessions[0].id}
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
+const runningOrderedHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    sessions={mockWorkspaceBootstrap.sessions.map((session) => ({
+      ...session,
+      hasRunningAgent: session.id === "sess-8",
+    }))}
+    activeSessionId={mockWorkspaceBootstrap.defaults.activeSessionId}
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
 const moreAttrStart = html.indexOf('data-sidebar-more="true"');
 const moreStart =
   moreAttrStart >= 0 ? html.lastIndexOf("<button", moreAttrStart) : -1;
@@ -188,6 +219,20 @@ check(
   translatedHtml,
 );
 check("renders workspace sessions", html.includes("Fix login flicker"), html);
+check(
+  "renders running sessions with activity icon",
+  runningSessionHtml.includes("animate-spin") &&
+    runningSessionHtml.includes("agent running"),
+  runningSessionHtml,
+);
+check(
+  "moves running sessions to the top of the collapsed session group",
+  runningOrderedHtml.indexOf("Billing copy polish") >= 0 &&
+    runningOrderedHtml.indexOf("Billing copy polish") <
+      runningOrderedHtml.indexOf("Fix login flicker") &&
+    !runningOrderedHtml.includes("Refactor auth guard"),
+  runningOrderedHtml,
+);
 check(
   "keeps collapsed session list height content-sized",
   html.includes("space-y-1 pr-1 overflow-visible") &&

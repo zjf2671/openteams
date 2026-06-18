@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiError, projectSourceControlApi } from '@/lib/api';
+import {
+  SOURCE_CONTROL_REFRESH_REQUESTED_EVENT,
+  type SourceControlRefreshRequestedDetail,
+} from '@/lib/sourceControlEvents';
 import type {
   SessionSourceControlStatus,
   SourceControlCommitError,
@@ -273,6 +277,31 @@ export function useSessionSourceControl({
     }
     void refresh();
   }, [applyStatus, enabled, projectId, refresh, sessionId]);
+
+  useEffect(() => {
+    if (!enabled || !projectId || !sessionId) return;
+
+    const handleSourceControlRefresh = (event: Event) => {
+      const detail = (
+        event as CustomEvent<SourceControlRefreshRequestedDetail>
+      ).detail;
+      if (!detail || detail.sessionId !== sessionId) return;
+      if (detail.projectId && detail.projectId !== projectId) return;
+
+      void refresh().catch(() => undefined);
+    };
+
+    window.addEventListener(
+      SOURCE_CONTROL_REFRESH_REQUESTED_EVENT,
+      handleSourceControlRefresh,
+    );
+    return () => {
+      window.removeEventListener(
+        SOURCE_CONTROL_REFRESH_REQUESTED_EVENT,
+        handleSourceControlRefresh,
+      );
+    };
+  }, [enabled, projectId, refresh, sessionId]);
 
   const enqueueBatchedOperation = useCallback(
     (

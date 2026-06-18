@@ -4,7 +4,7 @@ use anyhow::Error;
 use executors::{executors::BaseCodingAgent, profile::ExecutorProfileId};
 use serde::{Deserialize, Deserializer, Serialize};
 use ts_rs::TS;
-use utils::path::home_directory;
+use utils::{path::home_directory, text::sanitize_member_handle};
 pub use v8::{
     EditorConfig, EditorType, GitHubConfig, NotificationConfig, SendMessageShortcut, ShowcaseState,
     SoundFile, ThemeMode, UiLanguage,
@@ -244,6 +244,7 @@ fn complete_chat_presets_with_builtins(chat_presets: &mut ChatPresetsConfig) {
             preset.tools_enabled = default_preset.tools_enabled.clone();
             preset.enabled = default_preset.enabled;
         }
+        preset.name = sanitize_member_handle(&preset.name);
     }
 
     for preset in &mut chat_presets.teams {
@@ -521,7 +522,7 @@ mod tests {
 
         chat_presets.members.push(ChatMemberPreset {
             id: "custom_member".to_string(),
-            name: "custom_member".to_string(),
+            name: "Custom Member".to_string(),
             description: "Custom member".to_string(),
             runner_type: None,
             recommended_model: None,
@@ -540,6 +541,7 @@ mod tests {
             .iter()
             .find(|preset| preset.id == "custom_member")
             .expect("custom preset should exist");
+        assert_eq!(custom.name, "CustomMember");
         assert_eq!(
             custom.default_workspace_path.as_deref(),
             Some(expected_workspace.as_str())

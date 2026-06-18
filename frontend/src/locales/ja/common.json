@@ -11,6 +11,8 @@
   "agent.stop": "エージェントを停止",
   "agent.stopFailed": "エージェントを停止できませんでした",
   "agent.stopRequested": "エージェント停止をリクエストしました",
+  "agent.runFailed": "エージェントの実行に失敗しました",
+  "agent.stopped": "エージェントは停止しました",
   "agentOpenState": "エージェントの一覧（フィルタ付）",
   "agentSearchPlaceholder": "チームに入れたいメンバーを設定...",
   "agentTriggerLabel": "割当フィールド（獲得フォーカス時）",

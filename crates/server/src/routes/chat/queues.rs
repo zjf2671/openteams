@@ -4,7 +4,7 @@ use axum::{
     response::Json as ResponseJson,
 };
 use db::models::{
-    chat_message_queue::QueuedMessageStatus, chat_session::ChatSession,
+    chat_message::ChatMessage, chat_message_queue::QueuedMessageStatus, chat_session::ChatSession,
     chat_session_agent::ChatSessionAgent,
 };
 use deployment::Deployment;
@@ -36,6 +36,10 @@ pub struct ChatMemberQueueResponse {
 pub struct DeleteQueuedMessageResponse {
     pub deleted_id: Uuid,
     pub queue: MemberQueueSnapshot,
+    /// Set when the underlying `chat_messages` row was also removed because no other queue entry
+    /// (any member, any status) referenced it. The frontend uses this to drop the message from the
+    /// visible conversation without a round-trip.
+    pub deleted_chat_message_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -157,6 +161,21 @@ pub async fn delete_queue_item(
         ));
     }
 
+    // The source user message is shared across the conversation. Only remove it when no other
+    // queue entry (any member, any status) still references it — otherwise the message either has
+    // already executed for another member or is still pending elsewhere, and must stay visible.
+    let other_references = service
+        .other_reference_count_for_chat_message(pool, queue_item.chat_message_id, queue_id)
+        .await
+        .unwrap_or(0);
+    let mut deleted_chat_message_id = None;
+    if other_references == 0 {
+        let rows = ChatMessage::delete(pool, queue_item.chat_message_id).await?;
+        if rows > 0 {
+            deleted_chat_message_id = Some(queue_item.chat_message_id);
+        }
+    }
+
     let session_agent =
         session_agent_for_session(pool, session.id, queue_item.session_agent_id).await?;
     let queue = snapshot_for_agent(&service, pool, &session_agent).await?;
@@ -168,6 +187,7 @@ pub async fn delete_queue_item(
         DeleteQueuedMessageResponse {
             deleted_id: queue_id,
             queue,
+            deleted_chat_message_id,
         },
     )))
 }

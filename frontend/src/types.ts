@@ -49,6 +49,7 @@ export interface Session {
   title: string;
   icon: string;
   active: boolean;
+  hasRunningAgent?: boolean;
 }
 
 export interface ArtifactItem {
@@ -79,6 +80,8 @@ export interface Message {
   runId?: string;
   sessionAgentId?: string;
   sourceMessageId?: string;
+  i18nKey?: string;
+  i18nParams?: Record<string, string | number>;
   activityLines?: ChatRunActivityLine[];
   activityLoadState?: ActivityLoadState;
   workflowCard?: WorkflowCardMessageReference;

@@ -385,6 +385,14 @@ impl SourceControlService {
         Self
     }
 
+    pub fn invalidate_workspace_caches(workspace_path: &str) {
+        invalidate_source_control_caches(workspace_path);
+    }
+
+    pub fn invalidate_session_caches(session_id: Uuid) {
+        invalidate_source_control_session_caches(session_id);
+    }
+
     pub async fn session_status(
         &self,
         pool: &SqlitePool,
@@ -1205,6 +1213,26 @@ fn invalidate_source_control_caches(workspace_path: &str) {
     let status_keys = STATUS_CACHE
         .iter()
         .filter(|entry| entry.key().workspace_path.as_str() == workspace_path)
+        .map(|entry| entry.key().clone())
+        .collect::<Vec<_>>();
+    for key in status_keys {
+        STATUS_CACHE.remove(&key);
+    }
+}
+
+fn invalidate_source_control_session_caches(session_id: Uuid) {
+    let path_keys = SESSION_PATH_CACHE
+        .iter()
+        .filter(|entry| entry.key().session_id == session_id)
+        .map(|entry| entry.key().clone())
+        .collect::<Vec<_>>();
+    for key in path_keys {
+        SESSION_PATH_CACHE.remove(&key);
+    }
+
+    let status_keys = STATUS_CACHE
+        .iter()
+        .filter(|entry| entry.key().session_id == session_id)
         .map(|entry| entry.key().clone())
         .collect::<Vec<_>>();
     for key in status_keys {

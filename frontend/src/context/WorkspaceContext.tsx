@@ -69,6 +69,7 @@ import {
   succeed,
 } from '@/lib/asyncResource';
 import { notifyBuildStatsUsageUpdated } from '@/lib/buildStatsEvents';
+import { notifySourceControlRefreshRequested } from '@/lib/sourceControlEvents';
 
 type ListUpdater<T> = T[] | ((prev: T[]) => T[]);
 
@@ -243,6 +244,35 @@ const isPendingAgentPlaceholder = (message: Message): boolean =>
 
 const isActiveAgentState = (state: string | undefined): boolean =>
   state === 'running' || state === 'stopping' || state === 'waitingapproval';
+
+const isRunningSessionAgentState = (state: string | undefined): boolean =>
+  state === 'running' || state === 'stopping';
+
+const hasRunningSessionAgent = (
+  sessionAgents: BackendChatSessionAgent[],
+): boolean =>
+  sessionAgents.some((sessionAgent) =>
+    isRunningSessionAgentState(sessionAgent.state),
+  );
+
+const loadSessionIdsWithRunningAgents = async (
+  sessionIds: string[],
+): Promise<Set<string>> => {
+  const entries = await Promise.all(
+    sessionIds.map(async (sessionId) => {
+      const sessionAgents = await sessionAgentsApi
+        .list(sessionId)
+        .catch(() => []);
+      return [sessionId, hasRunningSessionAgent(sessionAgents)] as const;
+    }),
+  );
+
+  return new Set(
+    entries
+      .filter(([, sessionHasRunningAgent]) => sessionHasRunningAgent)
+      .map(([sessionId]) => sessionId),
+  );
+};
 
 const isOptimisticUserMessage = (message: Message): boolean =>
   Boolean(
@@ -1441,6 +1471,26 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     makeListSetter<Provider>(setProvidersAsync),
     [],
   );
+  const setSessionRunningIndicator = useCallback(
+    (sessionId: string, hasRunningAgent: boolean) => {
+      if (!sessionId) return;
+      setSessionsAsync((prev) => {
+        let changed = false;
+        const data = prev.data.map((session) => {
+          if (
+            session.id !== sessionId ||
+            session.hasRunningAgent === hasRunningAgent
+          ) {
+            return session;
+          }
+          changed = true;
+          return { ...session, hasRunningAgent };
+        });
+        return changed ? { ...prev, data } : prev;
+      });
+    },
+    [],
+  );
 
   const clearSessionScopedState = useCallback(() => {
     activeSessionIdRef.current = '';
@@ -1650,6 +1700,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       const backend = await projectApi.listSessions(projectId);
       if (selectedProjectIdRef.current !== projectId) return;
+      const runningSessionIds = await loadSessionIdsWithRunningAgents(
+        backend.map((session) => session.id),
+      );
+      if (selectedProjectIdRef.current !== projectId) return;
 
       sessionLeadAgentIdBySessionIdRef.current = {
         ...sessionLeadAgentIdBySessionIdRef.current,
@@ -1673,7 +1727,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       )
         ? currentActiveSessionId
         : (backend[0]?.id ?? '');
-      const mapped = mapSessions(backend, nextActiveSessionId);
+      const mapped = mapSessions(backend, nextActiveSessionId).map(
+        (session) => ({
+          ...session,
+          hasRunningAgent: runningSessionIds.has(session.id),
+        }),
+      );
       setSessionsAsync(succeed(mapped));
 
       if (nextActiveSessionId !== currentActiveSessionId) {
@@ -1770,6 +1829,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
       }
+      setSessionRunningIndicator(sid, hasRunningSessionAgent(sessionAgents));
       const runningPlaceholders = (
         await hydrateRunningAgentPlaceholders(
           sessionAgents,
@@ -1817,7 +1877,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         setMessagesAsync((prev) => fail(prev, err, mock));
       }
     }
-  }, [filterDeferredQueuedUserMessages]);
+  }, [filterDeferredQueuedUserMessages, setSessionRunningIndicator]);
 
   // Optimistically clear the running placeholder of a session agent the user
   // just stopped. The stopped run keeps the agent in the `stopping` state for a
@@ -1893,6 +1953,24 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     async (sessionId: string, queueId: string): Promise<void> => {
       const response = await chatQueuesApi.deleteQueued(sessionId, queueId);
       mergeMemberQueueSnapshot(response.queue);
+      // When the backend also removed the underlying chat_messages row, drop the matching
+      // message from the visible conversation so it disappears without a manual refresh.
+      const deletedMessageId = response.deleted_chat_message_id;
+      if (deletedMessageId) {
+        setAllMessages((prev) => {
+          const current = filterMessagesForSession(
+            sessionId,
+            prev[sessionId] ?? [],
+          );
+          const updated = current.filter(
+            (message) => message.id !== deletedMessageId,
+          );
+          if (updated.length === current.length) return prev;
+          const next = { ...prev, [sessionId]: updated };
+          setMessagesAsync(succeed(updated));
+          return next;
+        });
+      }
     },
     [mergeMemberQueueSnapshot],
   );
@@ -1983,6 +2061,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         sessionAgentsApi.list(sid).catch(() => []),
         projectId ? projectApi.listMembers(projectId).catch(() => []) : [],
       ]);
+      setSessionRunningIndicator(sid, hasRunningSessionAgent(sessionAgents));
       const mainAgentId = resolveProjectMainAgentId(projectMembers);
       const mainAgentName = resolveProjectMainAgentName(projectMembers, agents);
       const hasMainAgentInSession =
@@ -2037,7 +2116,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         fail(prev, err, mockBootstrapRef.current?.members ?? []),
       );
     }
-  }, [syncSessionLeadAgent]);
+  }, [setSessionRunningIndicator, syncSessionLeadAgent]);
 
   const refreshProviders = useCallback(async (): Promise<void> => {
     setProvidersAsync(beginLoad);
@@ -2452,6 +2531,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       optimisticallyStoppedSessionAgentIdsRef.current.delete(
         event.session_agent_id,
       );
+      setSessionRunningIndicator(event.session_id, true);
       const wasDeferredQueuedUserMessage = hasDeferredQueuedUserMessage(
         event.source_message_id,
         event.client_message_id,
@@ -2570,6 +2650,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       hasDeferredQueuedUserMessage,
       releaseDeferredQueuedUserMessage,
       revealDeferredQueuedBackendMessage,
+      setSessionRunningIndicator,
     ],
   );
 
@@ -2656,6 +2737,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         parsed.type === 'file_change_refresh' &&
         parsed.session_id === sid
       ) {
+        notifySourceControlRefreshRequested({
+          projectId: selectedProjectIdRef.current,
+          sessionId: sid,
+        });
         const workspacePath = activeWorkspacePathRef.current;
         if (workspacePath) {
           void refreshWorkspaceChanges(sid, workspacePath, true);
@@ -2698,6 +2783,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (parsed.type === 'agent_state') {
         void refreshMembers();
+        if (isRunningSessionAgentState(parsed.state)) {
+          setSessionRunningIndicator(sid, true);
+        }
 
         // When an agent leaves an active run state,
         // clear only placeholders tied to that concrete run. Optimistic
@@ -2807,6 +2895,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     refreshMemberQueues,
     refreshWorkspaceChanges,
     refreshMembers,
+    setSessionRunningIndicator,
     sessionsAsync.source,
     upsertStreamedMessage,
   ]);

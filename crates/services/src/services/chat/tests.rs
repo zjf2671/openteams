@@ -19,8 +19,9 @@ mod tests {
         CompressionType, SimplifiedMessage, all_agents_running, build_message_analytics_metrics,
         compress_messages_if_needed, create_message, create_session_with_project_members,
         effective_agent_name, is_protocol_notice_history_message, is_workflow_chat_input_mode,
-        limit_summary_input_messages, member_name_overrides_for_session, parse_agent_send_mentions,
-        parse_mentions, parse_user_message_mentions, prioritize_summary_agents,
+        limit_summary_input_messages, member_name_overrides_for_session, normalized_member_name,
+        parse_agent_send_mentions, parse_mentions, parse_user_message_mentions,
+        prioritize_summary_agents,
         select_messages_to_compress_by_token, should_include_message_in_history,
     };
 
@@ -40,6 +41,15 @@ mod tests {
     fn de_dupes_mentions_in_order() {
         let mentions = parse_mentions("@a @a @b");
         assert_eq!(mentions, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn normalized_member_name_strips_spaces() {
+        assert_eq!(
+            normalized_member_name(Some(" @Backend & Engineer ")).as_deref(),
+            Some("BackendEngineer")
+        );
+        assert_eq!(normalized_member_name(Some(" \t ")), None);
     }
 
     #[test]

@@ -12,6 +12,7 @@
   "issue.action.showingFilter": "Affichage des tickets {filter}",
   "issue.detail.action.activitySynced": "Activité synchronisée depuis GitHub",
   "issue.detail.action.attachmentsSelected": "{count} pièce(s) jointe(s) sélectionnée(s)",
+  "issue.detail.action.commentAdded": "Commentaire ajouté",
   "issue.detail.action.commentSynced": "Commentaire synchronisé avec GitHub",
   "issue.detail.action.connectGithubActivity": "Connectez un ticket GitHub pour synchroniser l'activité",
   "issue.detail.action.connectGithubDescription": "Connectez un ticket GitHub pour synchroniser la description",

@@ -355,14 +355,14 @@ type LinkedWorkItemIssueStatus =
   | "duplicate";
 
 const linkedWorkItemStatusKeys: Record<LinkedWorkItemIssueStatus, string> = {
-  todo: "linkedWorkItems.status.todo",
-  in_progress: "linkedWorkItems.status.inProgress",
-  backlog: "linkedWorkItems.status.backlog",
-  ready_to_merge: "linkedWorkItems.status.readyToMerge",
-  merging: "linkedWorkItems.status.merging",
-  done: "linkedWorkItems.status.done",
-  cancelled: "linkedWorkItems.status.cancelled",
-  duplicate: "linkedWorkItems.status.duplicate",
+  todo: "issue.status.todo",
+  in_progress: "issue.status.in_progress",
+  backlog: "issue.status.backlog",
+  ready_to_merge: "issue.status.ready_to_merge",
+  merging: "issue.status.merging",
+  done: "issue.status.done",
+  cancelled: "issue.status.cancelled",
+  duplicate: "issue.status.duplicate",
 };
 
 const linkedWorkItemStatusOptions: Array<{
@@ -736,7 +736,6 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     refreshSessions,
     messagesAsync,
     refreshMessages,
-    markSessionAgentStopped,
     membersAsync,
     refreshMembers,
     chatMessageFontSize,
@@ -766,8 +765,8 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [stoppingSessionAgentIds, setStoppingSessionAgentIds] = useState<
-    Set<string>
-  >(() => new Set());
+    Record<string, string | null>
+  >({});
   const [quotedMessage, setQuotedMessage] =
     useState<QuotedMessageReference | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
@@ -927,6 +926,41 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     relatedFilesWidth,
     relatedFilesMaxAvailableWidth,
   );
+  const isStopPendingForMessage = (
+    sessionAgentId?: string,
+    runId?: string,
+  ): boolean => {
+    if (!sessionAgentId) return false;
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        stoppingSessionAgentIds,
+        sessionAgentId,
+      )
+    ) {
+      return false;
+    }
+    const stoppedRunId = stoppingSessionAgentIds[sessionAgentId];
+    return !stoppedRunId || !runId || stoppedRunId === runId;
+  };
+
+  useEffect(() => {
+    setStoppingSessionAgentIds((current) => {
+      const entries = Object.entries(current).filter(
+        ([sessionAgentId, stoppedRunId]) =>
+          messages.some(
+            (message) =>
+              message.isAgentRunning &&
+              message.sessionAgentId === sessionAgentId &&
+              (!stoppedRunId ||
+                !message.runId ||
+                message.runId === stoppedRunId),
+          ),
+      );
+
+      if (entries.length === Object.keys(current).length) return current;
+      return Object.fromEntries(entries);
+    });
+  }, [messages]);
 
   const openRelatedFiles = () => {
     setWasRelatedFilesAutoCollapsed(false);
@@ -1127,7 +1161,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     setQuotedMessage(null);
     setAttachedFiles([]);
     setSelectedSidebarMemberId(null);
-    setStoppingSessionAgentIds(new Set());
+    setStoppingSessionAgentIds({});
   }, [activeSessionId]);
 
   // Preserve unsent composer text per session across tab switches and
@@ -1522,26 +1556,28 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     inputRef.current?.focus();
   };
 
-  const handleStopAgentMessage = async (sessionAgentId: string) => {
-    if (stoppingSessionAgentIds.has(sessionAgentId)) return;
+  const handleStopAgentMessage = async (
+    sessionAgentId: string,
+    runId?: string,
+  ) => {
+    if (isStopPendingForMessage(sessionAgentId, runId)) return;
 
     setStoppingSessionAgentIds((current) => {
-      const next = new Set(current);
-      next.add(sessionAgentId);
-      return next;
+      return {
+        ...current,
+        [sessionAgentId]: runId ?? null,
+      };
     });
 
     try {
       await sessionAgentsApi.stop(activeSessionId, sessionAgentId);
-      // Optimistically drop the stopped run's "executing" placeholder so a
-      // newly sent message cannot appear next to a stale running placeholder.
-      markSessionAgentStopped(sessionAgentId);
       showToast(t("agent.stopRequested"));
       void refreshMembers();
     } catch {
       setStoppingSessionAgentIds((current) => {
-        const next = new Set(current);
-        next.delete(sessionAgentId);
+        if (current[sessionAgentId] !== (runId ?? null)) return current;
+        const next = { ...current };
+        delete next[sessionAgentId];
         return next;
       });
       showToast(t("agent.stopFailed"));
@@ -2229,9 +2265,15 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
-                        void handleStopAgentMessage(msg.sessionAgentId!);
+                        void handleStopAgentMessage(
+                          msg.sessionAgentId!,
+                          msg.runId,
+                        );
                       }}
-                      disabled={stoppingSessionAgentIds.has(msg.sessionAgentId)}
+                      disabled={isStopPendingForMessage(
+                        msg.sessionAgentId,
+                        msg.runId,
+                      )}
                       className="absolute bottom-1 right-1 z-10 flex h-6 w-6 items-center justify-center rounded-sm text-rose-500 transition hover:bg-rose-500/10 hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
                       title={t("agent.stop")}
                       aria-label={t("agent.stop")}

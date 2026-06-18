@@ -15,8 +15,6 @@ import { extractArtifactPaths } from "@/lib/parseStructuredReply";
 import type { ActivityLoadState, ChatRunActivityLine, Message } from "@/types";
 
 const ACTIVITY_LOAD_TIMEOUT_MS = 15000;
-const AGENT_EMPTY_OUTPUT_FALLBACK = "Agent运行失败";
-
 /**
  * Module-level cache of per-run changed-file rows keyed by run id. A run's
  * captured diff is immutable once the run completes, so the rows are safe to
@@ -216,17 +214,25 @@ export const AgentMessageContent: React.FC<AgentMessageContentProps> = ({
     (isRunning || expanded) &&
     (hasVisibleActivityLines || hasActivityPanelState);
 
-  // Structured agent replies carry a derived body (send text, or the
-  // conclusion when there is no send). Plain replies leave `replyText`
-  // undefined and we fall back to the raw `text`.
-  const replyText = message.replyText ?? message.text;
   const hasFileRows = !isRunning && fileRows.length > 0;
   const hasWorkflowCard = Boolean(message.workflowCard && message.sessionId);
+  const translatedMessageText = useMemo(() => {
+    if (!message.i18nKey) return undefined;
+    const translated = t(message.i18nKey, message.i18nParams);
+    return translated && translated !== message.i18nKey
+      ? translated
+      : undefined;
+  }, [message.i18nKey, message.i18nParams, t]);
+  const visibleMessageText = translatedMessageText ?? message.text;
+  // Structured agent replies carry a derived body (send text, or the
+  // conclusion when there is no send). Plain replies leave `replyText`
+  // undefined and we fall back to the raw/i18n-localized text.
+  const replyText = message.replyText ?? visibleMessageText;
   const hasReplyText = replyText.trim().length > 0;
   const displayReplyText =
     hasReplyText || isRunning || hasFileRows || hasWorkflowCard
       ? replyText
-      : AGENT_EMPTY_OUTPUT_FALLBACK;
+      : t("agent.runFailed");
 
   return (
     <div className="min-w-0 max-w-full space-y-2">

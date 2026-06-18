@@ -12,6 +12,7 @@
   "issue.action.showingFilter": "Mostrando incidencias {filter}",
   "issue.detail.action.activitySynced": "Actividad sincronizada desde GitHub",
   "issue.detail.action.attachmentsSelected": "{count} archivo(s) adjunto(s) seleccionado(s)",
+  "issue.detail.action.commentAdded": "Comentario agregado",
   "issue.detail.action.commentSynced": "Comentario sincronizado con GitHub",
   "issue.detail.action.connectGithubActivity": "Conecta una incidencia de GitHub para sincronizar la actividad",
   "issue.detail.action.connectGithubDescription": "Conecta una incidencia de GitHub para sincronizar la descripción",

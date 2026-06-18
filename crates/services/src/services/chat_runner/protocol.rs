@@ -19,8 +19,39 @@ struct PlanGenerationPreviousPlanContext {
 }
 
 const AGENT_EMPTY_OUTPUT_FALLBACK_MESSAGE: &str = "Agent运行失败";
+const AGENT_EMPTY_OUTPUT_FALLBACK_I18N_KEY: &str = "agent.runFailed";
+const AGENT_STOPPED_OUTPUT_I18N_KEY: &str = "agent.stopped";
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AgentEmptyOutputFallback {
+    message: &'static str,
+    i18n_key: Option<&'static str>,
+}
+
+const DEFAULT_AGENT_EMPTY_OUTPUT_FALLBACK: AgentEmptyOutputFallback = AgentEmptyOutputFallback {
+    message: AGENT_EMPTY_OUTPUT_FALLBACK_MESSAGE,
+    i18n_key: Some(AGENT_EMPTY_OUTPUT_FALLBACK_I18N_KEY),
+};
 
 impl ChatRunner {
+    fn localized_agent_stopped_message(language_code: &str) -> &'static str {
+        match language_code {
+            "zh-Hans" | "zh-Hant" => "Agent停止运行",
+            "ja" => "エージェントは停止しました",
+            "ko" => "에이전트 실행이 중지되었습니다",
+            "fr" => "L’agent a été arrêté",
+            "es" => "El agente se detuvo",
+            _ => "Agent stopped",
+        }
+    }
+
+    fn stopped_empty_output_fallback(language_code: &str) -> AgentEmptyOutputFallback {
+        AgentEmptyOutputFallback {
+            message: Self::localized_agent_stopped_message(language_code),
+            i18n_key: Some(AGENT_STOPPED_OUTPUT_I18N_KEY),
+        }
+    }
+
     pub(super) fn emit_protocol_notice(
         &self,
         notice: ProtocolNoticeArgs<'_>,
@@ -122,8 +153,11 @@ impl ChatRunner {
         raw_output: &str,
         error_info: Option<(&str, Option<&NormalizedEntryError>)>,
         token_usage: Option<&TokenUsageInfo>,
+        empty_output_fallback: Option<AgentEmptyOutputFallback>,
     ) -> Result<(), ChatRunnerError> {
         let output_is_empty = raw_output.trim().is_empty();
+        let empty_output_fallback =
+            empty_output_fallback.unwrap_or(DEFAULT_AGENT_EMPTY_OUTPUT_FALLBACK);
 
         tracing::debug!(
             session_id = %session_id,
@@ -183,16 +217,26 @@ impl ChatRunner {
                 "is_estimated": token_usage.is_estimated,
             });
         }
-        let display_content = if raw_output.trim().is_empty() {
-            error_info
-                .and_then(|(error_content, _)| {
-                    let trimmed = error_content.trim();
-                    (!trimmed.is_empty()).then(|| trimmed.to_string())
-                })
-                .unwrap_or_else(|| AGENT_EMPTY_OUTPUT_FALLBACK_MESSAGE.to_string())
+        let (display_content, used_empty_output_fallback) = if raw_output.trim().is_empty() {
+            match error_info.and_then(|(error_content, _)| {
+                let trimmed = error_content.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }) {
+                Some(error_content) => (error_content, false),
+                None => (empty_output_fallback.message.to_string(), true),
+            }
         } else {
-            raw_output.to_string()
+            (raw_output.to_string(), false)
         };
+
+        if used_empty_output_fallback
+            && let Some(i18n_key) = empty_output_fallback.i18n_key
+        {
+            meta["i18n"] = serde_json::json!({
+                "key": i18n_key,
+                "params": {}
+            });
+        }
 
         let message = chat::create_message(
             &self.db.pool,
@@ -544,12 +588,18 @@ impl ChatRunner {
         latest_assistant: &str,
         error_content: Option<&str>,
         error_type: Option<&NormalizedEntryError>,
+        completion_was_stopped: bool,
         token_usage: Option<&TokenUsageInfo>,
         protocol_retry_attempt: u32,
     ) -> Result<ProtocolProcessResult, ChatRunnerError> {
         let output_is_empty = latest_assistant.trim().is_empty();
         let has_error = error_content.is_some_and(|e| !e.is_empty());
         let error_info = error_content.map(|ec| (ec, error_type));
+        let empty_output_fallback = if completion_was_stopped {
+            Self::stopped_empty_output_fallback(prompt_language.code)
+        } else {
+            DEFAULT_AGENT_EMPTY_OUTPUT_FALLBACK
+        };
 
         tracing::debug!(
             session_id = %session_id,
@@ -589,6 +639,7 @@ impl ChatRunner {
                         latest_assistant,
                         error_info,
                         token_usage,
+                        Some(empty_output_fallback),
                     )
                     .await?;
                     return Ok(ProtocolProcessResult::Success(1));
@@ -650,6 +701,7 @@ impl ChatRunner {
                         latest_assistant,
                         error_info,
                         token_usage,
+                        Some(empty_output_fallback),
                     )
                     .await?;
                     return Ok(ProtocolProcessResult::Success(1));

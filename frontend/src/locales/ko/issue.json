@@ -12,6 +12,7 @@
   "issue.action.showingFilter": "{filter} 이슈 표시 중",
   "issue.detail.action.activitySynced": "GitHub에서 활동을 동기화했습니다",
   "issue.detail.action.attachmentsSelected": "첨부 파일 {count}개 선택됨",
+  "issue.detail.action.commentAdded": "댓글이 추가되었습니다",
   "issue.detail.action.commentSynced": "댓글이 GitHub에 동기화되었습니다",
   "issue.detail.action.connectGithubActivity": "활동을 동기화하려면 GitHub 이슈를 연결하세요",
   "issue.detail.action.connectGithubDescription": "설명을 동기화하려면 GitHub 이슈를 연결하세요",

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { chatMessagesApi, workflowApi } from '@/lib/api';
 import {
   shouldPollWorkflowProjection,
@@ -13,6 +14,10 @@ import type {
 } from '@/types';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { ChatWorkflowCard } from './ChatWorkflowCard';
+import {
+  WorkflowReviewSettingsDialog,
+  type WorkflowReviewSettingOverride,
+} from './WorkflowReviewSettingsDialog';
 import { toWorkflowFinalReviewAction } from './WorkflowFinalReviewCard';
 import { WorkflowWindow } from './WorkflowWindow';
 
@@ -49,6 +54,7 @@ export function WorkflowCard({
   cardType,
   planGenerationMeta,
 }: WorkflowCardProps) {
+  const { t } = useTranslation('chat');
   const { sessionsAsync, workflowRuntimeLinesByExecution } = useWorkspace();
   const sessionTitle = useMemo(() => {
     const session = sessionsAsync.data.find((s) => s.id === sessionId);
@@ -64,6 +70,11 @@ export function WorkflowCard({
   const [retryPlanGenerationError, setRetryPlanGenerationError] = useState<
     string | null
   >(null);
+  const [executeReviewProjection, setExecuteReviewProjection] =
+    useState<WorkflowCardProjection | null>(null);
+  const [executeReviewError, setExecuteReviewError] = useState<string | null>(
+    null,
+  );
 
   const message = useMemo(
     () =>
@@ -144,13 +155,40 @@ export function WorkflowCard({
     return workflowRuntimeLinesByExecution[projection.execution_id] ?? [];
   }, [projection?.execution_id, workflowRuntimeLinesByExecution]);
 
-  const handleExecute = (nextProjection: WorkflowCardProjection) =>
-    void withPending('execute-plan', () =>
-      workflowApi.executePlan(sessionId, nextProjection.plan_id, {
-        plan: null,
-        stepReviewOverrides: [],
-      }),
-    );
+  const handleExecute = (nextProjection: WorkflowCardProjection) => {
+    setExecuteReviewError(null);
+    setExecuteReviewProjection(nextProjection);
+  };
+
+  const handleCloseExecuteReviewSettings = () => {
+    if (pendingActionId === 'execute-plan') return;
+    setExecuteReviewProjection(null);
+    setExecuteReviewError(null);
+  };
+
+  const handleConfirmExecute = async (
+    overrides: WorkflowReviewSettingOverride[],
+  ) => {
+    if (!executeReviewProjection) return;
+    setExecuteReviewError(null);
+    try {
+      await withPending('execute-plan', () =>
+        workflowApi.executePlan(sessionId, executeReviewProjection.plan_id, {
+          plan: null,
+          stepReviewOverrides: overrides,
+        }),
+      );
+      setExecuteReviewProjection(null);
+    } catch (error) {
+      setExecuteReviewError(
+        error instanceof Error
+          ? error.message
+          : t('workflow.reviewSettings.executeError', {
+              defaultValue: 'Unable to start workflow execution.',
+            }),
+      );
+    }
+  };
 
   const handlePauseAll = (executionId: string) =>
     void withPending(executionId, () => workflowApi.pauseAll(sessionId, executionId));
@@ -295,6 +333,25 @@ export function WorkflowCard({
           onRespondPendingReview={handlePendingReview}
           onSubmitIterationFeedback={handleIterationFeedback}
           pendingActionId={pendingActionId}
+        />
+      )}
+
+      {executeReviewProjection && (
+        <WorkflowReviewSettingsDialog
+          projection={executeReviewProjection}
+          isOpen
+          onClose={handleCloseExecuteReviewSettings}
+          onSubmit={handleConfirmExecute}
+          submitLabel={t('workflow.reviewSettings.startExecution', {
+            defaultValue: 'Start Execution',
+          })}
+          submittingLabel={t('workflow.reviewSettings.startingExecution', {
+            defaultValue: 'Starting...',
+          })}
+          isSubmitting={pendingActionId === 'execute-plan'}
+          disabled={pendingActionId === 'execute-plan'}
+          error={executeReviewError}
+          variant="modal"
         />
       )}
     </>

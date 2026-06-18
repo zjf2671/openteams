@@ -11,6 +11,8 @@
   "agent.stop": "Stop agent",
   "agent.stopFailed": "Failed to stop agent",
   "agent.stopRequested": "Agent stop requested",
+  "agent.runFailed": "Agent run failed",
+  "agent.stopped": "Agent stopped",
   "agentOpenState": "Open state",
   "agentSearchPlaceholder": "Filter agents…",
   "agentTriggerLabel": "Trigger (focused)",

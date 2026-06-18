@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::rust::double_option;
 use sqlx::{FromRow, SqlitePool, Type, types::Json};
 use ts_rs::TS;
+use utils::text::sanitize_member_handle;
 use uuid::Uuid;
 
 use super::member_execution_config::MemberExecutionConfig;
@@ -90,6 +91,17 @@ pub struct UpdateProjectMember {
     pub is_default: Option<bool>,
 }
 
+fn normalize_member_name(member_name: Option<String>) -> Option<String> {
+    member_name.and_then(|value| {
+        let normalized = sanitize_member_handle(&value);
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized)
+        }
+    })
+}
+
 impl ProjectMember {
     pub async fn find_by_project(
         pool: &SqlitePool,
@@ -150,6 +162,7 @@ impl ProjectMember {
         is_default: bool,
     ) -> Result<Self, sqlx::Error> {
         let id = Uuid::new_v4();
+        let member_name = normalize_member_name(member_name);
         let allowed_skill_ids = Json(allowed_skill_ids);
         let execution_config = Json(execution_config.normalized());
 
@@ -214,7 +227,8 @@ impl ProjectMember {
         let member_type = data.member_type.clone().unwrap_or(existing.member_type);
         let user_id = data.user_id.clone().or(existing.user_id);
         let agent_id = data.agent_id.or(existing.agent_id);
-        let member_name = data.member_name.clone().unwrap_or(existing.member_name);
+        let member_name =
+            normalize_member_name(data.member_name.clone().unwrap_or(existing.member_name));
         let role = data.role.clone().or(existing.role);
         let display_order = data.display_order.unwrap_or(existing.display_order);
         let default_workspace_path = data
@@ -468,7 +482,7 @@ mod tests {
         .await
         .expect("update project member");
         assert_eq!(updated.role.as_deref(), Some("reviewer"));
-        assert_eq!(updated.member_name.as_deref(), Some("Project Reviewer"));
+        assert_eq!(updated.member_name.as_deref(), Some("ProjectReviewer"));
         assert_eq!(updated.display_order, 9);
         assert_eq!(updated.allowed_skill_ids.0, vec!["read"]);
         assert_eq!(
@@ -489,6 +503,50 @@ mod tests {
                 .expect("list default agents after delete")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn create_and_update_strip_spaces_from_member_names() {
+        let pool = setup_pool().await;
+        let project_id = Uuid::new_v4();
+
+        let member = ProjectMember::create(
+            &pool,
+            project_id,
+            ProjectMemberType::Agent,
+            None,
+            Some(Uuid::new_v4()),
+            Some(" @Project Agent ".to_string()),
+            Some("agent".to_string()),
+            1,
+            None,
+            Vec::new(),
+            MemberExecutionConfig::default(),
+            true,
+        )
+        .await
+        .expect("create agent member");
+        assert_eq!(member.member_name.as_deref(), Some("ProjectAgent"));
+
+        let updated = ProjectMember::update(
+            &pool,
+            member.id,
+            &UpdateProjectMember {
+                member_type: None,
+                user_id: None,
+                agent_id: None,
+                member_name: Some(Some(" QA & Reviewer ".to_string())),
+                role: None,
+                display_order: None,
+                default_workspace_path: None,
+                allowed_skill_ids: None,
+                execution_config: None,
+                is_default: None,
+            },
+        )
+        .await
+        .expect("update member name");
+        assert_eq!(updated.member_name.as_deref(), Some("QAReviewer"));
     }
 
     #[tokio::test]

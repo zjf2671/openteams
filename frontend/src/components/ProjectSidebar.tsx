@@ -25,6 +25,7 @@ import {
   Github,
   History,
   Inbox,
+  LoaderCircle,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -121,6 +122,11 @@ const sidebarItemClass =
 
 const visibleSessionLimit = 6;
 const blankTeamId = "blank_team";
+
+const prioritizeRunningSessions = (sessions: Session[]): Session[] => [
+  ...sessions.filter((session) => session.hasRunningAgent),
+  ...sessions.filter((session) => !session.hasRunningAgent),
+];
 
 const blankTeamOptions: DropdownSelectOption[] = [
   {
@@ -361,11 +367,18 @@ export function ProjectSidebar({
     [displayedProjects, projectActionMenu],
   );
   const buildStats = realBuildStats ?? ZERO_BUILD_STATS;
-  const hasOverflowSessions = sessions.length > visibleSessionLimit;
+  const orderedSessions = useMemo(
+    () => prioritizeRunningSessions(sessions),
+    [sessions],
+  );
+  const hasOverflowSessions = orderedSessions.length > visibleSessionLimit;
   const visibleSessions = sessionsExpanded
-    ? sessions
-    : sessions.slice(0, visibleSessionLimit);
-  const hiddenSessionCount = Math.max(sessions.length - visibleSessionLimit, 0);
+    ? orderedSessions
+    : orderedSessions.slice(0, visibleSessionLimit);
+  const hiddenSessionCount = Math.max(
+    orderedSessions.length - visibleSessionLimit,
+    0,
+  );
   const teamOptions = useMemo<DropdownSelectOption[]>(() => {
     const enabledTeamPresets = teamPresets.filter(
       (preset) => preset.enabled !== false,
@@ -1468,20 +1481,33 @@ export function ProjectSidebar({
                   const active =
                     activePage === "workspace" &&
                     session.id === activeSessionId;
+                  const SessionIcon = session.hasRunningAgent
+                    ? LoaderCircle
+                    : Box;
+                  const sessionLabel = session.hasRunningAgent
+                    ? `${session.title} - ${translate(
+                        "sidebar.sessionRunning",
+                        "agent running",
+                      )}`
+                    : session.title;
                   return (
                     <button
                       key={session.id}
                       type="button"
                       onClick={() => onSessionSelect(session.id)}
+                      aria-label={sessionLabel}
+                      title={sessionLabel}
                       className={`${sidebarItemClass} cursor-pointer ${
                         active
                           ? "border-[var(--hairline)] bg-[var(--surface-1)] font-medium text-[var(--ink)]"
                           : "border-transparent text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)]"
                       }`}
                     >
-                      <Box
+                      <SessionIcon
                         className={`h-3.5 w-3.5 shrink-0 ${
-                          active
+                          session.hasRunningAgent
+                            ? "animate-spin text-[var(--primary)]"
+                            : active
                             ? "text-[var(--primary)]"
                             : "text-[var(--ink-tertiary)]"
                         }`}
