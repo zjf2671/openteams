@@ -35,16 +35,19 @@ type ReviewSettingDraft = Record<
   }
 >;
 
+type LoopReviewSettingsRow = {
+  stepId: string;
+  title: string;
+  userReview: boolean;
+};
+
 function buildReviewSettingsDraft(
   taskRows: Array<{
     stepId: string;
     leadReview: boolean;
     userReview: boolean;
   }>,
-  loopRows: Array<{
-    stepId: string;
-    userReview: boolean;
-  }>
+  loopRows: LoopReviewSettingsRow[]
 ): ReviewSettingDraft {
   return Object.fromEntries([
     ...taskRows.map((row) => [
@@ -218,21 +221,63 @@ export function WorkflowReviewSettingsDialog({
     [projection.plan.nodes, stepByKey]
   );
 
-  const loopReviewSettingsRows = useMemo(
+  const planLoopReviewSettingsRows = useMemo(
     () =>
-      workflowLoops.flatMap((workflowLoop) => {
+      (projection.plan.loops ?? []).flatMap(
+        (planLoop): LoopReviewSettingsRow[] => {
+          const reviewStepKey =
+            planLoop.reviewStep ?? planLoop.review_step_key ?? null;
+          if (!reviewStepKey) return [];
+          const reviewStep = stepByKey.get(reviewStepKey);
+          const reviewNode = planNodeById.get(reviewStepKey);
+          const loopTitle =
+            planLoop.loopKey ??
+            planLoop.loop_key ??
+            reviewNode?.data.title ??
+            reviewStep?.title ??
+            reviewStepKey;
+          return [
+            {
+              stepId: reviewStepKey,
+              title: loopTitle,
+              userReview:
+                planLoop.userReviewRequired ??
+                planLoop.user_review_required ??
+                true,
+            },
+          ];
+        }
+      ),
+    [planNodeById, projection.plan.loops, stepByKey]
+  );
+
+  const runtimeLoopReviewSettingsRows = useMemo(
+    () =>
+      workflowLoops.flatMap((workflowLoop): LoopReviewSettingsRow[] => {
         const reviewStep = stepById.get(workflowLoop.review_step_id);
         if (!reviewStep) return [];
         const reviewNode = planNodeById.get(reviewStep.step_key);
         const reviewStepTitle = reviewStep.title ?? reviewStep.step_key;
-        return {
-          stepId: reviewStep.step_key,
-          title:
-            workflowLoop.loop_key || reviewNode?.data.title || reviewStepTitle,
-          userReview: workflowLoop.user_review_required,
-        };
+        return [
+          {
+            stepId: reviewStep.step_key,
+            title:
+              workflowLoop.loop_key ||
+              reviewNode?.data.title ||
+              reviewStepTitle,
+            userReview: workflowLoop.user_review_required,
+          },
+        ];
       }),
     [planNodeById, stepById, workflowLoops]
+  );
+
+  const loopReviewSettingsRows = useMemo(
+    () =>
+      runtimeLoopReviewSettingsRows.length > 0
+        ? runtimeLoopReviewSettingsRows
+        : planLoopReviewSettingsRows,
+    [planLoopReviewSettingsRows, runtimeLoopReviewSettingsRows]
   );
 
   const reviewSettingsShapeKey = useMemo(
