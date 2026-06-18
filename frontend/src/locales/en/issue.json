@@ -12,6 +12,7 @@
   "issue.action.showingFilter": "Showing {filter} issues",
   "issue.detail.action.activitySynced": "Activity synced from GitHub",
   "issue.detail.action.attachmentsSelected": "{count} attachment(s) selected",
+  "issue.detail.action.commentAdded": "Comment added",
   "issue.detail.action.commentSynced": "Comment synced to GitHub",
   "issue.detail.action.connectGithubActivity": "Connect a GitHub issue to sync activity",
   "issue.detail.action.connectGithubDescription": "Connect a GitHub issue to sync description",

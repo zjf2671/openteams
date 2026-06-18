@@ -1750,6 +1750,14 @@ impl ChatRunner {
                         )
                         .await;
 
+                        let protocol_output = if matches!(
+                            completion_status,
+                            RunCompletionStatus::Stopped
+                        ) {
+                            ""
+                        } else {
+                            &latest_assistant
+                        };
                         let process_result = runner
                             .process_agent_protocol_output(
                                 session_id,
@@ -1761,9 +1769,10 @@ impl ChatRunner {
                                 client_message_id.as_deref(),
                                 chain_depth,
                                 prompt_language,
-                                &latest_assistant,
+                                protocol_output,
                                 visible_error_content,
                                 error_type.as_ref(),
+                                matches!(completion_status, RunCompletionStatus::Stopped),
                                 Some(&token_usage),
                                 protocol_retry_attempt,
                             )
@@ -1892,6 +1901,7 @@ impl ChatRunner {
                                             visible_error_content
                                                 .map(|content| (content, error_type.as_ref())),
                                             Some(&token_usage),
+                                            None,
                                         )
                                         .await
                                     {
@@ -2252,9 +2262,10 @@ impl ChatRunner {
                                     .await;
                             }
                         } else {
-                            // Agent failed/died: fail this run's queue row. Remaining queued rows
-                            // are preserved so the member queue is blocked until the user
-                            // continues (which skips the failed row and advances).
+                            // Agent failed/died: finalize this run's queue row. When queued
+                            // messages are waiting, the entry is marked `failed` so the member
+                            // queue blocks until the user continues. When nothing is queued, the
+                            // entry is auto-skipped so the next message runs directly.
                             runner
                                 .mark_run_queue_failed(
                                     run_id,

@@ -12,6 +12,7 @@
   "issue.action.showingFilter": "{filter} の課題を表示中",
   "issue.detail.action.activitySynced": "GitHub からアクティビティを同期しました",
   "issue.detail.action.attachmentsSelected": "{count} 件の添付ファイルを選択しました",
+  "issue.detail.action.commentAdded": "コメントを追加しました",
   "issue.detail.action.commentSynced": "コメントを GitHub に同期しました",
   "issue.detail.action.connectGithubActivity": "アクティビティを同期するには GitHub 課題を連携してください",
   "issue.detail.action.connectGithubDescription": "説明を同期するには GitHub 課題を連携してください",

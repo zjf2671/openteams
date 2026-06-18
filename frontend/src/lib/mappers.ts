@@ -178,6 +178,30 @@ const clientMessageIdFromMeta = (
   return typeof clientMessageId === 'string' ? clientMessageId : undefined;
 };
 
+const i18nFromMeta = (
+  meta: JsonValue | undefined,
+): { key: string; params?: Record<string, string | number> } | undefined => {
+  const obj = jsonObject(meta);
+  const rawI18n = jsonObject(obj?.i18n);
+  const key = rawI18n?.key;
+  if (typeof key !== 'string' || !key.trim()) return undefined;
+
+  const rawParams = jsonObject(rawI18n?.params);
+  const params: Record<string, string | number> = {};
+  if (rawParams) {
+    for (const [paramKey, paramValue] of Object.entries(rawParams)) {
+      if (typeof paramValue === 'string' || typeof paramValue === 'number') {
+        params[paramKey] = paramValue;
+      }
+    }
+  }
+
+  return {
+    key,
+    ...(Object.keys(params).length > 0 ? { params } : {}),
+  };
+};
+
 const errorContentFromMeta = (meta: JsonValue | undefined): string | null => {
   const obj = jsonObject(meta);
   const error = jsonObject(obj?.error);
@@ -262,6 +286,7 @@ export const mapMessage = (
   }
 
   const workflowCardType = workflowCardTypeFromMeta(backend.meta);
+  const i18n = i18nFromMeta(backend.meta);
   const visibleContent =
     !isUser && backend.sender_type === 'agent' && !backend.content.trim()
       ? (errorContentFromMeta(backend.meta) ?? AGENT_EMPTY_OUTPUT_FALLBACK)
@@ -302,6 +327,8 @@ export const mapMessage = (
     runId: runIdFromMeta(backend.meta),
     sessionAgentId: sessionAgentIdFromMeta(backend.meta),
     sourceMessageId: sourceMessageIdFromMeta(backend.meta),
+    i18nKey: i18n?.key,
+    i18nParams: i18n?.params,
     workflowCard: workflowCardType
       ? {
           messageId: backend.id,
@@ -329,10 +356,10 @@ const sessionAgentStateToMemberStatus = (
 ): Member['status'] => {
   switch (state) {
     case 'running':
+    case 'stopping':
       return 'run';
     case 'idle':
       return 'on';
-    case 'stopping':
     case 'waitingapproval':
     case 'dead':
     case undefined:

@@ -11,6 +11,8 @@
   "agent.stop": "Arrêter l’agent",
   "agent.stopFailed": "Impossible d’arrêter l’agent",
   "agent.stopRequested": "Arrêt de l’agent demandé",
+  "agent.runFailed": "L’exécution de l’agent a échoué",
+  "agent.stopped": "L’agent a été arrêté",
   "agentOpenState": "Liste d'agents filtrable",
   "agentSearchPlaceholder": "Rechercher un membre d'équipe...",
   "agentTriggerLabel": "Déclencheur d'attribution ciblé",

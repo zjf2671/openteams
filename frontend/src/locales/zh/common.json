@@ -11,6 +11,8 @@
   "agent.stop": "停止执行",
   "agent.stopFailed": "停止 Agent 失败",
   "agent.stopRequested": "已请求停止 Agent",
+  "agent.runFailed": "Agent运行失败",
+  "agent.stopped": "Agent停止运行",
   "agentOpenState": "过滤成员列表 (可搜索)",
   "agentSearchPlaceholder": "键入过滤你想邀请的团队成员...",
   "agentTriggerLabel": "分配栏激活状态 (获焦模式)",
