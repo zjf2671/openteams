@@ -143,12 +143,27 @@ const runningSessionHtml = renderToStaticMarkup(
     onProjectAction={() => undefined}
   />,
 );
+const workflowRunningSessionHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    sessions={[
+      { ...mockWorkspaceBootstrap.sessions[0], hasRunningWorkflow: true },
+    ]}
+    activeSessionId={mockWorkspaceBootstrap.sessions[0].id}
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
 const runningOrderedHtml = renderToStaticMarkup(
   <ProjectSidebar
     shellOptions={mockShellOptions}
     sessions={mockWorkspaceBootstrap.sessions.map((session) => ({
       ...session,
-      hasRunningAgent: session.id === "sess-8",
+      hasRunningWorkflow: session.id === "sess-8",
     }))}
     activeSessionId={mockWorkspaceBootstrap.defaults.activeSessionId}
     activePage="workspace"
@@ -226,7 +241,13 @@ check(
   runningSessionHtml,
 );
 check(
-  "moves running sessions to the top of the collapsed session group",
+  "renders running workflow sessions with activity icon",
+  workflowRunningSessionHtml.includes("animate-spin") &&
+    workflowRunningSessionHtml.includes("agent running"),
+  workflowRunningSessionHtml,
+);
+check(
+  "moves running workflow sessions to the top of the collapsed session group",
   runningOrderedHtml.indexOf("Billing copy polish") >= 0 &&
     runningOrderedHtml.indexOf("Billing copy polish") <
       runningOrderedHtml.indexOf("Fix login flicker") &&

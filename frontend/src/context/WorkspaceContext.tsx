@@ -184,6 +184,11 @@ type ChatStreamEvent =
       created_at: string;
     }
   | {
+      type: 'workflow_execution_updated';
+      session_id: string;
+      execution_id: string;
+    }
+  | {
       type: 'file_change_refresh';
       session_id: string;
       session_agent_id: string;
@@ -255,23 +260,33 @@ const hasRunningSessionAgent = (
     isRunningSessionAgentState(sessionAgent.state),
   );
 
-const loadSessionIdsWithRunningAgents = async (
+type SessionRunningIndicators = {
+  hasRunningAgent: boolean;
+  hasRunningWorkflow: boolean;
+};
+
+const loadSessionRunningIndicators = async (
   sessionIds: string[],
-): Promise<Set<string>> => {
+): Promise<Map<string, SessionRunningIndicators>> => {
   const entries = await Promise.all(
     sessionIds.map(async (sessionId) => {
-      const sessionAgents = await sessionAgentsApi
-        .list(sessionId)
-        .catch(() => []);
-      return [sessionId, hasRunningSessionAgent(sessionAgents)] as const;
+      const [sessionAgents, workflowStatus] = await Promise.all([
+        sessionAgentsApi.list(sessionId).catch(() => []),
+        workflowApi
+          .getSessionStatus(sessionId)
+          .catch(() => ({ has_running_workflow: false })),
+      ]);
+      return [
+        sessionId,
+        {
+          hasRunningAgent: hasRunningSessionAgent(sessionAgents),
+          hasRunningWorkflow: workflowStatus.has_running_workflow,
+        },
+      ] as const;
     }),
   );
 
-  return new Set(
-    entries
-      .filter(([, sessionHasRunningAgent]) => sessionHasRunningAgent)
-      .map(([sessionId]) => sessionId),
-  );
+  return new Map(entries);
 };
 
 const isOptimisticUserMessage = (message: Message): boolean =>
@@ -1082,6 +1097,12 @@ interface WorkspaceContextProps {
   // Async-status surface appended to the preserved legacy context shape.
   sessionsAsync: AsyncResourceState<Session[]>;
   refreshSessions: () => Promise<void>;
+  archivedSessionsAsync: AsyncResourceState<Session[]>;
+  refreshArchivedSessions: () => Promise<void>;
+  renameSession: (sessionId: string, title: string) => Promise<void>;
+  archiveSession: (sessionId: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
+  restoreSession: (sessionId: string) => Promise<void>;
   messagesAsync: AsyncResourceState<Message[]>;
   refreshMessages: () => Promise<void>;
   /**
@@ -1173,6 +1194,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   // the UI renders before the first API response arrives (or if the backend
   // is unreachable / has a contract gap).
   const [sessionsAsync, setSessionsAsync] = useState<
+    AsyncResourceState<Session[]>
+  >(() => initialAsync([]));
+  const [archivedSessionsAsync, setArchivedSessionsAsync] = useState<
     AsyncResourceState<Session[]>
   >(() => initialAsync([]));
   const [projectsAsync, setProjectsAsync] = useState<
@@ -1491,6 +1515,26 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     [],
   );
+  const setSessionWorkflowRunningIndicator = useCallback(
+    (sessionId: string, hasRunningWorkflow: boolean) => {
+      if (!sessionId) return;
+      setSessionsAsync((prev) => {
+        let changed = false;
+        const data = prev.data.map((session) => {
+          if (
+            session.id !== sessionId ||
+            session.hasRunningWorkflow === hasRunningWorkflow
+          ) {
+            return session;
+          }
+          changed = true;
+          return { ...session, hasRunningWorkflow };
+        });
+        return changed ? { ...prev, data } : prev;
+      });
+    },
+    [],
+  );
 
   const clearSessionScopedState = useCallback(() => {
     activeSessionIdRef.current = '';
@@ -1520,6 +1564,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (previousProjectId !== id) {
         setSessionsAsync(succeed([]));
+        setArchivedSessionsAsync(succeed([]));
         clearSessionScopedState();
       }
     },
@@ -1634,6 +1679,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       toastDurationMsRef.current = bootstrap.defaults.toastDurationMs;
       setTasks(bootstrap.tasks);
       setSessionsAsync(initialAsync([]));
+      setArchivedSessionsAsync(initialAsync([]));
       setAllMessages(messagesBySession);
       clearSessionScopedState();
       setMembersAsync(initialAsync(bootstrap.members));
@@ -1700,7 +1746,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       const backend = await projectApi.listSessions(projectId);
       if (selectedProjectIdRef.current !== projectId) return;
-      const runningSessionIds = await loadSessionIdsWithRunningAgents(
+      const runningIndicators = await loadSessionRunningIndicators(
         backend.map((session) => session.id),
       );
       if (selectedProjectIdRef.current !== projectId) return;
@@ -1728,10 +1774,14 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         ? currentActiveSessionId
         : (backend[0]?.id ?? '');
       const mapped = mapSessions(backend, nextActiveSessionId).map(
-        (session) => ({
-          ...session,
-          hasRunningAgent: runningSessionIds.has(session.id),
-        }),
+        (session) => {
+          const indicators = runningIndicators.get(session.id);
+          return {
+            ...session,
+            hasRunningAgent: indicators?.hasRunningAgent ?? false,
+            hasRunningWorkflow: indicators?.hasRunningWorkflow ?? false,
+          };
+        },
       );
       setSessionsAsync(succeed(mapped));
 
@@ -2165,6 +2215,22 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     },
     [],
+  );
+
+  const refreshSessionWorkflowRunningIndicator = useCallback(
+    async (sessionId: string): Promise<void> => {
+      if (!sessionId) return;
+      try {
+        const status = await workflowApi.getSessionStatus(sessionId);
+        setSessionWorkflowRunningIndicator(
+          sessionId,
+          status.has_running_workflow,
+        );
+      } catch {
+        // Sidebar status is best-effort; card/message refresh remains primary.
+      }
+    },
+    [setSessionWorkflowRunningIndicator],
   );
 
   const resetWorkspaceChanges = useCallback(() => {
@@ -2729,7 +2795,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         parsed.type === 'workflow_runtime_line' &&
         parsed.session_id === sid
       ) {
+        setSessionWorkflowRunningIndicator(sid, true);
         handleWorkflowRuntimeLine(parsed);
+        return;
+      }
+
+      if (
+        parsed.type === 'workflow_execution_updated' &&
+        parsed.session_id === sid
+      ) {
+        void refreshSessionWorkflowRunningIndicator(sid);
         return;
       }
 
@@ -2893,9 +2968,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     rememberDeferredQueuedUserMessage,
     refreshMessages,
     refreshMemberQueues,
+    refreshSessionWorkflowRunningIndicator,
     refreshWorkspaceChanges,
     refreshMembers,
     setSessionRunningIndicator,
+    setSessionWorkflowRunningIndicator,
     sessionsAsync.source,
     upsertStreamedMessage,
   ]);
@@ -3327,10 +3404,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       workflowApi
         .generatePlanAndRun(sid, title)
         .then((res) => {
+          setSessionWorkflowRunningIndicator(sid, true);
           void refreshWorkflowCard(res.workflow_card_message.id);
           void refreshMessages();
         })
         .catch(() => {
+          void refreshSessionWorkflowRunningIndicator(sid);
           // Silent: mock state remains in place.
         });
     }

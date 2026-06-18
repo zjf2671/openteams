@@ -123,9 +123,12 @@ const sidebarItemClass =
 const visibleSessionLimit = 6;
 const blankTeamId = "blank_team";
 
+const hasRunningSessionActivity = (session: Session): boolean =>
+  Boolean(session.hasRunningAgent || session.hasRunningWorkflow);
+
 const prioritizeRunningSessions = (sessions: Session[]): Session[] => [
-  ...sessions.filter((session) => session.hasRunningAgent),
-  ...sessions.filter((session) => !session.hasRunningAgent),
+  ...sessions.filter(hasRunningSessionActivity),
+  ...sessions.filter((session) => !hasRunningSessionActivity(session)),
 ];
 
 const blankTeamOptions: DropdownSelectOption[] = [
@@ -1481,10 +1484,9 @@ export function ProjectSidebar({
                   const active =
                     activePage === "workspace" &&
                     session.id === activeSessionId;
-                  const SessionIcon = session.hasRunningAgent
-                    ? LoaderCircle
-                    : Box;
-                  const sessionLabel = session.hasRunningAgent
+                  const isRunning = hasRunningSessionActivity(session);
+                  const SessionIcon = isRunning ? LoaderCircle : Box;
+                  const sessionLabel = isRunning
                     ? `${session.title} - ${translate(
                         "sidebar.sessionRunning",
                         "agent running",
@@ -1505,7 +1507,7 @@ export function ProjectSidebar({
                     >
                       <SessionIcon
                         className={`h-3.5 w-3.5 shrink-0 ${
-                          session.hasRunningAgent
+                          isRunning
                             ? "animate-spin text-[var(--primary)]"
                             : active
                             ? "text-[var(--primary)]"
