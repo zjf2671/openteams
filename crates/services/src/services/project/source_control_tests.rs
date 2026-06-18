@@ -292,6 +292,35 @@ async fn git_workspace_separates_unstaged_and_staged_files() {
 }
 
 #[tokio::test]
+async fn invalidating_session_caches_exposes_agent_file_changes() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let session_id =
+        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    let service = SourceControlService::new();
+
+    let initial = service
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("initial status");
+    let (changes, staged) = git_status_paths(&initial);
+    assert!(changes.is_empty());
+    assert!(staged.is_empty());
+
+    fs::write(repo_path.join("tracked.txt"), "updated by agent\n").expect("modify tracked");
+    SourceControlService::invalidate_session_caches(session_id);
+
+    let refreshed = service
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("refreshed status");
+    let (changes, staged) = git_status_paths(&refreshed);
+    assert_eq!(changes, vec!["tracked.txt"]);
+    assert!(staged.is_empty());
+}
+
+#[tokio::test]
 async fn git_workspace_reports_external_staged_paths() {
     let pool = setup_pool().await;
     let (_tempdir, repo_path) = setup_git_workspace();

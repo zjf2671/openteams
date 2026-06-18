@@ -1937,7 +1937,7 @@ mod tests {
         assert_eq!(updated_member.role.as_deref(), Some("reviewer"));
         assert_eq!(
             updated_member.member_name.as_deref(),
-            Some("Project Reviewer")
+            Some("ProjectReviewer")
         );
         assert!(!updated_member.is_default);
 

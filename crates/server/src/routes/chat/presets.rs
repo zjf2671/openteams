@@ -14,7 +14,7 @@ use services::services::{
 };
 use sqlx::{FromRow, types::Json as SqlxJson};
 use ts_rs::TS;
-use utils::{assets::config_path, response::ApiResponse};
+use utils::{assets::config_path, response::ApiResponse, text::sanitize_member_handle};
 use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError};
@@ -391,7 +391,7 @@ fn model_from_coding_agent(coding_agent: &CodingAgent) -> Option<String> {
 }
 
 fn normalize_member_name(value: &str) -> String {
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join("_");
+    let normalized = sanitize_member_handle(value);
     if normalized.is_empty() {
         "member".to_string()
     } else {
@@ -637,11 +637,11 @@ mod tests {
                 .iter()
                 .map(|member| member.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Backend_Engineer", "backend_engineer_2"]
+            vec!["BackendEngineer", "backendengineer_2"]
         );
         assert_eq!(
             response.team.member_ids,
-            vec!["delivery_backend_engineer", "delivery_backend_engineer_2"]
+            vec!["delivery_backendengineer", "delivery_backendengineer_2"]
         );
 
         let imported_names = response

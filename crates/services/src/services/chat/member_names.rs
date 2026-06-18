@@ -1,14 +1,16 @@
 pub fn normalized_member_name(value: Option<&str>) -> Option<String> {
-    let trimmed = value?.trim();
-    if trimmed.is_empty() {
+    let normalized = utils::text::sanitize_member_handle(value?);
+    if normalized.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(normalized)
     }
 }
 
 pub fn effective_agent_name(agent: &ChatAgent, member_name: Option<&str>) -> String {
-    normalized_member_name(member_name).unwrap_or_else(|| agent.name.clone())
+    normalized_member_name(member_name)
+        .or_else(|| normalized_member_name(Some(&agent.name)))
+        .unwrap_or_else(|| agent.name.clone())
 }
 
 pub fn apply_effective_agent_name(agent: &mut ChatAgent, member_names: &HashMap<Uuid, String>) {

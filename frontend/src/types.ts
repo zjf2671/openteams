@@ -49,6 +49,7 @@ export interface Session {
   title: string;
   icon: string;
   active: boolean;
+  hasRunningAgent?: boolean;
 }
 
 export interface ArtifactItem {

@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqlitePool};
 use ts_rs::TS;
+use utils::text::sanitize_member_handle;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
@@ -37,6 +38,15 @@ pub struct UpdateChatAgent {
     pub system_prompt: Option<String>,
     pub tools_enabled: Option<serde_json::Value>,
     pub model_name: Option<String>,
+}
+
+fn normalize_agent_name(name: &str) -> String {
+    let normalized = sanitize_member_handle(name);
+    if normalized.is_empty() {
+        "agent".to_string()
+    } else {
+        normalized
+    }
 }
 
 impl ChatAgent {
@@ -137,6 +147,7 @@ impl ChatAgent {
         data: &CreateChatAgent,
         id: Uuid,
     ) -> Result<Self, sqlx::Error> {
+        let name = normalize_agent_name(&data.name);
         let system_prompt = data.system_prompt.clone().unwrap_or_default();
         let tools_enabled = data
             .tools_enabled
@@ -168,7 +179,7 @@ impl ChatAgent {
                              updated_at"#,
             )
             .bind(id)
-            .bind(data.name.clone())
+            .bind(name.clone())
             .bind(data.runner_type.clone())
             .bind(system_prompt)
             .bind(tools_enabled_json)
@@ -192,7 +203,7 @@ impl ChatAgent {
                          updated_at"#,
         )
         .bind(id)
-        .bind(data.name.clone())
+        .bind(name)
         .bind(data.runner_type.clone())
         .bind(system_prompt)
         .bind(tools_enabled_json)
@@ -210,7 +221,7 @@ impl ChatAgent {
             .await?
             .ok_or(sqlx::Error::RowNotFound)?;
 
-        let name = data.name.clone().unwrap_or(existing.name);
+        let name = normalize_agent_name(data.name.as_deref().unwrap_or(&existing.name));
         let runner_type = data.runner_type.clone().unwrap_or(existing.runner_type);
         let system_prompt = data.system_prompt.clone().unwrap_or(existing.system_prompt);
         let tools_enabled = data
@@ -332,6 +343,42 @@ mod tests {
         )
         .await
         .expect("create chat agent")
+    }
+
+    #[tokio::test]
+    async fn create_and_update_strip_spaces_from_agent_names() {
+        let pool = setup_pool().await;
+
+        let agent = ChatAgent::create(
+            &pool,
+            &CreateChatAgent {
+                name: " @Codex Agent ".to_string(),
+                runner_type: "codex".to_string(),
+                system_prompt: None,
+                tools_enabled: None,
+                model_name: None,
+                owner_project_id: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create chat agent");
+        assert_eq!(agent.name, "CodexAgent");
+
+        let updated = ChatAgent::update(
+            &pool,
+            agent.id,
+            &super::UpdateChatAgent {
+                name: Some(" Project & Reviewer ".to_string()),
+                runner_type: None,
+                system_prompt: None,
+                tools_enabled: None,
+                model_name: None,
+            },
+        )
+        .await
+        .expect("update chat agent");
+        assert_eq!(updated.name, "ProjectReviewer");
     }
 
     #[tokio::test]

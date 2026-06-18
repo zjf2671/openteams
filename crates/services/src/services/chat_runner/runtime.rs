@@ -3,6 +3,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+use crate::services::project::source_control::SourceControlService;
+
 use super::{super::workflow_analytics, *};
 
 pub(super) struct ExitWatcherArgs {
@@ -2183,6 +2185,10 @@ impl ChatRunner {
                         // Agent has finished processing this message and all run
                         // records are persisted; signal the frontend exactly once
                         // to refresh its view of workspace file changes.
+                        SourceControlService::invalidate_workspace_caches(
+                            workspace_path.to_string_lossy().as_ref(),
+                        );
+                        SourceControlService::invalidate_session_caches(session_id);
                         let changed_files =
                             Self::file_change_entries_from_observed(&workspace_observed_paths);
                         tracing::debug!(
