@@ -736,6 +736,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     refreshSessions,
     messagesAsync,
     refreshMessages,
+    markSessionAgentStopped,
     membersAsync,
     refreshMembers,
     chatMessageFontSize,
@@ -1560,6 +1561,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     runId?: string,
   ) => {
     if (isStopPendingForMessage(sessionAgentId, runId)) return;
+    markSessionAgentStopped(sessionAgentId);
 
     setStoppingSessionAgentIds((current) => {
       return {
@@ -1579,6 +1581,8 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
         delete next[sessionAgentId];
         return next;
       });
+      void refreshMessages();
+      void refreshMembers();
       showToast(t("agent.stopFailed"));
     }
   };
