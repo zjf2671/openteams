@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ChevronRight, ShieldCheck, Star, Trash2, X } from "lucide-react";
+import { ChevronRight, ShieldCheck, Trash2, X } from "lucide-react";
 import type { DropdownSelectOption } from "@/components/DropdownSelect";
 import { ProjectBreadcrumbAvatar } from "@/components/ProjectBreadcrumbAvatar";
 import { useWorkspace } from "@/context/WorkspaceContext";
@@ -131,13 +131,6 @@ function TeamHeader({
         <h1 className="truncate text-[16px] font-semibold leading-none text-[var(--ink)]">
           {t("page.team")}
         </h1>
-        <button
-          type="button"
-          className="ml-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
-          aria-label="Favorite team page"
-        >
-          <Star aria-hidden="true" className="h-[15px] w-[15px]" />
-        </button>
       </nav>
 
       <div className="flex min-w-0 items-center">{actions}</div>
