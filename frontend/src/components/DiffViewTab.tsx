@@ -10,6 +10,7 @@ import type {
 } from "@/types";
 
 interface DiffViewTabProps {
+  sessionId?: string;
   filePath?: string;
   status?: string;
   unifiedDiff?: string;
@@ -155,6 +156,7 @@ const SplitLineRow: React.FC<{
 };
 
 export const DiffViewTab: React.FC<DiffViewTabProps> = ({
+  sessionId,
   filePath,
   status,
   unifiedDiff,
@@ -239,7 +241,11 @@ export const DiffViewTab: React.FC<DiffViewTabProps> = ({
     if (!effectiveFilePath) return;
     setOpenExplorerError(null);
     void filesystemApi
-      .openInExplorer(effectiveFilePath, workspacePath)
+      .openInExplorer(
+        effectiveFilePath,
+        workspacePath,
+        sourceSessionId ?? sessionId,
+      )
       .then((response) => {
         if (!response.ok) {
           setOpenExplorerError(response.error ?? "Failed to open in Explorer");
@@ -250,7 +256,7 @@ export const DiffViewTab: React.FC<DiffViewTabProps> = ({
           error instanceof Error ? error.message : "Failed to open in Explorer",
         );
       });
-  }, [effectiveFilePath, workspacePath]);
+  }, [effectiveFilePath, sessionId, sourceSessionId, workspacePath]);
 
   const openExplorerButton = effectiveFilePath ? (
     <button

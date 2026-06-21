@@ -1866,7 +1866,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   const openArtifactInExplorer = useCallback(
     (path: string) => {
       void filesystemApi
-        .openInExplorer(path, currentWorkspacePath)
+        .openInExplorer(path, currentWorkspacePath, activeSessionId)
         .then((response) => {
           if (!response.ok) {
             showToast(response.error ?? "Failed to open in Explorer");
@@ -1880,7 +1880,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
           );
         });
     },
-    [currentWorkspacePath, showToast],
+    [activeSessionId, currentWorkspacePath, showToast],
   );
 
   // Open an artifact file from an agent message. Files without run diff data

@@ -707,6 +707,7 @@ function WorkspaceLayout() {
       )?.default_workspace_path ?? undefined;
       return (
         <DiffViewTab
+          sessionId={activeTab.sessionId}
           filePath={activeTab.filePath}
           status={activeTab.status}
           unifiedDiff={activeTab.unified_diff}
