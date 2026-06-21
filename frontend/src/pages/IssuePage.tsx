@@ -10,9 +10,9 @@ import {
   Github,
   Link2,
   ListFilter,
-  MoreHorizontal,
   Plus,
   RefreshCw,
+  Search,
   SlidersHorizontal,
   X,
   type LucideIcon,
@@ -74,6 +74,7 @@ import type {
   ProjectIssueIntegrationsResponse,
   ProjectRepoIntegration,
   ProjectWorkItem,
+  ProjectWorkItemPriority,
   ProjectWorkItemStatus,
 } from '@/types';
 
@@ -118,6 +119,14 @@ type IssueGroup = {
 };
 
 type IssueFilter = 'all' | 'active' | 'backlog';
+
+type IssueRowPropertyMenu = 'status' | 'priority' | null;
+
+type IssueRowMenuOption<TValue extends string> = {
+  value: TValue;
+  label: string;
+  shortcut: string;
+};
 
 type RemoteProviderId = 'github' | 'linear' | 'jira';
 
@@ -195,6 +204,94 @@ const issueGroupHeaderBgClass: Record<IssueGroup['id'], string> = {
   duplicate: 'bg-[var(--issue-section-duplicate-bg)]',
 };
 
+const issueRowStatusMenuValues: Array<{
+  value: ProjectWorkItemStatus;
+  shortcut: string;
+  key: string;
+  fallback: string;
+}> = [
+  {
+    value: 'blocked',
+    shortcut: '1',
+    key: 'issue.status.backlog',
+    fallback: 'Backlog',
+  },
+  {
+    value: 'open',
+    shortcut: '2',
+    key: 'issue.status.todo',
+    fallback: 'Todo',
+  },
+  {
+    value: 'in_progress',
+    shortcut: '3',
+    key: 'issue.status.in_progress',
+    fallback: 'In Progress',
+  },
+  {
+    value: 'ready_to_merge',
+    shortcut: '4',
+    key: 'issue.status.ready_to_merge',
+    fallback: 'Ready to Merge',
+  },
+  {
+    value: 'merging',
+    shortcut: '5',
+    key: 'issue.status.merging',
+    fallback: 'Merging',
+  },
+  {
+    value: 'done',
+    shortcut: '6',
+    key: 'issue.status.done',
+    fallback: 'Done',
+  },
+  {
+    value: 'cancelled',
+    shortcut: '7',
+    key: 'issue.status.cancelled',
+    fallback: 'Canceled',
+  },
+  {
+    value: 'duplicate',
+    shortcut: '8',
+    key: 'issue.status.duplicate',
+    fallback: 'Duplicate',
+  },
+];
+
+const issueRowPriorityMenuValues: Array<{
+  value: ProjectWorkItemPriority;
+  shortcut: string;
+  key: string;
+  fallback: string;
+}> = [
+  {
+    value: 'urgent',
+    shortcut: '4',
+    key: 'issue.priority.urgent',
+    fallback: 'Urgent',
+  },
+  {
+    value: 'high',
+    shortcut: '3',
+    key: 'issue.priority.high',
+    fallback: 'High',
+  },
+  {
+    value: 'medium',
+    shortcut: '2',
+    key: 'issue.priority.medium',
+    fallback: 'Medium',
+  },
+  {
+    value: 'low',
+    shortcut: '1',
+    key: 'issue.priority.low',
+    fallback: 'Low',
+  },
+];
+
 export const projectWorkItemToIssueItem = (
   item: ProjectWorkItem,
   projectName: string | null | undefined,
@@ -271,6 +368,57 @@ const issueGroupInitialWorkItemStatus = (
   if (groupId === 'todo') return 'open';
   if (groupId === 'backlog') return 'blocked';
   return groupId;
+};
+
+const buildIssueRowStatusOptions = (
+  tr: IssueTranslator,
+): Array<IssueRowMenuOption<ProjectWorkItemStatus>> =>
+  issueRowStatusMenuValues.map((entry) => ({
+    value: entry.value,
+    label: tr(entry.key, entry.fallback),
+    shortcut: entry.shortcut,
+  }));
+
+const buildIssueRowPriorityOptions = (
+  tr: IssueTranslator,
+): Array<IssueRowMenuOption<ProjectWorkItemPriority>> =>
+  issueRowPriorityMenuValues.map((entry) => ({
+    value: entry.value,
+    label: tr(entry.key, entry.fallback),
+    shortcut: entry.shortcut,
+  }));
+
+const issueRowStatusLabel = (
+  status: ProjectWorkItemStatus,
+  tr: IssueTranslator,
+) => {
+  const entry = issueRowStatusMenuValues.find(
+    (candidate) => candidate.value === status,
+  );
+  return entry ? tr(entry.key, entry.fallback) : titleCaseToken(status);
+};
+
+const issueRowPriorityLabel = (
+  priority: ProjectWorkItemPriority,
+  tr: IssueTranslator,
+) => {
+  const entry = issueRowPriorityMenuValues.find(
+    (candidate) => candidate.value === priority,
+  );
+  return entry ? tr(entry.key, entry.fallback) : titleCaseToken(priority);
+};
+
+const filterIssueRowMenuOptions = <TValue extends string>(
+  options: Array<IssueRowMenuOption<TValue>>,
+  query: string,
+) => {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return options;
+  return options.filter(
+    (option) =>
+      option.label.toLowerCase().includes(normalized) ||
+      option.value.toLowerCase().includes(normalized),
+  );
 };
 
 export const projectIssueIdPrefix = (projectName?: string | null) => {
@@ -620,6 +768,14 @@ export function IssuePage() {
   const projectIssueLabels = useMemo(
     () => collectProjectIssueLabels(workItems, issueRowOverrides),
     [issueRowOverrides, workItems],
+  );
+  const issueRowStatusOptions = useMemo(
+    () => buildIssueRowStatusOptions(tr),
+    [tr],
+  );
+  const issueRowPriorityOptions = useMemo(
+    () => buildIssueRowPriorityOptions(tr),
+    [tr],
   );
   const visibleIssueCount = visibleGroups.reduce(
     (total, group) => total + group.items.length,
@@ -1019,6 +1175,77 @@ export function IssuePage() {
   const handleAction = (message: string) => {
     setInteractionMessage(message);
   };
+
+  const handleIssueRowStatusChange = useCallback(
+    async (issue: IssueItem, status: ProjectWorkItemStatus) => {
+      if (status === issue.workItem.status) return;
+      if (!selectedProjectId) {
+        setInteractionMessage(
+          tr(
+            'issue.error.selectProject',
+            'Select a project before creating an issue.',
+          ),
+        );
+        return;
+      }
+
+      try {
+        const updated = await projectWorkItemsApi.update(
+          selectedProjectId,
+          issue.workItemId,
+          { status },
+        );
+        mergeWorkItem(updated, setWorkItems);
+        mergeIssueRowOverride({ workItem: updated }, setIssueRowOverrides);
+        notifyBuildStatsUsageUpdated(selectedProjectId);
+        setInteractionMessage(
+          tr(
+            'issue.detail.action.statusUpdated',
+            'Issue status updated to {status}',
+            { status: issueRowStatusLabel(status, tr) },
+          ),
+        );
+      } catch (error) {
+        setInteractionMessage(errorMessage(error));
+      }
+    },
+    [selectedProjectId, tr],
+  );
+
+  const handleIssueRowPriorityChange = useCallback(
+    async (issue: IssueItem, priority: ProjectWorkItemPriority) => {
+      if (priority === issue.workItem.priority) return;
+      if (!selectedProjectId) {
+        setInteractionMessage(
+          tr(
+            'issue.error.selectProject',
+            'Select a project before creating an issue.',
+          ),
+        );
+        return;
+      }
+
+      try {
+        const updated = await projectWorkItemsApi.update(
+          selectedProjectId,
+          issue.workItemId,
+          { priority },
+        );
+        mergeWorkItem(updated, setWorkItems);
+        mergeIssueRowOverride({ workItem: updated }, setIssueRowOverrides);
+        setInteractionMessage(
+          tr(
+            'issue.detail.action.priorityUpdated',
+            'Priority updated to {priority}',
+            { priority: issueRowPriorityLabel(priority, tr) },
+          ),
+        );
+      } catch (error) {
+        setInteractionMessage(errorMessage(error));
+      }
+    },
+    [selectedProjectId, tr],
+  );
 
   const handleIssueDetailSync = useCallback(
     (snapshot: IssueDetailSyncSnapshot) => {
@@ -1568,7 +1795,10 @@ export function IssuePage() {
                         issueGroupInitialWorkItemStatus(group.id),
                       )
                     }
-                    onAction={handleAction}
+                    statusOptions={issueRowStatusOptions}
+                    priorityOptions={issueRowPriorityOptions}
+                    onStatusChange={handleIssueRowStatusChange}
+                    onPriorityChange={handleIssueRowPriorityChange}
                     tr={tr}
                   />
                 ))}
@@ -2754,7 +2984,10 @@ function IssueSection({
   onToggle,
   onIssueSelect,
   onCreateIssue,
-  onAction,
+  statusOptions,
+  priorityOptions,
+  onStatusChange,
+  onPriorityChange,
   tr,
 }: {
   group: IssueGroup;
@@ -2763,7 +2996,16 @@ function IssueSection({
   onToggle: () => void;
   onIssueSelect: (issue: IssueItem) => void;
   onCreateIssue: () => void;
-  onAction: (message: string) => void;
+  statusOptions: Array<IssueRowMenuOption<ProjectWorkItemStatus>>;
+  priorityOptions: Array<IssueRowMenuOption<ProjectWorkItemPriority>>;
+  onStatusChange: (
+    issue: IssueItem,
+    status: ProjectWorkItemStatus,
+  ) => Promise<void>;
+  onPriorityChange: (
+    issue: IssueItem,
+    priority: ProjectWorkItemPriority,
+  ) => Promise<void>;
   tr: IssueTranslator;
 }) {
   const groupTitle = tr(
@@ -2828,7 +3070,10 @@ function IssueSection({
               issue={issue}
               selected={selectedIssueId === issue.id}
               onSelect={() => onIssueSelect(issue)}
-              onAction={onAction}
+              statusOptions={statusOptions}
+              priorityOptions={priorityOptions}
+              onStatusChange={onStatusChange}
+              onPriorityChange={onPriorityChange}
               tr={tr}
             />
           ))}
@@ -2841,17 +3086,102 @@ function IssueRow({
   issue,
   selected,
   onSelect,
-  onAction,
+  statusOptions,
+  priorityOptions,
+  onStatusChange,
+  onPriorityChange,
   tr,
 }: {
   issue: IssueItem;
   selected: boolean;
   onSelect: () => void;
-  onAction: (message: string) => void;
+  statusOptions: Array<IssueRowMenuOption<ProjectWorkItemStatus>>;
+  priorityOptions: Array<IssueRowMenuOption<ProjectWorkItemPriority>>;
+  onStatusChange: (
+    issue: IssueItem,
+    status: ProjectWorkItemStatus,
+  ) => Promise<void>;
+  onPriorityChange: (
+    issue: IssueItem,
+    priority: ProjectWorkItemPriority,
+  ) => Promise<void>;
   tr: IssueTranslator;
 }) {
+  const rowRef = useRef<HTMLElement | null>(null);
+  const [openPropertyMenu, setOpenPropertyMenu] =
+    useState<IssueRowPropertyMenu>(null);
+  const [statusQuery, setStatusQuery] = useState('');
+  const [priorityQuery, setPriorityQuery] = useState('');
+  const [pendingProperty, setPendingProperty] =
+    useState<IssueRowPropertyMenu>(null);
+  const filteredStatusOptions = filterIssueRowMenuOptions(
+    statusOptions,
+    statusQuery,
+  );
+  const filteredPriorityOptions = filterIssueRowMenuOptions(
+    priorityOptions,
+    priorityQuery,
+  );
+
+  useEffect(() => {
+    if (!openPropertyMenu) return;
+
+    const closeMenu = () => {
+      setOpenPropertyMenu(null);
+      setStatusQuery('');
+      setPriorityQuery('');
+    };
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Node && rowRef.current?.contains(target)) return;
+      closeMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMenu();
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [openPropertyMenu]);
+
+  const handleOpenChange = (menu: Exclude<IssueRowPropertyMenu, null>) => {
+    const nextMenu = openPropertyMenu === menu ? null : menu;
+    setOpenPropertyMenu(nextMenu);
+    if (nextMenu !== 'status') setStatusQuery('');
+    if (nextMenu !== 'priority') setPriorityQuery('');
+  };
+
+  const handleStatusSelect = async (status: ProjectWorkItemStatus) => {
+    setOpenPropertyMenu(null);
+    setStatusQuery('');
+    if (status === issue.workItem.status) return;
+    setPendingProperty('status');
+    try {
+      await onStatusChange(issue, status);
+    } finally {
+      setPendingProperty(null);
+    }
+  };
+
+  const handlePrioritySelect = async (priority: ProjectWorkItemPriority) => {
+    setOpenPropertyMenu(null);
+    setPriorityQuery('');
+    if (priority === issue.workItem.priority) return;
+    setPendingProperty('priority');
+    try {
+      await onPriorityChange(issue, priority);
+    } finally {
+      setPendingProperty(null);
+    }
+  };
+
   return (
     <article
+      ref={rowRef}
       role="button"
       tabIndex={0}
       aria-selected={selected}
@@ -2863,35 +3193,19 @@ function IssueRow({
         }
       }}
       className={cn(
-        'group grid min-h-[48px] grid-cols-[32px_20px_70px_25px_minmax(0,1fr)_48px_62px] items-center gap-x-1 px-9 text-[var(--ink)] transition hover:bg-[var(--issue-row-hover-bg)]',
+        'group grid min-h-[48px] grid-cols-[20px_70px_25px_minmax(0,1fr)_48px_62px] items-center gap-x-1 px-9 text-[var(--ink)] transition hover:bg-[var(--issue-row-hover-bg)]',
         selected && 'bg-[var(--issue-row-selected-bg)]',
       )}
     >
-      <button
-        type="button"
-        className="flex h-5 w-5 items-center justify-center rounded-full text-[var(--ink-tertiary)] opacity-90 transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
-        aria-label={tr('issue.row.openActions', 'Open actions for {id}', {
-          id: issue.id,
-        })}
-        onClick={(event) => {
-          event.stopPropagation();
-          onAction(
-            tr('issue.row.actionsOpened', 'Actions opened for {id}', {
-              id: issue.id,
-            }),
-          );
-        }}
-      >
-        <MoreHorizontal
-          aria-hidden="true"
-          className="h-[17px] w-[17px]"
-          strokeWidth={2.2}
-        />
-      </button>
-
-      <PriorityMenuIcon
-        priority={issue.workItem.priority}
-        selected={issue.workItem.priority === 'urgent'}
+      <IssueRowPriorityDropdown
+        disabled={pendingProperty !== null}
+        open={openPropertyMenu === 'priority'}
+        options={filteredPriorityOptions}
+        tr={tr}
+        value={issue.workItem.priority}
+        onOpenChange={() => handleOpenChange('priority')}
+        onQueryChange={setPriorityQuery}
+        onSelect={(priority) => void handlePrioritySelect(priority)}
       />
 
       <IssueDisplayId
@@ -2903,7 +3217,16 @@ function IssueRow({
         }
       />
 
-      <StatusIcon status={issue.status} size="row" />
+      <IssueRowStatusDropdown
+        disabled={pendingProperty !== null}
+        open={openPropertyMenu === 'status'}
+        options={filteredStatusOptions}
+        tr={tr}
+        value={issue.workItem.status}
+        onOpenChange={() => handleOpenChange('status')}
+        onQueryChange={setStatusQuery}
+        onSelect={(status) => void handleStatusSelect(status)}
+      />
 
       <div className="flex min-w-0 items-center gap-2 pr-2">
         <h3
@@ -2945,6 +3268,220 @@ function IssueRow({
         {issue.date}
       </time>
     </article>
+  );
+}
+
+function IssueRowPriorityDropdown({
+  disabled,
+  open,
+  options,
+  tr,
+  value,
+  onOpenChange,
+  onQueryChange,
+  onSelect,
+}: {
+  disabled: boolean;
+  open: boolean;
+  options: Array<IssueRowMenuOption<ProjectWorkItemPriority>>;
+  tr: IssueTranslator;
+  value: ProjectWorkItemPriority;
+  onOpenChange: () => void;
+  onQueryChange: (query: string) => void;
+  onSelect: (priority: ProjectWorkItemPriority) => void;
+}) {
+  const label = issueRowPriorityLabel(value, tr);
+  return (
+    <div
+      className="relative flex h-5 w-5 items-center justify-center"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={tr('issue.detail.setPriority', 'Set priority to...')}
+        title={label}
+        className="flex h-5 w-5 items-center justify-center rounded-full text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={onOpenChange}
+      >
+        <PriorityMenuIcon priority={value} selected={value === 'urgent'} />
+      </button>
+
+      {open && (
+        <IssueRowPropertyMenu
+          emptyLabel={tr('issue.detail.noMatches', 'No matches')}
+          options={options}
+          searchPlaceholder={tr(
+            'issue.detail.setPriority',
+            'Set priority to...',
+          )}
+          searchShortcut="P"
+          selectedValue={value}
+          onQueryChange={onQueryChange}
+          onSelect={onSelect}
+          renderOptionIcon={(option) => (
+            <PriorityMenuIcon priority={option.value} />
+          )}
+        />
+      )}
+    </div>
+  );
+}
+
+function IssueRowStatusDropdown({
+  disabled,
+  open,
+  options,
+  tr,
+  value,
+  onOpenChange,
+  onQueryChange,
+  onSelect,
+}: {
+  disabled: boolean;
+  open: boolean;
+  options: Array<IssueRowMenuOption<ProjectWorkItemStatus>>;
+  tr: IssueTranslator;
+  value: ProjectWorkItemStatus;
+  onOpenChange: () => void;
+  onQueryChange: (query: string) => void;
+  onSelect: (status: ProjectWorkItemStatus) => void;
+}) {
+  const label = issueRowStatusLabel(value, tr);
+  return (
+    <div
+      className="relative flex h-6 w-6 items-center justify-center"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={tr('issue.detail.changeStatus', 'Change status...')}
+        title={label}
+        className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--ink-subtle)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={onOpenChange}
+      >
+        <StatusIcon status={projectWorkItemIssueStatus(value)} size="row" />
+      </button>
+
+      {open && (
+        <IssueRowPropertyMenu
+          emptyLabel={tr('issue.detail.noMatches', 'No matches')}
+          options={options}
+          searchPlaceholder={tr('issue.detail.changeStatus', 'Change status...')}
+          searchShortcut="S"
+          selectedValue={value}
+          onQueryChange={onQueryChange}
+          onSelect={onSelect}
+          renderOptionIcon={(option) => (
+            <StatusIcon
+              status={projectWorkItemIssueStatus(option.value)}
+              size="menu"
+            />
+          )}
+        />
+      )}
+    </div>
+  );
+}
+
+function IssueRowPropertyMenu<TValue extends string>({
+  emptyLabel,
+  options,
+  searchPlaceholder,
+  searchShortcut,
+  selectedValue,
+  onQueryChange,
+  onSelect,
+  renderOptionIcon,
+}: {
+  emptyLabel: string;
+  options: Array<IssueRowMenuOption<TValue>>;
+  searchPlaceholder: string;
+  searchShortcut: string;
+  selectedValue: TValue;
+  onQueryChange: (query: string) => void;
+  onSelect: (value: TValue) => void;
+  renderOptionIcon: (option: IssueRowMenuOption<TValue>) => ReactNode;
+}) {
+  return (
+    <div className="absolute left-0 top-full z-50 mt-2 w-[300px] max-w-[calc(100vw-32px)] overflow-hidden rounded-[16px] border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_16px_40px_rgba(0,0,0,0.18)]">
+      <div className="flex h-12 items-center gap-2.5 border-b border-[var(--hairline)] px-4">
+        <Search
+          aria-hidden="true"
+          className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]"
+        />
+        <input
+          autoFocus
+          className="min-w-0 flex-1 bg-transparent text-[13px] font-medium leading-none text-[var(--ink)] caret-[var(--primary)] outline-none placeholder:text-[var(--ink-tertiary)]"
+          placeholder={searchPlaceholder}
+          onChange={(event) => onQueryChange(event.target.value)}
+        />
+        <span className="flex h-5 min-w-[20px] items-center justify-center rounded-[5px] border border-[var(--hairline)] px-1 font-mono text-[11px] font-bold text-[var(--ink-tertiary)]">
+          {searchShortcut}
+        </span>
+      </div>
+      <div
+        className="max-h-[220px] space-y-1 overflow-y-auto px-3 py-3 ot-scroll-area-styled"
+        role="listbox"
+      >
+        {options.length > 0 ? (
+          options.map((option) => {
+            const selected = option.value === selectedValue;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                className="flex h-8 w-full items-center gap-3 whitespace-nowrap rounded-[7px] px-3 text-left text-[13px] font-bold leading-none text-[var(--ink-muted)] transition hover:bg-[var(--surface-4)]"
+                onClick={() => onSelect(option.value)}
+              >
+                {renderOptionIcon(option)}
+                <span className="min-w-0 flex-1 truncate">
+                  {option.label}
+                </span>
+                <IssueRowOptionShortcut
+                  selected={selected}
+                  shortcut={option.shortcut}
+                />
+              </button>
+            );
+          })
+        ) : (
+          <p className="px-3 py-2 text-[13px] font-bold text-[var(--ink-tertiary)]">
+            {emptyLabel}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IssueRowOptionShortcut({
+  selected,
+  shortcut,
+}: {
+  selected: boolean;
+  shortcut: string;
+}) {
+  return (
+    <span className="ml-auto flex w-10 shrink-0 items-center justify-between text-[var(--ink-subtle)]">
+      {selected ? (
+        <Check aria-hidden="true" className="h-3.5 w-3.5 text-[var(--ink)]" />
+      ) : (
+        <span />
+      )}
+      <span className="font-mono text-[11px] font-bold text-[var(--ink-tertiary)]">
+        {shortcut}
+      </span>
+    </span>
   );
 }
 
@@ -3011,10 +3548,10 @@ function StatusIcon({
   size,
 }: {
   status: IssueItem['status'] | IssueGroup['id'];
-  size: 'header' | 'row';
+  size: 'header' | 'row' | 'menu';
 }) {
-  const dimension = size === 'header' ? 17 : 18;
-  const borderWidth = size === 'header' ? 2 : 2.2;
+  const dimension = size === 'header' ? 17 : size === 'row' ? 18 : 14;
+  const borderWidth = size === 'row' ? 2.2 : 2;
   const iconSizeStyle = { height: dimension, width: dimension };
 
   if (status === 'backlog') {
@@ -3116,7 +3653,13 @@ function StatusIcon({
       >
         <Check
           aria-hidden="true"
-          className={size === 'header' ? 'h-3 w-3' : 'h-[13px] w-[13px]'}
+          className={
+            size === 'header'
+              ? 'h-3 w-3'
+              : size === 'row'
+                ? 'h-[13px] w-[13px]'
+                : 'h-[9px] w-[9px]'
+          }
           strokeWidth={3.2}
         />
       </span>
