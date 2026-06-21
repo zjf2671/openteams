@@ -13,6 +13,7 @@ use deployment::Deployment;
 use serde::{Deserialize, Serialize};
 use services::services::filesystem::{DirectoryEntry, DirectoryListResponse, FilesystemError};
 use utils::response::ApiResponse;
+use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError};
 
@@ -26,6 +27,8 @@ pub struct OpenInExplorerRequest {
     pub path: String,
     #[serde(default)]
     pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -37,6 +40,19 @@ pub struct OpenInExplorerResponse {
 
 fn open_in_explorer_response(ok: bool, error: Option<String>) -> Json<OpenInExplorerResponse> {
     Json(OpenInExplorerResponse { ok, error })
+}
+
+fn validate_workspace_relative_path(path: &Path) -> Result<(), String> {
+    for component in path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("Path must stay within workspace".to_string());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_open_target_path(payload: &OpenInExplorerRequest) -> Result<PathBuf, String> {
@@ -57,21 +73,111 @@ fn resolve_open_target_path(payload: &OpenInExplorerRequest) -> Result<PathBuf, 
         return Ok(PathBuf::from(trimmed_path));
     }
 
-    for component in requested_path.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err("Path must stay within workspace".to_string());
-            }
-        }
-    }
+    validate_workspace_relative_path(requested_path)?;
 
     Ok(Path::new(workspace_path).join(requested_path))
+}
+
+fn resolve_relative_target_in_workspaces(
+    requested_path: &Path,
+    workspace_paths: &[String],
+) -> Option<PathBuf> {
+    let candidates: Vec<PathBuf> = workspace_paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .map(|workspace_path| Path::new(workspace_path).join(requested_path))
+        .collect();
+
+    candidates
+        .iter()
+        .find(|candidate| candidate.exists())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
+async fn list_open_workspace_paths(
+    pool: &sqlx::SqlitePool,
+    session_id: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT workspace_path
+        FROM (
+            SELECT sessions.default_workspace_path AS workspace_path,
+                   0 AS priority
+            FROM chat_sessions sessions
+            WHERE sessions.id = ?1
+              AND sessions.default_workspace_path IS NOT NULL
+              AND trim(sessions.default_workspace_path) != ''
+
+            UNION
+
+            SELECT session_agents.workspace_path AS workspace_path,
+                   1 AS priority
+            FROM chat_session_agents session_agents
+            WHERE session_agents.session_id = ?1
+              AND session_agents.workspace_path IS NOT NULL
+              AND trim(session_agents.workspace_path) != ''
+
+            UNION
+
+            SELECT runs.workspace_path AS workspace_path,
+                   2 AS priority
+            FROM chat_runs runs
+            WHERE runs.session_id = ?1
+              AND runs.workspace_path IS NOT NULL
+              AND trim(runs.workspace_path) != ''
+        ) workspaces
+        GROUP BY workspace_path
+        ORDER BY MIN(priority) ASC, lower(workspace_path) ASC
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+}
+
+async fn resolve_open_target_path_for_open(
+    pool: &sqlx::SqlitePool,
+    payload: &OpenInExplorerRequest,
+) -> Result<PathBuf, String> {
+    let resolved = resolve_open_target_path(payload)?;
+    if resolved.is_absolute()
+        || payload
+            .workspace_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+    {
+        return Ok(resolved);
+    }
+
+    let Some(session_id) = payload.session_id else {
+        return Ok(resolved);
+    };
+
+    validate_workspace_relative_path(&resolved)?;
+
+    let workspace_paths = list_open_workspace_paths(pool, session_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(resolve_relative_target_in_workspaces(&resolved, &workspace_paths).unwrap_or(resolved))
 }
 
 fn spawn_detached_command(command: &mut Command) -> Result<(), std::io::Error> {
     let _child = command.spawn()?;
     Ok(())
+}
+
+fn absolute_open_target_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(&path),
+        Err(_) => path,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -93,12 +199,22 @@ fn spawn_open_in_explorer(path: &Path, is_directory: bool) -> Result<(), std::io
 #[cfg(target_os = "windows")]
 fn spawn_open_in_explorer(path: &Path, is_directory: bool) -> Result<(), std::io::Error> {
     let mut command = Command::new("explorer");
-    if is_directory {
-        command.arg(path);
-    } else {
-        command.arg(format!("/select,{}", path.display()));
+    for arg in windows_explorer_args(path, is_directory) {
+        command.arg(arg);
     }
     spawn_detached_command(&mut command)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_explorer_args(path: &Path, is_directory: bool) -> Vec<std::ffi::OsString> {
+    if is_directory {
+        return vec![path.as_os_str().to_os_string()];
+    }
+
+    vec![
+        std::ffi::OsString::from("/select,"),
+        path.as_os_str().to_os_string(),
+    ]
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -106,19 +222,105 @@ fn spawn_open_in_explorer(path: &Path, is_directory: bool) -> Result<(), std::io
     let mut command = Command::new("xdg-open");
     if is_directory {
         command.arg(path);
-    } else {
-        command.arg(path.parent().unwrap_or(path));
+        return spawn_detached_command(&mut command);
     }
+
+    if try_show_item_via_freedesktop_file_manager(path).unwrap_or(false) {
+        return Ok(());
+    }
+
+    if try_show_item_via_linux_file_manager(path).unwrap_or(false) {
+        return Ok(());
+    }
+
+    command.arg(path.parent().unwrap_or(path));
     spawn_detached_command(&mut command)
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
+fn try_show_item_via_freedesktop_file_manager(path: &Path) -> Result<bool, std::io::Error> {
+    let Some(uri) = file_uri_for_path(path) else {
+        return Ok(false);
+    };
+
+    let mut command = Command::new("dbus-send");
+    command.args(freedesktop_file_manager_show_items_args(&uri));
+
+    match command.status() {
+        Ok(status) => Ok(status.success()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn file_uri_for_path(path: &Path) -> Option<String> {
+    url::Url::from_file_path(path)
+        .ok()
+        .map(|url| url.to_string())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn freedesktop_file_manager_show_items_args(uri: &str) -> Vec<std::ffi::OsString> {
+    vec![
+        std::ffi::OsString::from("--session"),
+        std::ffi::OsString::from("--dest=org.freedesktop.FileManager1"),
+        std::ffi::OsString::from("--type=method_call"),
+        std::ffi::OsString::from("/org/freedesktop/FileManager1"),
+        std::ffi::OsString::from("org.freedesktop.FileManager1.ShowItems"),
+        std::ffi::OsString::from(format!("array:string:{uri}")),
+        std::ffi::OsString::from("string:"),
+    ]
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn try_show_item_via_linux_file_manager(path: &Path) -> Result<bool, std::io::Error> {
+    for (program, args) in linux_file_manager_select_commands(path) {
+        let mut command = Command::new(program);
+        command.args(args);
+        match spawn_detached_command(&mut command) {
+            Ok(()) => return Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(false)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_file_manager_select_commands(path: &Path) -> Vec<(&'static str, Vec<std::ffi::OsString>)> {
+    let select_arg = path.as_os_str().to_os_string();
+    vec![
+        (
+            "nautilus",
+            vec![std::ffi::OsString::from("--select"), select_arg.clone()],
+        ),
+        (
+            "dolphin",
+            vec![std::ffi::OsString::from("--select"), select_arg.clone()],
+        ),
+        (
+            "caja",
+            vec![std::ffi::OsString::from("--select"), select_arg.clone()],
+        ),
+        (
+            "thunar",
+            vec![std::ffi::OsString::from("--select"), select_arg],
+        ),
+    ]
+}
+
 pub async fn open_in_explorer(
+    State(deployment): State<DeploymentImpl>,
     Json(payload): Json<OpenInExplorerRequest>,
 ) -> Result<Json<OpenInExplorerResponse>, ApiError> {
-    let target_path = match resolve_open_target_path(&payload) {
+    let target_path = match resolve_open_target_path_for_open(&deployment.db().pool, &payload).await
+    {
         Ok(path) => path,
         Err(err) => return Ok(open_in_explorer_response(false, Some(err))),
     };
+    let target_path = absolute_open_target_path(target_path);
 
     let metadata = match tokio::fs::metadata(&target_path).await {
         Ok(metadata) => metadata,
@@ -228,6 +430,7 @@ mod tests {
         let request = OpenInExplorerRequest {
             path: absolute_path.to_string_lossy().to_string(),
             workspace_path: Some("/workspace/root".to_string()),
+            session_id: None,
         };
 
         let resolved = resolve_open_target_path(&request).expect("resolve absolute path");
@@ -239,6 +442,7 @@ mod tests {
         let request = OpenInExplorerRequest {
             path: "src/main.ts".to_string(),
             workspace_path: Some("/workspace/root".to_string()),
+            session_id: None,
         };
 
         let resolved = resolve_open_target_path(&request).expect("resolve relative path");
@@ -253,9 +457,100 @@ mod tests {
         let request = OpenInExplorerRequest {
             path: "../secret.txt".to_string(),
             workspace_path: Some("/workspace/root".to_string()),
+            session_id: None,
         };
 
         let error = resolve_open_target_path(&request).expect_err("reject parent escape");
         assert_eq!(error, "Path must stay within workspace");
+    }
+
+    #[test]
+    fn resolve_relative_target_in_workspaces_uses_existing_workspace_file() {
+        let first_workspace = tempfile::tempdir().expect("create first workspace");
+        let second_workspace = tempfile::tempdir().expect("create second workspace");
+        let nested_dir = second_workspace.path().join("src");
+        std::fs::create_dir_all(&nested_dir).expect("create nested dir");
+        std::fs::write(nested_dir.join("main.rs"), "").expect("write file");
+        let workspaces = vec![
+            first_workspace.path().to_string_lossy().to_string(),
+            second_workspace.path().to_string_lossy().to_string(),
+        ];
+
+        let resolved = resolve_relative_target_in_workspaces(Path::new("src/main.rs"), &workspaces)
+            .expect("resolve workspace relative path");
+
+        assert_eq!(resolved, second_workspace.path().join("src/main.rs"));
+    }
+
+    #[test]
+    fn resolve_relative_target_in_workspaces_falls_back_to_first_workspace() {
+        let workspace = tempfile::tempdir().expect("create workspace");
+        let workspaces = vec![workspace.path().to_string_lossy().to_string()];
+
+        let resolved = resolve_relative_target_in_workspaces(Path::new("missing.txt"), &workspaces)
+            .expect("resolve missing workspace relative path");
+
+        assert_eq!(resolved, workspace.path().join("missing.txt"));
+    }
+
+    #[test]
+    fn absolute_open_target_path_makes_relative_paths_absolute() {
+        let relative = PathBuf::from("src/main.rs");
+        let resolved = absolute_open_target_path(relative.clone());
+
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with(relative));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_explorer_args_passes_select_switch_and_path_separately() {
+        let path = PathBuf::from(r"C:\workspace\project with spaces\src\main.rs");
+        let args = windows_explorer_args(&path, false);
+
+        assert_eq!(
+            args,
+            vec![std::ffi::OsString::from("/select,"), path.into()]
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn freedesktop_file_manager_args_use_show_items() {
+        let args = freedesktop_file_manager_show_items_args("file:///tmp/project/src/main.rs");
+
+        assert_eq!(
+            args,
+            vec![
+                std::ffi::OsString::from("--session"),
+                std::ffi::OsString::from("--dest=org.freedesktop.FileManager1"),
+                std::ffi::OsString::from("--type=method_call"),
+                std::ffi::OsString::from("/org/freedesktop/FileManager1"),
+                std::ffi::OsString::from("org.freedesktop.FileManager1.ShowItems"),
+                std::ffi::OsString::from("array:string:file:///tmp/project/src/main.rs"),
+                std::ffi::OsString::from("string:"),
+            ]
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn linux_file_manager_select_commands_cover_common_file_managers() {
+        let path = PathBuf::from("/tmp/project/src/main.rs");
+        let commands = linux_file_manager_select_commands(&path);
+
+        assert_eq!(
+            commands
+                .iter()
+                .map(|(program, _)| *program)
+                .collect::<Vec<_>>(),
+            vec!["nautilus", "dolphin", "caja", "thunar"]
+        );
+        assert!(commands.iter().all(|(_, args)| args.len() == 2));
+        assert!(
+            commands
+                .iter()
+                .all(|(_, args)| args[1].as_os_str() == path.as_os_str())
+        );
     }
 }

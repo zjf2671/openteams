@@ -284,10 +284,15 @@ export const filesystemApi = {
   openInExplorer: async (
     path: string,
     workspacePath?: string,
+    sessionId?: string,
   ): Promise<OpenInExplorerResponse> => {
     const r = await makeRequest("/api/filesystem/open-in-explorer", {
       method: "POST",
-      body: JSON.stringify({ path, workspace_path: workspacePath ?? null }),
+      body: JSON.stringify({
+        path,
+        workspace_path: workspacePath?.trim() ? workspacePath : null,
+        session_id: sessionId?.trim() ? sessionId : null,
+      }),
     });
     if (!r.ok) {
       throw new ApiError(
