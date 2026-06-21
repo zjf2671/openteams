@@ -113,7 +113,8 @@ type ServerPassword = String;
 const MAX_SERVER_LOG_LINES: usize = 200;
 
 impl Opencode {
-    const BASE_COMMAND: &'static str = "npx -y opencode-ai@1.15.13";
+    const PACKAGE_VERSION: &'static str = "1.17.8";
+    const BASE_COMMAND: &'static str = "npx -y opencode-ai@1.17.8";
 
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
         let builder = CommandBuilder::new(Self::BASE_COMMAND)
@@ -125,7 +126,11 @@ impl Opencode {
 
     /// Compute a cache key for model context windows based on configuration that can affect the list of available models.
     fn compute_models_cache_key(&self) -> String {
-        serde_json::to_string(&self.cmd).unwrap_or_default()
+        serde_json::json!({
+            "cmd": &self.cmd,
+            "opencode_version": Self::PACKAGE_VERSION,
+        })
+        .to_string()
     }
 
     pub async fn list_models(
@@ -141,7 +146,8 @@ impl Opencode {
                 .default_headers(build_default_headers(&directory, &server.server_password))
                 .build()
                 .map_err(|err| ExecutorError::Io(io::Error::other(err)))?;
-            wait_for_health(&client, &server.base_url).await?;
+            let version = wait_for_health(&client, &server.base_url).await?;
+            sdk::ensure_expected_version(&version, Self::PACKAGE_VERSION)?;
             let providers = list_providers(&client, &server.base_url, &directory).await?;
             let mut models = Vec::new();
 
@@ -213,6 +219,7 @@ impl Opencode {
         env.clone()
             .with_profile(&self.cmd)
             .apply_to_command(&mut command);
+        apply_isolated_opencode_env(&mut command, current_dir, Self::PACKAGE_VERSION)?;
 
         let child = command.group_spawn()?;
 
@@ -325,6 +332,7 @@ impl Opencode {
                 approvals,
                 auto_approve,
                 server_password,
+                expected_version: Self::PACKAGE_VERSION.to_string(),
                 models_cache_key,
                 commit_reminder,
                 commit_reminder_prompt,
@@ -392,6 +400,43 @@ fn collect_server_stderr(
     });
 
     (lines, Some(task))
+}
+
+fn apply_isolated_opencode_env(
+    command: &mut Command,
+    current_dir: &Path,
+    package_version: &str,
+) -> io::Result<()> {
+    let runtime_root = current_dir
+        .join(".openteams")
+        .join("opencode")
+        .join(format!(
+            "opencode-ai-{}",
+            sanitize_path_segment(package_version)
+        ));
+    let data_home = runtime_root.join("data");
+    let state_home = runtime_root.join("state");
+
+    std::fs::create_dir_all(&data_home)?;
+    std::fs::create_dir_all(&state_home)?;
+
+    command
+        .env("XDG_DATA_HOME", data_home)
+        .env("XDG_STATE_HOME", state_home);
+    Ok(())
+}
+
+fn sanitize_path_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn format_server_log_tail(captured: &[String]) -> String {

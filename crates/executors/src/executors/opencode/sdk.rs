@@ -84,6 +84,7 @@ pub struct RunConfig {
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
     pub auto_approve: bool,
     pub server_password: String,
+    pub expected_version: String,
     /// Cache key for model context windows. Should be derived from configuration
     /// that affects available models (e.g., env vars, base command).
     pub models_cache_key: String,
@@ -241,6 +242,7 @@ pub async fn run_session(
 pub(super) async fn discover_commands(
     server: &OpencodeServer,
     directory: &Path,
+    expected_version: &str,
 ) -> Result<Vec<CommandInfo>, ExecutorError> {
     let directory = directory.to_string_lossy();
     let client = reqwest::Client::builder()
@@ -248,7 +250,8 @@ pub(super) async fn discover_commands(
         .build()
         .map_err(|err| ExecutorError::Io(io::Error::other(err)))?;
 
-    wait_for_health(&client, &server.base_url).await?;
+    let version = wait_for_health(&client, &server.base_url).await?;
+    ensure_expected_version(&version, expected_version)?;
     list_commands(&client, &server.base_url, &directory).await
 }
 
@@ -275,10 +278,11 @@ async fn run_session_inner(
     client: reqwest::Client,
     cancel: CancellationToken,
 ) -> Result<(), ExecutorError> {
-    tokio::select! {
+    let version = tokio::select! {
         _ = cancel.cancelled() => return Ok(()),
         res = wait_for_health(&client, &config.base_url) => res?,
-    }
+    };
+    ensure_expected_version(&version, &config.expected_version)?;
 
     let session_id = match config.resume_session_id.as_deref() {
         Some(existing) => {
@@ -504,7 +508,7 @@ where
 pub async fn wait_for_health(
     client: &reqwest::Client,
     base_url: &str,
-) -> Result<(), ExecutorError> {
+) -> Result<String, ExecutorError> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let mut last_err: Option<String> = None;
 
@@ -523,7 +527,7 @@ pub async fn wait_for_health(
                     last_err = Some(format!("HTTP {}", resp.status()));
                 } else if let Ok(body) = resp.json::<HealthResponse>().await {
                     if body.healthy {
-                        return Ok(());
+                        return Ok(body.version);
                     }
                     last_err = Some(format!("unhealthy server (version {})", body.version));
                 } else {
@@ -537,6 +541,17 @@ pub async fn wait_for_health(
 
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
+}
+
+pub fn ensure_expected_version(actual: &str, expected: &str) -> Result<(), ExecutorError> {
+    if actual == expected {
+        return Ok(());
+    }
+
+    Err(ExecutorError::Io(io::Error::other(format!(
+        "OpenCode server version mismatch: expected opencode-ai {expected}, got {actual}. \
+This usually means the executor launched a different OpenCode binary than the pinned version."
+    ))))
 }
 
 pub async fn create_session(

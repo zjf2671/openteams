@@ -338,12 +338,10 @@ impl ChatSession {
         .bind(id)
         .execute(pool)
         .await?;
-        sqlx::query(
-            "UPDATE github_operation_audits SET session_id = NULL WHERE session_id = ?1",
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE github_operation_audits SET session_id = NULL WHERE session_id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
 
         let result = sqlx::query!("DELETE FROM chat_sessions WHERE id = $1", id)
             .execute(pool)
