@@ -400,9 +400,9 @@ fn is_artifact_observed_source(source: &str) -> bool {
 }
 
 fn is_openteams_relative_path(path: &str) -> bool {
-    PathBuf::from(path).components().next().is_some_and(|component| {
-        matches!(component, Component::Normal(part) if part == ".openteams")
-    })
+    PathBuf::from(path).components().next().is_some_and(
+        |component| matches!(component, Component::Normal(part) if part == ".openteams"),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]

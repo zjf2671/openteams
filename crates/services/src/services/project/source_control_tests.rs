@@ -315,8 +315,7 @@ async fn git_workspace_ignores_output_text_observed_paths() {
     )
     .await;
 
-    fs::write(repo_path.join("tracked.txt"), "mentioned in output only\n")
-        .expect("modify tracked");
+    fs::write(repo_path.join("tracked.txt"), "mentioned in output only\n").expect("modify tracked");
 
     let status = SourceControlService::new()
         .session_status(&pool, project.id, session_id, None)
@@ -369,8 +368,7 @@ async fn invalidating_session_caches_exposes_agent_file_changes() {
     let pool = setup_pool().await;
     let (_tempdir, repo_path) = setup_git_workspace();
     let project = seed_project(&pool, &repo_path).await;
-    let session_id =
-        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    let session_id = seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
     let service = SourceControlService::new();
 
     let initial = service

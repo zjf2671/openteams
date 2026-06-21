@@ -66,7 +66,8 @@ impl Opencode {
 
         let env = ExecutionEnv::new(RepoContext::default(), false, String::new());
         let server = self.spawn_server(current_dir, &env).await?;
-        let commands = sdk::discover_commands(&server, current_dir).await?;
+        let commands =
+            sdk::discover_commands(&server, current_dir, Opencode::PACKAGE_VERSION).await?;
 
         let defaults = hardcoded_slash_commands();
         let mut seen: HashSet<String> = defaults.iter().map(|cmd| cmd.name.clone()).collect();
@@ -392,10 +393,11 @@ pub async fn execute(
     client: reqwest::Client,
     cancel: CancellationToken,
 ) -> Result<(), ExecutorError> {
-    tokio::select! {
+    let version = tokio::select! {
         _ = cancel.cancelled() => return Ok(()),
         res = sdk::wait_for_health(&client, &config.base_url) => res?,
-    }
+    };
+    sdk::ensure_expected_version(&version, &config.expected_version)?;
 
     // Handle commands that don't require a session first
     match &command {
