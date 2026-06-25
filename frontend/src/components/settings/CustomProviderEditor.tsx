@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { ConfirmationDialog } from '@/components/ConfirmationDialog';
 import { useWorkspace } from '@/context/WorkspaceContext';
@@ -6,7 +6,8 @@ import { cliConfigApi } from '@/lib/cliConfigApi';
 import { CustomProviderConnectionSection } from './CustomProviderConnectionSection';
 import { CustomProviderModelCard } from './CustomProviderModelCard';
 import {
-  ProviderSaveBar,
+  AutosaveStatus,
+  type AutosaveStatusState,
   secondaryButtonClassName,
 } from './providerSettingsUi';
 import type {
@@ -61,7 +62,7 @@ type StatusState = {
 
 type ModelTestStatusState = {
   message: string;
-  tone: 'error' | 'success';
+  tone: 'error' | 'success' | 'warning';
 } | null;
 let modelKeyCounter = 0;
 
@@ -209,6 +210,16 @@ function buildProvider(formState: FormState): CustomProviderEntry {
   });
 }
 
+function canAutoSave(formState: FormState) {
+  if (!trimToNull(formState.id) || !trimToNull(formState.baseURL)) return false;
+  try {
+    buildProvider(formState);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function StatusMessage({ status }: { status: StatusState }) {
   if (!status) return null;
   const className =
@@ -233,7 +244,9 @@ function ModelTestStatusMessage({
   const className =
     status.tone === 'success'
       ? 'provider-model-test-status-success'
-      : 'provider-model-test-status-error';
+      : status.tone === 'warning'
+        ? 'provider-status-message-warning'
+        : 'provider-model-test-status-error';
   return (
     <div
       className={`provider-model-test-status ${className}`}
@@ -255,12 +268,21 @@ export function CustomProviderEditor({
   );
   const [savedFormState, setSavedFormState] = useState<FormState | null>(null);
   const [status, setStatus] = useState<StatusState>(null);
+  const [connectionStatus, setConnectionStatus] = useState<StatusState>(null);
   const [modelTestStatus, setModelTestStatus] =
     useState<ModelTestStatusState>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [detailsExpanded, setDetailsExpanded] = useState(mode === 'create');
   const [focusedModelKey, setFocusedModelKey] = useState<string | null>(null);
+  const [persistedProviderId, setPersistedProviderId] = useState<string | null>(
+    initialProvider?.id ?? null,
+  );
+  const [autosaveState, setAutosaveState] =
+    useState<AutosaveStatusState>('idle');
+  const autosaveTimerRef = useRef<number | null>(null);
+  const autosaveFadeTimerRef = useRef<number | null>(null);
+  const autosaveInFlightRef = useRef(false);
 
   const copy = (key: string, fallback: string) => {
     const value = t(key);
@@ -272,11 +294,14 @@ export function CustomProviderEditor({
     setFormState(nextFormState);
     setSavedFormState(nextFormState);
     setStatus(null);
+    setConnectionStatus(null);
     setModelTestStatus(null);
     setBusyAction(null);
     setConfirmingDelete(false);
     setDetailsExpanded(mode === 'create');
     setFocusedModelKey(null);
+    setPersistedProviderId(initialProvider?.id ?? null);
+    setAutosaveState('idle');
   }, [initialProvider, mode]);
 
   const existingModelIds = useMemo(
@@ -293,6 +318,7 @@ export function CustomProviderEditor({
   const updateForm = (updater: (current: FormState) => FormState) => {
     setFormState((current) => updater(current));
     setStatus(null);
+    setConnectionStatus(null);
     setModelTestStatus(null);
   };
 
@@ -323,7 +349,7 @@ export function CustomProviderEditor({
 
   const handleDiscoverModels = async () => {
     if (!trimToNull(formState.baseURL)) {
-      setStatus({
+      setModelTestStatus({
         message: copy(
           'settings.providers.custom.baseUrlRequired',
           'Base URL is required before discovering models.',
@@ -338,11 +364,11 @@ export function CustomProviderEditor({
         buildProbeRequest(),
       );
       if (response.status === 'unsupported') {
-        setStatus({ message: response.message, tone: 'warning' });
+        setModelTestStatus({ message: response.message, tone: 'warning' });
         return;
       }
       if (!response.valid) {
-        setStatus({ message: response.message, tone: 'error' });
+        setModelTestStatus({ message: response.message, tone: 'error' });
         return;
       }
       const nextModels = response.models
@@ -353,7 +379,7 @@ export function CustomProviderEditor({
         ...current,
         models: [...current.models, ...nextModels],
       }));
-      setStatus({
+      setModelTestStatus({
         message: copy(
           'settings.providers.custom.discoverSuccess',
           'Models discovered.',
@@ -361,13 +387,49 @@ export function CustomProviderEditor({
         tone: 'success',
       });
     } catch (error) {
-      setStatus({
+      setModelTestStatus({
         message:
           error instanceof Error
             ? error.message
             : copy(
                 'settings.providers.custom.discoverFailed',
                 'Model discovery failed.',
+              ),
+        tone: 'error',
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleTestBaseUrl = async () => {
+    if (!trimToNull(formState.baseURL)) {
+      setConnectionStatus({
+        message: copy(
+          'settings.providers.custom.baseUrlRequired',
+          'Base URL is required.',
+        ),
+        tone: 'error',
+      });
+      return;
+    }
+    setBusyAction('test-base-url');
+    try {
+      const response = await cliConfigApi.validateCustomProvider(
+        buildProbeRequest(),
+      );
+      setConnectionStatus({
+        message: response.message,
+        tone: response.valid ? 'success' : 'error',
+      });
+    } catch (error) {
+      setConnectionStatus({
+        message:
+          error instanceof Error
+            ? error.message
+            : copy(
+                'settings.providers.custom.baseUrlTestFailed',
+                'Base URL test failed.',
               ),
         tone: 'error',
       });
@@ -414,7 +476,7 @@ export function CustomProviderEditor({
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = async (options: { silent?: boolean } = {}) => {
     setBusyAction('save');
     try {
       const provider = buildProvider(formState);
@@ -429,23 +491,29 @@ export function CustomProviderEditor({
           ),
         );
       }
-      const saved =
-        mode === 'create'
-          ? await cliConfigApi.createCustomProvider(provider)
-          : await cliConfigApi.updateCustomProvider(provider.id, provider);
-      setStatus({
-        message: copy(
-          'settings.providers.custom.saved',
-          'Custom provider saved.',
-        ),
-        tone: 'success',
-      });
-      showToast(
-        copy('settings.providers.custom.saved', 'Custom provider saved.'),
-        'success',
-      );
-      setSavedFormState(formState);
-      await onSaved(saved.id);
+      const existingProviderId =
+        persistedProviderId ?? (mode === 'edit' ? provider.id : null);
+      const saved = existingProviderId
+        ? await cliConfigApi.updateCustomProvider(existingProviderId, provider)
+        : await cliConfigApi.createCustomProvider(provider);
+      setPersistedProviderId(saved.id);
+      if (!options.silent) {
+        setStatus({
+          message: copy(
+            'settings.providers.custom.saved',
+            'Custom provider saved.',
+          ),
+          tone: 'success',
+        });
+        showToast(
+          copy('settings.providers.custom.saved', 'Custom provider saved.'),
+          'success',
+        );
+      }
+      setSavedFormState(options.silent ? formState : createFormState(saved));
+      if (!options.silent) {
+        await onSaved(saved.id);
+      }
     } catch (error) {
       const errorMessage =
         error instanceof Error
@@ -458,7 +526,12 @@ export function CustomProviderEditor({
         message: errorMessage,
         tone: 'error',
       });
-      showToast(errorMessage, 'error');
+      if (!options.silent) {
+        showToast(errorMessage, 'error');
+      }
+      if (options.silent) {
+        throw error;
+      }
     } finally {
       setBusyAction(null);
     }
@@ -511,25 +584,63 @@ export function CustomProviderEditor({
 
   const isBusy = busyAction != null;
   const canDelete = mode === 'edit' && initialProvider != null;
-  const handleDiscard = () => {
-    if (!savedFormState) return;
-    setFormState(savedFormState);
-    setStatus(null);
-    setModelTestStatus(null);
-  };
+
+  const clearAutosaveTimers = useCallback(() => {
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    if (autosaveFadeTimerRef.current != null) {
+      window.clearTimeout(autosaveFadeTimerRef.current);
+      autosaveFadeTimerRef.current = null;
+    }
+  }, []);
+
+  const runAutosave = useCallback(async () => {
+    if (
+      !isDirty ||
+      autosaveInFlightRef.current ||
+      !canAutoSave(formState)
+    ) {
+      return;
+    }
+    clearAutosaveTimers();
+    autosaveInFlightRef.current = true;
+    setAutosaveState('saving');
+    try {
+      await handleSave({ silent: true });
+      setAutosaveState('saved');
+      autosaveFadeTimerRef.current = window.setTimeout(() => {
+        setAutosaveState('idle');
+      }, 1500);
+    } catch {
+      setAutosaveState('idle');
+    } finally {
+      autosaveInFlightRef.current = false;
+    }
+  }, [clearAutosaveTimers, formState, isDirty]);
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') {
-        return;
+    if (!isDirty || isBusy || !canAutoSave(formState)) return;
+    setAutosaveState('saving');
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void runAutosave();
+    }, 500);
+    return () => {
+      if (autosaveTimerRef.current != null) {
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
       }
-      event.preventDefault();
-      if (!isBusy && isDirty) void handleSave();
     };
+  }, [formState, isBusy, isDirty, runAutosave]);
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isBusy, isDirty, handleSave]);
+  useEffect(() => clearAutosaveTimers, [clearAutosaveTimers]);
+
+  const effectiveMode = persistedProviderId ? 'edit' : mode;
+
 
   const connectionActions = canDelete ? (
       <button
@@ -546,15 +657,23 @@ export function CustomProviderEditor({
 
   return (
     <>
-      <div className="provider-editor-shell">
-        <div className="provider-editor-content space-y-7">
+      <div
+        className="provider-editor-shell"
+        onBlurCapture={() => {
+          if (isDirty) void runAutosave();
+        }}
+      >
+        <AutosaveStatus state={autosaveState} />
+        <div className="provider-editor-content space-y-4">
           <StatusMessage status={status} />
 
           <CustomProviderConnectionSection
             actions={connectionActions}
             copy={copy}
             detailsExpanded={detailsExpanded}
-            mode={mode}
+            isTestingBaseUrl={busyAction === 'test-base-url'}
+            mode={effectiveMode}
+            status={connectionStatus}
             values={{
               apiKey: formState.apiKey,
               baseURL: formState.baseURL,
@@ -567,6 +686,7 @@ export function CustomProviderEditor({
               updateForm((current) => ({ ...current, [field]: value }))
             }
             onCopyApiKey={handleCopyApiKey}
+            onTestBaseUrl={handleTestBaseUrl}
             onToggleDetails={() => setDetailsExpanded((current) => !current)}
           />
 
@@ -576,6 +696,7 @@ export function CustomProviderEditor({
               <h4 className="text-sm font-semibold text-[var(--ink)]">
                 {copy('settings.providers.custom.models', 'Models')}
               </h4>
+              <ModelTestStatusMessage status={modelTestStatus} />
             </div>
             <div className="flex flex-wrap gap-2">
               <button
@@ -610,8 +731,6 @@ export function CustomProviderEditor({
             </div>
           </div>
 
-          <ModelTestStatusMessage status={modelTestStatus} />
-
           <div className="provider-model-list">
             {formState.models.length === 0 ? (
               <div className="p-4 text-sm text-[var(--ink-tertiary)]">
@@ -621,7 +740,7 @@ export function CustomProviderEditor({
                 )}
               </div>
             ) : (
-              <div className="divide-y divide-[var(--hairline)]">
+              <div className="space-y-1">
                 {formState.models.map((model) => (
                   <CustomProviderModelCard
                     key={model.key}
@@ -647,17 +766,6 @@ export function CustomProviderEditor({
           </div>
         </section>
         </div>
-        {isDirty ? (
-          <ProviderSaveBar
-            disabled={isBusy}
-            isSaving={busyAction === 'save'}
-            onDiscard={handleDiscard}
-            onSave={() => void handleSave()}
-            discardLabel={copy('settings.providers.discardChanges', '放弃')}
-            saveLabel={copy('settings.providers.saveChanges', 'Save changes')}
-            savingLabel={copy('settings.providers.saving', 'Saving...')}
-          />
-        ) : null}
       </div>
       {confirmingDelete && initialProvider ? (
         <ConfirmationDialog

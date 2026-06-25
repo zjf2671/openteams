@@ -562,7 +562,7 @@ export const mockShellOptions: ShellOptionsMock = {
     {
       id: 'project-issue',
       label: 'Issues',
-      icon: 'file-text',
+      icon: 'circle-dot',
       helper: 'View project issues.',
       targetPage: 'issue',
     },

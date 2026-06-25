@@ -9,6 +9,32 @@ export const technicalInputClassName = `${inputClassName} font-mono`;
 export const secondaryButtonClassName =
   'provider-ghost-button inline-flex h-7 items-center justify-center gap-1.5 whitespace-nowrap rounded-[6px] border border-transparent bg-transparent px-2 text-[12px] font-medium text-[var(--ink-subtle)] transition-colors hover:bg-[var(--provider-control-hover)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50';
 
+export type AutosaveStatusState = 'idle' | 'saving' | 'saved';
+
+export function AutosaveStatus({
+  savedLabel = 'Saved',
+  savingLabel = 'Saving...',
+  state,
+}: {
+  savedLabel?: string;
+  savingLabel?: string;
+  state: AutosaveStatusState;
+}) {
+  return (
+    <div
+      className={`provider-autosave-status provider-autosave-status-${state}`}
+      role={state === 'idle' ? undefined : 'status'}
+    >
+      {state === 'saving' ? (
+        <Loader2 className="provider-autosave-spinner" />
+      ) : null}
+      <span>
+        {state === 'saved' ? savedLabel : state === 'saving' ? savingLabel : ''}
+      </span>
+    </div>
+  );
+}
+
 export function ShortcutHint({ children }: { children: React.ReactNode }) {
   return (
     <kbd className="provider-shortcut-hint rounded-[5px] border border-[var(--provider-border-subtle)] px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none text-[var(--ink-tertiary)]">

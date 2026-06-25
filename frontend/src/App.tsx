@@ -25,6 +25,7 @@ import {
   Activity,
   Bot,
   Box,
+  CircleDot,
   FileText,
   Github,
   Menu,
@@ -126,7 +127,7 @@ const pageTabConfig: Record<
   { label: string; icon: LucideIcon }
 > = {
   workspace: { label: "Workspace", icon: Network },
-  issue: { label: "Issues", icon: FileText },
+  issue: { label: "Issues", icon: CircleDot },
   team: { label: "Members", icon: Users },
   "team-templates": { label: "Team templates", icon: Users },
   routing: { label: "Routing engine", icon: Route },

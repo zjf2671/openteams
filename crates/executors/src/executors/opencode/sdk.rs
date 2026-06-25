@@ -474,35 +474,68 @@ where
         if cancel.is_cancelled() {
             return Ok(());
         }
+        if let Some(control_err) =
+            wait_for_control_error(control_rx, cancel.clone(), Duration::from_millis(500)).await
+        {
+            return Err(control_err);
+        }
         return Err(err);
     }
 
     if !idle_seen {
         // The OpenCode server streams events independently; wait for `session.idle` so we capture
         // tail updates reliably (e.g. final tool completion events).
-        tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
-            _ = &mut activity_deadline => return Err(activity_error()),
-            event = control_rx.recv() => match event {
-                Some(ControlEvent::Activity) => {
-                    activity_deadline.as_mut().reset(Instant::now() + activity_timeout);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok(()),
+                _ = &mut activity_deadline => return Err(activity_error()),
+                event = control_rx.recv() => match event {
+                    Some(ControlEvent::Activity) => {
+                        activity_deadline.as_mut().reset(Instant::now() + activity_timeout);
+                    }
+                    Some(ControlEvent::Idle) | None => break,
+                    Some(ControlEvent::AuthRequired { message }) => return Err(ExecutorError::AuthRequired(message)),
+                    Some(ControlEvent::SessionError { message }) => {
+                        return Err(ExecutorError::Io(io::Error::other(message)));
+                    }
+                    Some(ControlEvent::Disconnected) if !cancel.is_cancelled() => {
+                        return Err(ExecutorError::Io(io::Error::other(
+                            "OpenCode event stream disconnected while waiting for session to go idle",
+                        )));
+                    }
+                    Some(ControlEvent::Disconnected) => return Ok(()),
                 }
-                Some(ControlEvent::Idle) | None => {}
-                Some(ControlEvent::AuthRequired { message }) => return Err(ExecutorError::AuthRequired(message)),
-                Some(ControlEvent::SessionError { message }) => {
-                    return Err(ExecutorError::Io(io::Error::other(message)));
-                }
-                Some(ControlEvent::Disconnected) if !cancel.is_cancelled() => {
-                    return Err(ExecutorError::Io(io::Error::other(
-                        "OpenCode event stream disconnected while waiting for session to go idle",
-                    )));
-                }
-                Some(ControlEvent::Disconnected) => return Ok(()),
             }
         }
     }
 
     Ok(())
+}
+
+async fn wait_for_control_error(
+    control_rx: &mut mpsc::UnboundedReceiver<ControlEvent>,
+    cancel: CancellationToken,
+    timeout: Duration,
+) -> Option<ExecutorError> {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return None,
+            _ = &mut deadline => return None,
+            event = control_rx.recv() => match event {
+                Some(ControlEvent::AuthRequired { message }) => {
+                    return Some(ExecutorError::AuthRequired(message));
+                }
+                Some(ControlEvent::SessionError { message }) => {
+                    return Some(ExecutorError::Io(io::Error::other(message)));
+                }
+                Some(ControlEvent::Disconnected) | None => return None,
+                Some(ControlEvent::Activity | ControlEvent::Idle) => {}
+            }
+        }
+    }
 }
 
 pub async fn wait_for_health(
@@ -609,6 +642,23 @@ pub async fn fork_session(
     Ok(session.id)
 }
 
+fn preview_http_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "<empty body>".to_string();
+    }
+
+    const MAX_CHARS: usize = 1200;
+    let total_chars = trimmed.chars().count();
+    if total_chars <= MAX_CHARS {
+        return trimmed.to_string();
+    }
+
+    let mut preview = trimmed.chars().take(MAX_CHARS).collect::<String>();
+    preview.push_str(" ...<truncated>");
+    preview
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prompt(
     client: &reqwest::Client,
@@ -620,6 +670,16 @@ async fn prompt(
     model_variant: Option<String>,
     agent: Option<String>,
 ) -> Result<(), ExecutorError> {
+    tracing::debug!(
+        base_url = %base_url,
+        directory = %directory,
+        session_id = %session_id,
+        prompt_len = prompt.chars().count(),
+        model = ?model.as_ref().map(|m| format!("{}/{}", m.provider_id, m.model_id)),
+        model_variant = ?model_variant,
+        agent = ?agent,
+        "Sending OpenCode session.message request"
+    );
     let req = PromptRequest {
         model,
         agent,
@@ -647,8 +707,18 @@ async fn prompt(
     // The OpenCode server uses streaming responses and may set the HTTP status early; validate
     // success using the response body shape as well.
     if !status.is_success() {
+        let body_preview = preview_http_error_body(&body);
+        tracing::warn!(
+            base_url = %base_url,
+            directory = %directory,
+            session_id = %session_id,
+            status = %status,
+            body_len = body.len(),
+            body = %body_preview,
+            "OpenCode session.message returned non-success status"
+        );
         return Err(ExecutorError::Io(io::Error::other(format!(
-            "OpenCode session.prompt failed: HTTP {status} {body}"
+            "OpenCode session.prompt failed: HTTP {status} {body_preview}"
         ))));
     }
 
@@ -664,6 +734,13 @@ async fn prompt(
 
     // Success response: { info, parts }
     if parsed.get("info").is_some() && parsed.get("parts").is_some() {
+        tracing::debug!(
+            base_url = %base_url,
+            directory = %directory,
+            session_id = %session_id,
+            response_len = body.len(),
+            "OpenCode session.message succeeded"
+        );
         return Ok(());
     }
 
@@ -1534,7 +1611,7 @@ async fn request_permission_approval(
 
 #[cfg(test)]
 mod tests {
-    use std::{future, time::Duration};
+    use std::{future, io, time::Duration};
 
     use serde_json::json;
     use tokio::sync::mpsc;
@@ -1612,6 +1689,34 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "idle should end the request wait");
+    }
+
+    #[tokio::test]
+    async fn run_request_with_control_prefers_session_error_after_http_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            tx.send(ControlEvent::SessionError {
+                message:
+                    "Model not found: volcengine-plan/ark-code-latest. Did you mean: kimi-k2.7-code?"
+                        .to_string(),
+            })
+            .expect("send session error");
+        });
+
+        let result = run_request_with_control(
+            future::ready(Err::<(), ExecutorError>(ExecutorError::Io(
+                io::Error::other(
+                    "OpenCode session.prompt failed: HTTP 500 Unexpected server error",
+                ),
+            ))),
+            &mut rx,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+
+        let err = result.expect_err("session error should replace generic HTTP error");
+        assert!(err.to_string().contains("Model not found"));
     }
 
     #[tokio::test]

@@ -78,7 +78,6 @@ export function CustomProviderModelCard({
               expanded ? '' : '-rotate-90'
             }`}
           />
-          <span className="provider-active-dot h-1.5 w-1.5 shrink-0 rounded-full" />
           <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold text-[var(--ink)]">
             {modelId}
           </span>
@@ -128,7 +127,7 @@ export function CustomProviderModelCard({
       </div>
 
       {expanded ? (
-        <div className="space-y-3 border-t border-[var(--hairline)] p-3">
+        <div className="space-y-3 px-3 pb-3 pt-1">
           <div className="provider-property-list">
             <Field label={copy('settings.providers.custom.modelId', 'Model ID')}>
               <input

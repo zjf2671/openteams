@@ -117,6 +117,7 @@ const primaryActionIcons: Record<SidebarPrimaryAction["icon"], LucideIcon> = {
 
 const navigationIcons: Record<string, LucideIcon> = {
   bot: Bot,
+  "circle-dot": CircleDot,
   "file-text": FileText,
   github: Github,
   settings: Settings2,

@@ -346,23 +346,19 @@ export function TeamMemberSidebar({
                   }
                 }}
                 className={cx(
-                  "group relative grid min-h-[64px] w-full cursor-pointer grid-cols-[32px_minmax(0,1fr)_32px] items-center gap-3 rounded-[10px] px-3 py-2.5 text-left transition-all",
+                  "group relative grid min-h-[64px] w-full cursor-pointer grid-cols-[32px_minmax(0,1fr)_32px] items-center gap-3 rounded-[7px] px-3 py-2.5 text-left transition-all",
                   active
-                    ? "bg-[var(--surface-2)] shadow-sm"
-                    : "hover:bg-[var(--surface-2)]/50",
+                    ? "bg-[#f3eee3]/[0.045] text-[var(--ink)] shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] backdrop-blur-[1px]"
+                    : "hover:bg-white/[0.025]",
                 )}
               >
-                {active && (
-                  <div className="absolute left-0 top-3 h-8 w-1 rounded-r-full bg-[var(--primary)]" />
-                )}
-                
                 <MemberRoleAvatar lead={lead} t={t} />
                 
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className={cx(
                       "truncate text-[14px] leading-tight transition-colors",
-                      active ? "font-semibold text-[var(--ink)]" : "font-medium text-[var(--ink-muted)] group-hover:text-[var(--ink)]"
+                      active ? "font-medium text-[var(--ink)]" : "font-medium text-[var(--ink-muted)] group-hover:text-[var(--ink)]"
                     )}>
                       {memberName(member, agent)}
                     </span>
