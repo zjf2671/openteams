@@ -6,11 +6,13 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Loader2,
   Orbit,
   Network,
   RadioTower,
   Search,
   Sparkles,
+  WifiCog,
   Zap,
 } from 'lucide-react';
 import { DEFAULT_CUSTOM_PROVIDER_NPM } from '@/lib/cliConfigTypes';
@@ -30,6 +32,11 @@ type ConnectionValues = {
 };
 
 type ConnectionField = keyof ConnectionValues;
+
+type ConnectionStatus = {
+  message: string;
+  tone: 'error' | 'success' | 'warning';
+} | null;
 
 type PackageOption = {
   description: string;
@@ -116,19 +123,25 @@ export function CustomProviderConnectionSection({
   actions,
   copy,
   detailsExpanded,
+  isTestingBaseUrl,
   mode,
   onChange,
   onCopyApiKey,
+  onTestBaseUrl,
   onToggleDetails,
+  status,
   values,
 }: {
   actions?: ReactNode;
   copy: (key: string, fallback: string) => string;
   detailsExpanded: boolean;
+  isTestingBaseUrl: boolean;
   mode: 'create' | 'edit';
   onChange: (field: ConnectionField, value: string) => void;
   onCopyApiKey: () => void;
+  onTestBaseUrl: () => void;
   onToggleDetails: () => void;
+  status: ConnectionStatus;
   values: ConnectionValues;
 }) {
   const [packageMenuOpen, setPackageMenuOpen] = useState(false);
@@ -166,6 +179,7 @@ export function CustomProviderConnectionSection({
           <div className="provider-section-actions">{actions}</div>
         ) : null}
       </div>
+      <ConnectionStatusMessage status={status} />
 
       <div className="provider-core-card provider-connection-fields">
         <div className="grid gap-x-8 gap-y-0 lg:gap-x-10 sm:grid-cols-2">
@@ -279,9 +293,31 @@ export function CustomProviderConnectionSection({
         </div>
 
         <div className="provider-property-row">
-          <span className="provider-property-label">
-            {copy('settings.providers.custom.baseUrl', 'Base URL')}
-          </span>
+          <div className="flex items-center justify-between gap-2">
+            <span className="provider-property-label">
+              {copy('settings.providers.custom.baseUrl', 'Base URL')}
+            </span>
+            <button
+              type="button"
+              className="provider-url-test-button"
+              onClick={onTestBaseUrl}
+              disabled={isTestingBaseUrl || values.baseURL.trim().length === 0}
+              aria-label={copy(
+                'settings.providers.custom.testBaseUrl',
+                'Test Base URL',
+              )}
+              title={copy(
+                'settings.providers.custom.testBaseUrl',
+                'Test Base URL',
+              )}
+            >
+              {isTestingBaseUrl ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <WifiCog className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
           <input
             className={technicalInputClassName}
             value={values.baseURL}
@@ -364,5 +400,20 @@ export function CustomProviderConnectionSection({
         </div>
       </div>
     </section>
+  );
+}
+
+function ConnectionStatusMessage({ status }: { status: ConnectionStatus }) {
+  if (!status) return null;
+  const className =
+    status.tone === 'success'
+      ? 'provider-status-message-success'
+      : status.tone === 'warning'
+        ? 'provider-status-message-warning'
+        : 'provider-status-message-error';
+  return (
+    <div className={`provider-status-message ${className}`} role="status">
+      {status.message}
+    </div>
   );
 }
