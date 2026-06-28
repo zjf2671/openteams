@@ -637,7 +637,7 @@ export type ChatMessageListQuery = { limit: bigint | null, };
 
 export type ChatWorkItemListQuery = { limit: bigint | null, };
 
-export type PrepareWorktreeRequest = { base_workspace_path?: string | null, base_branch?: string | null, };
+export type PrepareWorktreeRequest = { base_workspace_path?: string | null, };
 
 export type MergeWorktreeRequest = { commit_message?: string | null, target_branch?: string | null, };
 

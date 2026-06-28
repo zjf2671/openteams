@@ -242,10 +242,6 @@ pub struct EnsureWorktreeInput {
     /// User-facing main workspace path the worktree is isolating from.
     /// Typically `chat_sessions.default_workspace_path` or a project default.
     pub base_workspace_path: PathBuf,
-    /// Override the base branch (otherwise detected from the repo's HEAD or
-    /// falling back to `main`). Useful when the project pins a specific
-    /// integration branch.
-    pub base_branch: Option<String>,
 }
 
 impl EnsureWorktreeInput {
@@ -254,17 +250,11 @@ impl EnsureWorktreeInput {
             session_id,
             project_id: None,
             base_workspace_path,
-            base_branch: None,
         }
     }
 
     pub fn with_project(mut self, project_id: Option<Uuid>) -> Self {
         self.project_id = project_id;
-        self
-    }
-
-    pub fn with_base_branch(mut self, base_branch: Option<String>) -> Self {
-        self.base_branch = base_branch;
         self
     }
 }
@@ -402,10 +392,31 @@ pub fn detect_git_repo_path(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Resolve the default branch name (the branch a new worktree should fork
-/// from). Strategy: ask `git symbolic-ref refs/remotes/origin/HEAD` first,
-/// fall back to the local HEAD. Returns `None` if git is unavailable;
-/// callers fall back to a literal default (typically `main`).
+/// Resolve the checked-out branch for the base workspace. This is the branch
+/// a session worktree should fork from because isolated sessions are scoped to
+/// the user's current project workspace, not the remote's default branch.
+pub async fn detect_current_branch(repo_path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["branch", "--show-current"])
+        .output()
+        .await
+        .ok()?;
+    if output.status.success() {
+        let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !line.is_empty() {
+            return Some(line);
+        }
+    }
+    None
+}
+
+/// Resolve the repository default branch name as a fallback for detached HEAD
+/// or unusual Git states. Strategy: ask `git symbolic-ref
+/// refs/remotes/origin/HEAD` first, fall back to the local HEAD. Returns
+/// `None` if git is unavailable; callers fall back to a literal default
+/// (typically `main`).
 pub async fn detect_default_branch(repo_path: &Path) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -524,8 +535,8 @@ impl SessionWorktreeService {
             SessionWorktreeError::NotAGitRepo(input.base_workspace_path.clone()),
         )?;
 
-        let base_branch = match input.base_branch.clone() {
-            Some(b) => b,
+        let base_branch = match detect_current_branch(&input.base_workspace_path).await {
+            Some(branch) => branch,
             None => detect_default_branch(&repo_path)
                 .await
                 .unwrap_or_else(|| "main".to_string()),

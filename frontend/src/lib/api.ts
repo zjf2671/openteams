@@ -1463,7 +1463,6 @@ export const projectSourceControlApi = {
 
 export interface PrepareSessionWorktreeRequest {
   base_workspace_path?: string | null;
-  base_branch?: string | null;
 }
 
 export interface MergeSessionWorktreeRequest {

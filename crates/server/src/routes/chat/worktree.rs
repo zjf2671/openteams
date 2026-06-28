@@ -47,9 +47,6 @@ pub struct PrepareWorktreeRequest {
     #[serde(default)]
     #[ts(optional, type = "string | null")]
     pub base_workspace_path: Option<String>,
-    #[serde(default)]
-    #[ts(optional, type = "string | null")]
-    pub base_branch: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, ts_rs::TS)]
@@ -137,8 +134,7 @@ pub async fn prepare_worktree(
         })?;
 
     let input = EnsureWorktreeInput::new(session.id, base_workspace_path.into())
-        .with_project(session.project_id)
-        .with_base_branch(payload.base_branch);
+        .with_project(session.project_id);
 
     let outcome = service
         .ensure_for_session(input)

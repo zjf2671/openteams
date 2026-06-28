@@ -142,7 +142,6 @@ export function useSessionWorktree({
         () =>
           chatSessionWorktreeApi.prepare(sessionId ?? '', {
             base_workspace_path: null,
-            base_branch: null,
           }),
         { applyResult: applyWorktree },
       ),

@@ -897,6 +897,51 @@ async fn service_merge_records_intent_only_in_skeleton() {
 }
 
 #[tokio::test]
+async fn ensure_for_session_uses_current_workspace_branch_over_origin_head() {
+    let pool = setup_pool().await;
+    let service = SessionWorktreeService::new(pool.clone());
+    let session_id = Uuid::new_v4();
+    let tmp = tempfile::TempDir::new().expect("temp dir");
+    let base = tmp.path().join("base");
+    init_git_repo(&base);
+
+    git(&base, &["update-ref", "refs/remotes/origin/main", "main"]);
+    git(
+        &base,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    git(&base, &["checkout", "-b", "codex/openteams-dev"]);
+    std::fs::write(base.join("branch.txt"), "current branch only\n").expect("write branch file");
+    git(&base, &["add", "branch.txt"]);
+    git(&base, &["commit", "-m", "current branch commit"]);
+
+    let worktree = match service
+        .ensure_for_session(EnsureWorktreeInput::new(session_id, base.clone()))
+        .await
+        .expect("create session worktree")
+    {
+        EnsureOutcome::Created(row) | EnsureOutcome::Existing(row) => row,
+    };
+
+    assert_eq!(worktree.base_branch, "codex/openteams-dev");
+    let expected_head = git(&base, &["rev-parse", "codex/openteams-dev"]);
+    assert_eq!(
+        worktree.base_commit.as_deref(),
+        Some(expected_head.as_str())
+    );
+    assert!(
+        PathBuf::from(&worktree.worktree_path)
+            .join("branch.txt")
+            .exists(),
+        "session worktree should be forked from the current workspace branch"
+    );
+}
+
+#[tokio::test]
 async fn perform_merge_preserves_session_branch_commit_in_base_history() {
     let pool = setup_pool().await;
     let service = SessionWorktreeService::new(pool.clone());
