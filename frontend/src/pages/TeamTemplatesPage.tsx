@@ -47,10 +47,11 @@ import { ProjectMemberType } from "../../../shared/types";
 import type {
   BaseCodingAgent as ProjectBaseCodingAgent,
   ChatMemberPreset,
+  ChatTeamPreset,
   CreateTeamPresetRequest,
   JsonValue,
   ProjectMemberWithRuntime,
-  TeamPresetDetail,
+  TeamPresetMemberSummary,
   TeamPresetSummary,
   UpdateTeamPresetRequest,
 } from "../../../shared/types";
@@ -60,6 +61,11 @@ type TranslateFn = (
   replacements?: Record<string, string | number>,
 ) => string;
 
+type WorkflowStepForm = {
+  title: string;
+  description: string;
+};
+
 type MemberForm = {
   id: string;
   name: string;
@@ -68,6 +74,7 @@ type MemberForm = {
   recommendedModel: string;
   systemPrompt: string;
   selectedSkillIdsText: string;
+  toolsEnabledText: string;
 };
 
 type TeamPresetForm = {
@@ -75,12 +82,35 @@ type TeamPresetForm = {
   name: string;
   description: string;
   leadMemberId: string;
+  workflowSteps: WorkflowStepForm[];
   teamProtocol: string;
   enabled: boolean;
   members: MemberForm[];
 };
 
 type EditorMode = "create" | "edit" | null;
+
+type DraftCommitOptions = {
+  autoSave?: boolean;
+  validateTools?: boolean;
+};
+
+type FormValidationIssue = {
+  fieldKey?: string;
+  memberId?: string;
+  message: string;
+};
+
+const emptyToolsEnabledText = "{}";
+
+const jsonValueToText = (value: JsonValue | null | undefined): string => {
+  if (value === null || value === undefined) return emptyToolsEnabledText;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return emptyToolsEnabledText;
+  }
+};
 
 const blankMember = (index: number): MemberForm => ({
   id: index === 0 ? "lead" : `member_${index + 1}`,
@@ -90,6 +120,7 @@ const blankMember = (index: number): MemberForm => ({
   recommendedModel: "",
   systemPrompt: "",
   selectedSkillIdsText: "",
+  toolsEnabledText: emptyToolsEnabledText,
 });
 
 const blankForm = (): TeamPresetForm => ({
@@ -97,18 +128,23 @@ const blankForm = (): TeamPresetForm => ({
   name: "",
   description: "",
   leadMemberId: "lead",
+  workflowSteps: [],
   teamProtocol: "",
   enabled: true,
   members: [blankMember(0)],
 });
 
-const detailToForm = (detail: TeamPresetDetail): TeamPresetForm => ({
-  id: detail.team.id,
-  name: detail.team.name,
-  description: detail.team.description || "",
-  leadMemberId: detail.team.lead_member_id ?? "",
-  teamProtocol: detail.team.team_protocol || "",
-  enabled: detail.team.enabled,
+const detailToForm = (detail: ChatTeamPreset): TeamPresetForm => ({
+  id: detail.id,
+  name: detail.name,
+  description: detail.description || "",
+  leadMemberId: detail.lead_member_id ?? "",
+  workflowSteps: detail.workflow_steps.map((step) => ({
+    title: step.title,
+    description: step.description,
+  })),
+  teamProtocol: detail.team_protocol || "",
+  enabled: detail.enabled,
   members: detail.members.map((member) => ({
     id: member.id,
     name: member.name,
@@ -117,6 +153,7 @@ const detailToForm = (detail: TeamPresetDetail): TeamPresetForm => ({
     recommendedModel: member.recommended_model ?? "",
     systemPrompt: member.system_prompt || "",
     selectedSkillIdsText: member.selected_skill_ids.join(", "),
+    toolsEnabledText: jsonValueToText(member.tools_enabled),
   })),
 });
 
@@ -126,18 +163,32 @@ const parseSkillIds = (value: string): string[] =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const parseToolsEnabled = (value: string): JsonValue | null => {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return JSON.parse(trimmed) as JsonValue;
+};
+
+const normalizeWorkflowSteps = (
+  steps: WorkflowStepForm[],
+): WorkflowStepForm[] =>
+  steps
+    .map((step) => ({
+      title: step.title.trim(),
+      description: step.description.trim(),
+    }))
+    .filter((step) => step.title || step.description);
+
 const formToPayload = (
   form: TeamPresetForm,
 ): CreateTeamPresetRequest | UpdateTeamPresetRequest => ({
-  team: {
-    id: form.id.trim(),
-    name: form.name.trim(),
-    description: form.description.trim() || null,
-    member_ids: form.members.map((member) => member.id.trim()).filter(Boolean),
-    lead_member_id: form.leadMemberId.trim() || null,
-    team_protocol: form.teamProtocol.trim() || null,
-    enabled: form.enabled,
-  },
+  id: form.id.trim(),
+  name: form.name.trim(),
+  description: form.description.trim() || null,
+  lead_member_id: form.leadMemberId.trim() || null,
+  workflow_steps: normalizeWorkflowSteps(form.workflowSteps),
+  team_protocol: form.teamProtocol.trim() || null,
+  enabled: form.enabled,
   members: form.members.map((member) => ({
     id: member.id.trim(),
     name: member.name.trim(),
@@ -147,15 +198,106 @@ const formToPayload = (
     system_prompt: member.systemPrompt.trim() || null,
     default_workspace_path: null,
     selected_skill_ids: parseSkillIds(member.selectedSkillIdsText),
-    tools_enabled: null as JsonValue | null,
+    tools_enabled: parseToolsEnabled(member.toolsEnabledText),
     enabled: true,
   })),
 });
 
+const validateTeamPresetForm = (
+  form: TeamPresetForm,
+): { issue: FormValidationIssue; payload?: never } | {
+  issue?: never;
+  payload: CreateTeamPresetRequest | UpdateTeamPresetRequest;
+} => {
+  if (!form.name.trim()) {
+    return {
+      issue: { fieldKey: "team:name", message: "Team name is required." },
+    };
+  }
+
+  if (form.members.length === 0) {
+    return {
+      issue: { fieldKey: "team:members", message: "At least one member is required." },
+    };
+  }
+
+  const memberIds = new Set<string>();
+  for (const member of form.members) {
+    const memberId = member.id.trim();
+    if (!member.name.trim()) {
+      return {
+        issue: {
+          fieldKey: `member:${member.id}:name`,
+          memberId: member.id,
+          message: "Member name is required.",
+        },
+      };
+    }
+    if (memberId && memberIds.has(memberId)) {
+      return {
+        issue: {
+          fieldKey: `member:${member.id}:id`,
+          memberId: member.id,
+          message: "Member IDs must be unique.",
+        },
+      };
+    }
+    if (memberId) memberIds.add(memberId);
+  }
+
+  const leadMemberId = form.leadMemberId.trim();
+  if (
+    leadMemberId &&
+    !form.members.some((member) => member.id.trim() === leadMemberId)
+  ) {
+    return {
+      issue: {
+        fieldKey: "team:lead_member_id",
+        message: "Lead member must reference an existing member.",
+      },
+    };
+  }
+
+  for (const member of form.members) {
+    try {
+      parseToolsEnabled(member.toolsEnabledText);
+    } catch {
+      return {
+        issue: {
+          fieldKey: `member:${member.id}:tools_enabled`,
+          memberId: member.id,
+          message: "Invalid JSON format. Please check your syntax.",
+        },
+      };
+    }
+  }
+
+  return { payload: formToPayload(form) };
+};
+
+const validateMemberToolsEnabled = (
+  form: TeamPresetForm,
+  memberId: string,
+): FormValidationIssue | null => {
+  const member = form.members.find((item) => item.id === memberId);
+  if (!member) return null;
+
+  try {
+    parseToolsEnabled(member.toolsEnabledText);
+    return null;
+  } catch {
+    return {
+      fieldKey: `member:${member.id}:tools_enabled`,
+      memberId: member.id,
+      message: "Invalid JSON format. Please check your syntax.",
+    };
+  }
+};
+
 const errorText = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback;
 
-type TemplateMemberBuild = {
+export type TemplateMemberBuild = {
   allowedSkillIds: string[];
   displayOrder: number;
   modelName: string | null;
@@ -185,7 +327,7 @@ const firstAvailableRuntime = (
 ): AgentRuntimeStatus | undefined =>
   runtimes.find((runner) => getRuntimeDisplayState(runner) === "available");
 
-const teamTemplateSessionUpdatePayload = (
+export const teamTemplateSessionUpdatePayload = (
   patch: Partial<UpdateChatSession>,
 ): UpdateChatSession => ({
   title: null,
@@ -199,22 +341,18 @@ const teamTemplateSessionUpdatePayload = (
   ...patch,
 });
 
-const buildTemplateMemberSpecs = (
-  detail: TeamPresetDetail,
+export const buildTemplateMemberSpecs = (
+  detail: ChatTeamPreset,
   workspacePath: string | null,
   runtimes: AgentRuntimeStatus[],
 ): TemplateMemberBuild[] => {
-  const memberById = new Map(detail.members.map((member) => [member.id, member]));
-  const selectedMembers = detail.team.member_ids
-    .map((memberId) => memberById.get(memberId))
-    .filter(
-      (member): member is ChatMemberPreset =>
-        !!member && member.enabled !== false,
-    );
+  const selectedMembers = detail.members.filter(
+    (member) => member.enabled !== false,
+  );
   const leadMemberId =
-    detail.team.lead_member_id &&
-    selectedMembers.some((member) => member.id === detail.team.lead_member_id)
-      ? detail.team.lead_member_id
+    detail.lead_member_id &&
+    selectedMembers.some((member) => member.id === detail.lead_member_id)
+      ? detail.lead_member_id
       : selectedMembers[0]?.id;
 
   return selectedMembers.flatMap((member, index) => {
@@ -435,32 +573,80 @@ const getTemplateIcon = (
   return getCategoryIcon(category);
 };
 
+const createMockMemberSummary = (
+  id: string,
+  name: string,
+  description: string,
+): TeamPresetMemberSummary => ({
+  id,
+  name,
+  description,
+  runner_type: null,
+  recommended_model: null,
+  is_builtin: true,
+  enabled: true,
+});
+
+const advancedReleaseMemberSummaries = [
+  createMockMemberSummary(
+    "release_lead",
+    "Release lead",
+    "Owns release scope, risk triage, and final go/no-go framing.",
+  ),
+  createMockMemberSummary(
+    "qa_reviewer",
+    "QA reviewer",
+    "Checks regression risk, verifies acceptance criteria, and records blockers.",
+  ),
+  createMockMemberSummary(
+    "growth_writer",
+    "Growth writer",
+    "Turns release details into clear user-facing updates and follow-up notes.",
+  ),
+];
+
+const advancedGrowthMemberSummaries = [
+  createMockMemberSummary(
+    "growth_lead",
+    "Growth lead",
+    "Defines experiment goals, prioritizes opportunities, and keeps the weekly decision loop tight.",
+  ),
+  createMockMemberSummary(
+    "analytics",
+    "Analytics",
+    "Reads funnel movement, checks data quality, and summarizes decision confidence.",
+  ),
+  createMockMemberSummary(
+    "copywriter",
+    "Copywriter",
+    "Drafts experiment variants, messaging angles, and post-test recommendations.",
+  ),
+];
+
 const advancedTeamTemplates: TeamPresetSummary[] = [
   {
     id: "advanced-release-command",
     name: "Release command center",
     description:
       "Coordinate release notes, QA checks, rollout signals, and post-launch follow-up.",
-    member_ids: ["release_lead", "qa_reviewer", "growth_writer"],
     lead_member_id: "release_lead",
     team_protocol: "Mock professional release workflow placeholder.",
     is_builtin: true,
     enabled: true,
-    member_count: 3,
-    members: [],
+    member_count: advancedReleaseMemberSummaries.length,
+    members: advancedReleaseMemberSummaries,
   },
   {
     id: "advanced-growth-ops",
     name: "Growth operations",
     description:
       "Plan experiments, analyze funnel deltas, and prepare weekly growth decisions.",
-    member_ids: ["growth_lead", "analytics", "copywriter"],
     lead_member_id: "growth_lead",
     team_protocol: "Mock professional growth workflow placeholder.",
     is_builtin: true,
     enabled: true,
-    member_count: 3,
-    members: [],
+    member_count: advancedGrowthMemberSummaries.length,
+    members: advancedGrowthMemberSummaries,
   },
 ];
 
@@ -483,19 +669,18 @@ const createMockMemberPreset = (
   enabled: true,
 });
 
-const mockTeamTemplateDetails: Record<string, TeamPresetDetail> = {
+const mockTeamTemplateDetails: Record<string, ChatTeamPreset> = {
   "advanced-release-command": {
-    team: {
-      id: "advanced-release-command",
-      name: "Release command center",
-      description:
-        "Coordinate release notes, QA checks, rollout signals, and post-launch follow-up.",
-      member_ids: ["release_lead", "qa_reviewer", "growth_writer"],
-      lead_member_id: "release_lead",
-      team_protocol: "Release lead coordinates scope, QA signs off blockers, and growth writer prepares launch communication.",
-      is_builtin: true,
-      enabled: true,
-    },
+    id: "advanced-release-command",
+    name: "Release command center",
+    description:
+      "Coordinate release notes, QA checks, rollout signals, and post-launch follow-up.",
+    lead_member_id: "release_lead",
+    workflow_steps: [],
+    team_protocol:
+      "Release lead coordinates scope, QA signs off blockers, and growth writer prepares launch communication.",
+    is_builtin: true,
+    enabled: true,
     members: [
       createMockMemberPreset("release_lead", "Release lead", "Owns release scope, risk triage, and final go/no-go framing.", ["planning", "source-control"]),
       createMockMemberPreset("qa_reviewer", "QA reviewer", "Checks regression risk, verifies acceptance criteria, and records blockers.", ["review", "testing"]),
@@ -503,17 +688,16 @@ const mockTeamTemplateDetails: Record<string, TeamPresetDetail> = {
     ],
   },
   "advanced-growth-ops": {
-    team: {
-      id: "advanced-growth-ops",
-      name: "Growth operations",
-      description:
-        "Plan experiments, analyze funnel deltas, and prepare weekly growth decisions.",
-      member_ids: ["growth_lead", "analytics", "copywriter"],
-      lead_member_id: "growth_lead",
-      team_protocol: "Growth lead frames the hypothesis, analytics validates results, and copywriter prepares experiment messaging.",
-      is_builtin: true,
-      enabled: true,
-    },
+    id: "advanced-growth-ops",
+    name: "Growth operations",
+    description:
+      "Plan experiments, analyze funnel deltas, and prepare weekly growth decisions.",
+    lead_member_id: "growth_lead",
+    workflow_steps: [],
+    team_protocol:
+      "Growth lead frames the hypothesis, analytics validates results, and copywriter prepares experiment messaging.",
+    is_builtin: true,
+    enabled: true,
     members: [
       createMockMemberPreset("growth_lead", "Growth lead", "Defines experiment goals, prioritizes opportunities, and keeps the weekly decision loop tight.", ["planning", "metrics"]),
       createMockMemberPreset("analytics", "Analytics", "Reads funnel movement, checks data quality, and summarizes decision confidence.", ["analysis", "research"]),
@@ -572,11 +756,13 @@ function TeamTemplatesHeader({
 
 function FormInput({
   disabled,
+  error,
   label,
   onChange,
   value,
 }: {
   disabled?: boolean;
+  error?: string;
   label: string;
   onChange: (value: string) => void;
   value: string;
@@ -590,18 +776,26 @@ function FormInput({
         disabled={disabled}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="team-template-field mt-1.5 h-8 w-full rounded-md border border-[var(--team-template-border)] bg-[var(--team-template-surface)] px-3 text-[13px] text-[var(--team-template-title)] shadow-[inset_0_1px_0_var(--team-template-top-highlight)] outline-none transition-colors duration-150 placeholder:text-[var(--team-template-muted)] focus:border-[var(--team-template-border-strong)] disabled:cursor-not-allowed disabled:opacity-60"
+        className={[
+          "team-template-field mt-1.5 h-8 w-full rounded-md border bg-[var(--team-template-surface)] px-3 text-[13px] text-[var(--team-template-title)] shadow-[inset_0_1px_0_var(--team-template-top-highlight)] outline-none transition-colors duration-150 placeholder:text-[var(--team-template-muted)] focus:border-[var(--team-template-border-strong)] disabled:cursor-not-allowed disabled:opacity-60",
+          error ? "border-red-400/70" : "border-[var(--team-template-border)]",
+        ].join(" ")}
       />
+      {error && <p className="mt-1 text-[11px] text-red-400">{error}</p>}
     </label>
   );
 }
 
 function FormTextarea({
+  disabled,
+  error,
   label,
   onChange,
   rows = 3,
   value,
 }: {
+  disabled?: boolean;
+  error?: string;
   label: string;
   onChange: (value: string) => void;
   rows?: number;
@@ -613,238 +807,79 @@ function FormTextarea({
         {label}
       </span>
       <textarea
+        disabled={disabled}
         value={value}
         rows={rows}
         onChange={(event) => onChange(event.target.value)}
-        className="team-template-field mt-1.5 w-full resize-y rounded-md border border-[var(--team-template-border)] bg-[var(--team-template-surface)] px-3 py-2 text-[13px] leading-relaxed text-[var(--team-template-title)] shadow-[inset_0_1px_0_var(--team-template-top-highlight)] outline-none transition-colors duration-150 placeholder:text-[var(--team-template-muted)] focus:border-[var(--team-template-border-strong)]"
+        className={[
+          "team-template-field mt-1.5 w-full resize-y rounded-md border bg-[var(--team-template-surface)] px-3 py-2 text-[13px] leading-relaxed text-[var(--team-template-title)] shadow-[inset_0_1px_0_var(--team-template-top-highlight)] outline-none transition-colors duration-150 placeholder:text-[var(--team-template-muted)] focus:border-[var(--team-template-border-strong)] disabled:cursor-not-allowed disabled:opacity-60",
+          error ? "border-red-400/70" : "border-[var(--team-template-border)]",
+        ].join(" ")}
       />
+      {error && <p className="mt-1 text-[11px] text-red-400">{error}</p>}
     </label>
   );
 }
 
-function TemplateEditor({
-  form,
-  formError,
-  mode,
-  saving,
-  onCancel,
-  onChange,
-  onSave,
+function MarkdownEditableField({
+  disabled,
+  editable,
+  onCommit,
+  placeholder,
+  rows = 5,
+  value,
 }: {
-  form: TeamPresetForm;
-  formError: string | null;
-  mode: Exclude<EditorMode, null>;
-  saving: boolean;
-  onCancel: () => void;
-  onChange: (form: TeamPresetForm) => void;
-  onSave: () => void;
+  disabled?: boolean;
+  editable: boolean;
+  onCommit: (value: string) => void;
+  placeholder: string;
+  rows?: number;
+  value: string;
 }) {
-  const updateMember = (index: number, patch: Partial<MemberForm>) => {
-    const members = form.members.map((member, memberIndex) =>
-      memberIndex === index ? { ...member, ...patch } : member,
-    );
-    onChange({
-      ...form,
-      leadMemberId:
-        form.leadMemberId &&
-        members.some((member) => member.id === form.leadMemberId)
-          ? form.leadMemberId
-          : members[0]?.id ?? "",
-      members,
-    });
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commitDraft = () => {
+    setEditing(false);
+    if (draft !== value) {
+      onCommit(draft);
+    }
   };
 
-  const removeMember = (index: number) => {
-    const members = form.members.filter(
-      (_, memberIndex) => memberIndex !== index,
+  if (editable && editing) {
+    return (
+      <textarea
+        autoFocus
+        disabled={disabled}
+        rows={rows}
+        value={draft}
+        placeholder={placeholder}
+        onBlur={commitDraft}
+        onChange={(event) => setDraft(event.target.value)}
+        className="team-template-field w-full resize-y rounded-md border border-[var(--team-template-border)] bg-[var(--team-template-surface)] px-3 py-2 text-[13px] leading-relaxed text-[var(--team-template-title)] shadow-[inset_0_1px_0_var(--team-template-top-highlight)] outline-none transition-colors duration-150 placeholder:text-[var(--team-template-muted)] focus:border-[var(--team-template-border-strong)] disabled:cursor-not-allowed disabled:opacity-60"
+      />
     );
-    onChange({
-      ...form,
-      members,
-      leadMemberId:
-        members.find((member) => member.id === form.leadMemberId)?.id ??
-        members[0]?.id ??
-        "",
-    });
-  };
+  }
 
   return (
-    <div className="mx-auto max-w-4xl p-6 md:p-8">
-      <section className={`rounded-lg ${hairlineSurfaceClassName}`}>
-        <header className="flex h-14 items-center justify-between border-b border-[var(--team-template-border)] px-6">
-          <h2 className="text-[14px] font-medium text-[var(--team-template-title)]">
-            {mode === "create" ? "New custom template" : "Edit template"}
-          </h2>
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={saving}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--team-template-muted)] transition-colors duration-150 hover:bg-[var(--team-template-surface-hover)] hover:text-[var(--team-template-title)] disabled:opacity-50"
-          >
-            <X aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
-          </button>
-        </header>
-
-        <div className="space-y-6 p-6">
-          {formError && (
-            <div className="rounded-md bg-red-500/10 px-4 py-3 text-[13px] text-red-500 border border-red-500/20">
-              {formError}
-            </div>
-          )}
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <FormInput
-              disabled={mode === "edit"}
-              label="Template ID"
-              value={form.id}
-              onChange={(id) => onChange({ ...form, id })}
-            />
-            <FormInput
-              label="Name"
-              value={form.name}
-              onChange={(name) => onChange({ ...form, name })}
-            />
-          </div>
-          <FormTextarea
-            label="Description"
-            value={form.description}
-            onChange={(description) => onChange({ ...form, description })}
-          />
-          <FormTextarea
-            label="Team protocol"
-            value={form.teamProtocol}
-            onChange={(teamProtocol) => onChange({ ...form, teamProtocol })}
-          />
-          <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium text-[var(--team-template-title)]">
-            <input
-              type="checkbox"
-              checked={form.enabled}
-              onChange={(event) =>
-                onChange({ ...form, enabled: event.target.checked })
-              }
-              className="h-4 w-4 rounded border-[var(--team-template-border-strong)] bg-[var(--team-template-surface)] text-[var(--primary)] focus:ring-[var(--primary)]"
-            />
-            Enabled in picker
-          </label>
-
-          <div className="space-y-4">
-            <div className="flex items-center justify-between border-t border-[var(--team-template-border)] pt-8">
-              <h3 className="text-[14px] font-medium text-[var(--team-template-title)]">
-                Members
-              </h3>
-              <button
-                type="button"
-                onClick={() =>
-                  onChange({
-                    ...form,
-                    members: [...form.members, blankMember(form.members.length)],
-                  })
-                }
-                className={`${quietButtonClassName} h-8 gap-1.5 px-3 text-[13px] font-medium`}
-              >
-                <Plus aria-hidden="true" className="-ml-0.5 h-4 w-4 text-[var(--team-template-muted)]" strokeWidth={1.5} />
-                Add member
-              </button>
-            </div>
-
-            {form.members.map((member, index) => (
-              <section
-                key={`${member.id}-${index}`}
-                className={`rounded-lg p-6 ${hairlineSurfaceClassName}`}
-              >
-                <div className="mb-5 flex items-center justify-between">
-                  <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium text-[var(--team-template-title)]">
-                    <input
-                      type="radio"
-                      checked={form.leadMemberId === member.id}
-                      onChange={() =>
-                        onChange({ ...form, leadMemberId: member.id })
-                      }
-                      className="h-4 w-4 border-[var(--team-template-border-strong)] bg-[var(--team-template-surface)] text-[var(--primary)] focus:ring-[var(--primary)]"
-                    />
-                    Lead member
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => removeMember(index)}
-                    disabled={form.members.length === 1}
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--team-template-muted)] transition-colors duration-150 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
-                    aria-label="Remove member"
-                  >
-                    <Trash2 aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
-                  </button>
-                </div>
-                <div className="grid gap-6 md:grid-cols-2">
-                  <FormInput
-                    label="Member ID"
-                    value={member.id}
-                    onChange={(id) => updateMember(index, { id })}
-                  />
-                  <FormInput
-                    label="Name"
-                    value={member.name}
-                    onChange={(name) => updateMember(index, { name })}
-                  />
-                  <FormInput
-                    label="Executor"
-                    value={member.runnerType}
-                    onChange={(runnerType) => updateMember(index, { runnerType })}
-                  />
-                  <FormInput
-                    label="Recommended model"
-                    value={member.recommendedModel}
-                    onChange={(recommendedModel) =>
-                      updateMember(index, { recommendedModel })
-                    }
-                  />
-                </div>
-                <div className="mt-5 space-y-5">
-                  <FormInput
-                    label="Skill IDs (comma separated)"
-                    value={member.selectedSkillIdsText}
-                    onChange={(selectedSkillIdsText) =>
-                      updateMember(index, { selectedSkillIdsText })
-                    }
-                  />
-                  <FormTextarea
-                    label="Description"
-                    value={member.description}
-                    onChange={(description) => updateMember(index, { description })}
-                  />
-                  <FormTextarea
-                    label="System prompt"
-                    rows={5}
-                    value={member.systemPrompt}
-                    onChange={(systemPrompt) =>
-                      updateMember(index, { systemPrompt })
-                    }
-                  />
-                </div>
-              </section>
-            ))}
-          </div>
-
-          <div className="flex items-center justify-end gap-3 border-t border-[var(--team-template-border)] pt-6">
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={saving}
-              className={`${quietButtonClassName} h-9 px-4 text-[13px] font-medium disabled:opacity-50`}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={onSave}
-              disabled={saving}
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-white/10 bg-[#ededed] px-5 text-[13px] font-medium text-[#08090a] shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition-all duration-150 ease-out hover:-translate-y-px hover:bg-white disabled:opacity-60"
-            >
-              <Save aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
-              {saving ? "Saving..." : "Save template"}
-            </button>
-          </div>
-        </div>
-      </section>
+    <div
+      className={[
+        "min-h-[72px] rounded-md border border-[var(--team-template-border)] bg-[var(--team-template-surface)] p-3 text-[13px] leading-relaxed text-[var(--team-template-title)] shadow-[inset_0_1px_0_var(--team-template-top-highlight)]",
+        editable && !disabled ? "cursor-text hover:border-[var(--team-template-border-strong)]" : "",
+      ].join(" ")}
+      onClick={() => {
+        if (editable && !disabled) setEditing(true);
+      }}
+    >
+      {value.trim() ? (
+        <AgentMarkdown content={value} fontSize={13} />
+      ) : (
+        <span className="text-[var(--team-template-muted)]">{placeholder}</span>
+      )}
     </div>
   );
 }
@@ -893,10 +928,9 @@ const getAvatarInitials = (label: string): string => {
 };
 
 const getTemplateAgentInitials = (template: TeamPresetSummary): string[] => {
-  const memberNames = template.members
+  const source = template.members
     .map((member) => member.name)
     .filter(Boolean);
-  const source = memberNames.length > 0 ? memberNames : template.member_ids;
 
   if (source.length === 0) {
     return Array.from(
@@ -992,6 +1026,92 @@ const formatMemberJsonConfig = (value: JsonValue | null): string | null => {
   return serialized && serialized !== "null" ? serialized : null;
 };
 
+const memberFormToPreset = (member: MemberForm): ChatMemberPreset => {
+  let toolsEnabled: JsonValue | null = null;
+  try {
+    toolsEnabled = parseToolsEnabled(member.toolsEnabledText);
+  } catch {
+    toolsEnabled = null;
+  }
+
+  return {
+    id: member.id,
+    name: member.name,
+    description: member.description,
+    runner_type: member.runnerType.trim() || null,
+    recommended_model: member.recommendedModel.trim() || null,
+    system_prompt: member.systemPrompt,
+    default_workspace_path: null,
+    selected_skill_ids: parseSkillIds(member.selectedSkillIdsText),
+    tools_enabled: toolsEnabled as JsonValue,
+    is_builtin: false,
+    enabled: true,
+  };
+};
+
+const formToPreviewDetail = (form: TeamPresetForm): ChatTeamPreset => ({
+  id: form.id,
+  name: form.name,
+  description: form.description,
+  members: form.members.map(memberFormToPreset),
+  lead_member_id: form.leadMemberId || null,
+  workflow_steps: form.workflowSteps,
+  team_protocol: form.teamProtocol,
+  is_builtin: false,
+  enabled: form.enabled,
+});
+
+const nextMemberDraft = (members: MemberForm[]): MemberForm => {
+  const usedIds = new Set(members.map((member) => member.id));
+  let index = members.length + 1;
+  let id = `member_${index}`;
+  while (usedIds.has(id)) {
+    index += 1;
+    id = `member_${index}`;
+  }
+  return {
+    ...blankMember(index - 1),
+    id,
+    name: `Member ${index}`,
+  };
+};
+
+export const createTeamPresetDraft = (): TeamPresetForm => blankForm();
+
+export const addCustomMemberDraft = (
+  form: TeamPresetForm,
+): { form: TeamPresetForm; selectedMemberId: string } => {
+  const nextMember = nextMemberDraft(form.members);
+  return {
+    form: {
+      ...form,
+      leadMemberId: form.leadMemberId || nextMember.id,
+      members: [...form.members, nextMember],
+    },
+    selectedMemberId: nextMember.id,
+  };
+};
+
+export const commitTeamProtocolDraft = (
+  form: TeamPresetForm,
+  teamProtocol: string,
+): TeamPresetForm => ({ ...form, teamProtocol });
+
+export const commitMemberSystemPromptDraft = (
+  form: TeamPresetForm,
+  memberId: string,
+  systemPrompt: string,
+): TeamPresetForm => ({
+  ...form,
+  members: form.members.map((member) =>
+    member.id === memberId ? { ...member, systemPrompt } : member,
+  ),
+});
+
+export const validateTeamPresetDraft = validateTeamPresetForm;
+export const validateMemberToolsEnabledDraft = validateMemberToolsEnabled;
+export const teamPresetDraftToPayload = formToPayload;
+
 function MemberInfoSection({
   children,
   meta,
@@ -1038,13 +1158,26 @@ function MemberInfoField({
 }
 
 function TemplateMemberInfoPage({
+  disabled = false,
+  editable = false,
+  fieldErrors = {},
+  formMember,
   index,
   isLead,
   member,
+  onMemberChange,
 }: {
+  disabled?: boolean;
+  editable?: boolean;
+  fieldErrors?: Record<string, string>;
+  formMember?: MemberForm;
   index: number;
   isLead: boolean;
   member: ChatMemberPreset;
+  onMemberChange?: (
+    patch: Partial<MemberForm>,
+    options?: DraftCommitOptions,
+  ) => void;
 }) {
   const roleKey = getMemberRoleKey(member);
   const roleDescription = formatMemberValue(
@@ -1056,6 +1189,130 @@ function TemplateMemberInfoPage({
     roleDescription,
   );
   const mcpConfig = formatMemberJsonConfig(member.tools_enabled);
+  const memberKey = formMember?.id ?? member.id;
+
+  if (editable && formMember) {
+    return (
+      <aside className="team-template-member-detail flex min-h-0 flex-col p-1 lg:h-full lg:p-0">
+        <header className="flex min-w-0 items-start justify-between gap-4 border-b border-[var(--team-template-border)] pb-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <span
+              aria-hidden="true"
+              className={`mt-1 h-2 w-2 shrink-0 rounded-full shadow-[0_0_10px_currentColor] ${getMemberDotClassName(member, index)}`}
+            />
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <h2 className="truncate text-[16px] font-semibold leading-tight text-[var(--team-template-title)]">
+                  {formMember.name || roleKey}
+                </h2>
+                {isLead && (
+                  <span className="rounded-[4px] border border-[var(--team-template-ghost-badge-border)] px-1.5 py-0.5 font-mono text-[9px] font-medium text-[var(--team-template-muted)]">
+                    LEAD
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 font-mono text-[11px] text-[var(--team-template-aux)]">
+                {roleKey}
+              </p>
+            </div>
+          </div>
+        </header>
+
+        <div className="team-template-scrollbar min-h-0 flex-1 space-y-7 overflow-y-auto pt-4">
+          <MemberInfoSection meta="MEMBER" title="成员信息">
+            <div className="space-y-4">
+              <FormInput
+                disabled={disabled}
+                error={fieldErrors[`member:${memberKey}:name`]}
+                label="成员名"
+                value={formMember.name}
+                onChange={(name) => onMemberChange?.({ name })}
+              />
+              <FormTextarea
+                disabled={disabled}
+                label="成员描述"
+                value={formMember.description}
+                onChange={(description) => onMemberChange?.({ description })}
+              />
+            </div>
+          </MemberInfoSection>
+
+          <MemberInfoSection meta="MODEL" title="模型配置">
+            <div className="space-y-4">
+              <FormInput
+                disabled={disabled}
+                label="Runtime"
+                value={formMember.runnerType}
+                onChange={(runnerType) => onMemberChange?.({ runnerType })}
+              />
+              <FormInput
+                disabled={disabled}
+                label="Model"
+                value={formMember.recommendedModel}
+                onChange={(recommendedModel) =>
+                  onMemberChange?.({ recommendedModel })
+                }
+              />
+            </div>
+          </MemberInfoSection>
+
+          <MemberInfoSection meta="ROLE" title="职责设定">
+            <MarkdownEditableField
+              disabled={disabled}
+              editable
+              placeholder="填写成员职责设定..."
+              rows={7}
+              value={formMember.systemPrompt}
+              onCommit={(systemPrompt) =>
+                onMemberChange?.({ systemPrompt }, { autoSave: true })
+              }
+            />
+          </MemberInfoSection>
+
+          <MemberInfoSection meta="SKILLS" title="技能配置">
+            <FormInput
+              disabled={disabled}
+              label="技能 ID（逗号分隔）"
+              value={formMember.selectedSkillIdsText}
+              onChange={(selectedSkillIdsText) =>
+                onMemberChange?.({ selectedSkillIdsText })
+              }
+            />
+          </MemberInfoSection>
+
+          <MemberInfoSection meta="MCP" title="MCP 配置">
+            <label className="block">
+              <textarea
+                disabled={disabled}
+                value={formMember.toolsEnabledText}
+                rows={9}
+                onBlur={() =>
+                  onMemberChange?.(
+                    { toolsEnabledText: formMember.toolsEnabledText },
+                    { validateTools: true },
+                  )
+                }
+                onChange={(event) =>
+                  onMemberChange?.({ toolsEnabledText: event.target.value })
+                }
+                className={[
+                  "team-template-field w-full resize-y rounded-md border bg-[var(--team-template-surface)] px-3 py-2 font-mono text-[12px] leading-relaxed text-[var(--team-template-code-text)] shadow-[inset_0_1px_0_var(--team-template-top-highlight)] outline-none transition-colors duration-150 placeholder:text-[var(--team-template-muted)] focus:border-[var(--team-template-border-strong)] disabled:cursor-not-allowed disabled:opacity-60",
+                  fieldErrors[`member:${memberKey}:tools_enabled`]
+                    ? "border-red-400/70"
+                    : "border-[var(--team-template-border)]",
+                ].join(" ")}
+              />
+              {fieldErrors[`member:${memberKey}:tools_enabled`] && (
+                <p className="mt-1 text-[11px] text-red-400">
+                  {fieldErrors[`member:${memberKey}:tools_enabled`]}
+                </p>
+              )}
+            </label>
+          </MemberInfoSection>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside
@@ -1164,10 +1421,29 @@ function AgentAvatarGroup({ template }: { template: TeamPresetSummary }) {
   );
 }
 
-function WorkflowPreview({ steps }: { steps: WorkflowStepPreview[] }) {
+function WorkflowPreview({
+  disabled = false,
+  editable = false,
+  onStepsChange,
+  steps,
+}: {
+  disabled?: boolean;
+  editable?: boolean;
+  onStepsChange?: (steps: WorkflowStepForm[]) => void;
+  steps: WorkflowStepPreview[];
+}) {
   const stepCountLabel = String(steps.length).padStart(2, "0");
   const [litDotCount, setLitDotCount] = useState(0);
   const [litTextCount, setLitTextCount] = useState(0);
+  const editableSteps = steps as WorkflowStepForm[];
+
+  const updateStep = (index: number, patch: Partial<WorkflowStepForm>) => {
+    onStepsChange?.(
+      editableSteps.map((step, stepIndex) =>
+        stepIndex === index ? { ...step, ...patch } : step,
+      ),
+    );
+  };
 
   useEffect(() => {
     setLitDotCount(0);
@@ -1197,7 +1473,72 @@ function WorkflowPreview({ steps }: { steps: WorkflowStepPreview[] }) {
         </span>
       </div>
 
+      {editable ? (
+        <div className="space-y-3">
+          {editableSteps.length === 0 && (
+            <p className="rounded-md border border-dashed border-[var(--team-template-border)] px-3 py-4 text-[12px] text-[var(--team-template-muted)]">
+              No workflow steps defined.
+            </p>
+          )}
+          {editableSteps.map((step, index) => (
+            <section
+              key={`workflow-step-${index}`}
+              className="rounded-md border border-[var(--team-template-border)] bg-[var(--team-template-surface)] p-3"
+            >
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="font-mono text-[10px] text-[var(--team-template-aux)]">
+                  STEP {String(index + 1).padStart(2, "0")}
+                </span>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() =>
+                    onStepsChange?.(
+                      editableSteps.filter((_, stepIndex) => stepIndex !== index),
+                    )
+                  }
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--team-template-muted)] transition-colors duration-150 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
+                  aria-label="Remove workflow step"
+                >
+                  <Trash2 aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.4} />
+                </button>
+              </div>
+              <div className="space-y-3">
+                <FormInput
+                  disabled={disabled}
+                  label="步骤标题"
+                  value={step.title}
+                  onChange={(title) => updateStep(index, { title })}
+                />
+                <FormTextarea
+                  disabled={disabled}
+                  label="步骤描述"
+                  rows={2}
+                  value={step.description}
+                  onChange={(description) => updateStep(index, { description })}
+                />
+              </div>
+            </section>
+          ))}
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() =>
+              onStepsChange?.([...editableSteps, { title: "", description: "" }])
+            }
+            className={`${quietButtonClassName} h-8 gap-1.5 px-3 text-[12px] font-medium disabled:opacity-50`}
+          >
+            <Plus aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.4} />
+            Add Step
+          </button>
+        </div>
+      ) : (
       <div>
+        {steps.length === 0 ? (
+          <p className="rounded-md border border-dashed border-[var(--team-template-border)] px-3 py-4 text-[12px] text-[var(--team-template-muted)]">
+            No workflow steps defined.
+          </p>
+        ) : (
         <ol className="space-y-3">
           {steps.map((step, index) => {
             const isProgressStep = index === steps.length - 1;
@@ -1246,7 +1587,9 @@ function WorkflowPreview({ steps }: { steps: WorkflowStepPreview[] }) {
             );
           })}
         </ol>
+        )}
       </div>
+      )}
     </section>
   );
 }
@@ -1257,61 +1600,101 @@ function TemplateDetailView({
   detail,
   detailError,
   detailLoading,
+  deleting = false,
+  editorMode,
+  fieldErrors = {},
+  form,
+  formError,
+  saving = false,
+  selectedEditableMemberId,
   usingTemplate,
   onBack,
+  onCancel,
   onDelete,
   onEdit,
+  onFormChange,
+  onAutoSave,
+  onEditableMemberSelect,
+  onValidateMemberTools,
   onRetryDetail,
+  onSave,
   onUseTemplate,
 }: {
   canEdit: boolean;
   canUseTemplate: boolean;
-  detail: TeamPresetDetail | null;
+  detail: ChatTeamPreset | null;
   detailError: string | null;
   detailLoading: boolean;
+  deleting?: boolean;
+  editorMode?: Exclude<EditorMode, null> | null;
+  fieldErrors?: Record<string, string>;
+  form?: TeamPresetForm;
+  formError?: string | null;
+  saving?: boolean;
+  selectedEditableMemberId?: string | null;
   usingTemplate: boolean;
   onBack: () => void;
+  onCancel?: () => void;
   onDelete: () => void;
   onEdit: () => void;
+  onFormChange?: (form: TeamPresetForm, options?: DraftCommitOptions) => void;
+  onAutoSave?: (form: TeamPresetForm) => void;
+  onEditableMemberSelect?: (memberId: string | null) => void;
+  onValidateMemberTools?: (form: TeamPresetForm, memberId: string) => void;
   onRetryDetail: () => void;
+  onSave?: () => void;
   onUseTemplate: () => void;
 }) {
-  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+  const [readonlySelectedMemberId, setReadonlySelectedMemberId] = useState<
+    string | null
+  >(null);
+  const isEditing = Boolean(editorMode && form);
+  const viewDetail = isEditing && form ? formToPreviewDetail(form) : detail;
+  const controlsDisabled = saving || deleting;
+  const selectedMemberId = isEditing
+    ? (selectedEditableMemberId ?? viewDetail?.members[0]?.id ?? null)
+    : readonlySelectedMemberId;
+  const setSelectedMemberId = isEditing
+    ? (memberId: string | null) => onEditableMemberSelect?.(memberId)
+    : setReadonlySelectedMemberId;
 
   useEffect(() => {
-    if (!detail) {
+    if (!viewDetail) {
       setSelectedMemberId(null);
       return;
     }
 
-    setSelectedMemberId((current) =>
-      current && detail.members.some((member) => member.id === current)
-        ? current
-        : (detail.members[0]?.id ?? null),
-    );
-  }, [detail]);
+    const nextSelectedMemberId =
+      selectedMemberId &&
+      viewDetail.members.some((member) => member.id === selectedMemberId)
+        ? selectedMemberId
+        : (viewDetail.members[0]?.id ?? null);
+    if (nextSelectedMemberId !== selectedMemberId) {
+      setSelectedMemberId(nextSelectedMemberId);
+    }
+  }, [isEditing, selectedMemberId, setSelectedMemberId, viewDetail]);
 
   const selectedMember = useMemo(
     () =>
-      detail?.members.find((member) => member.id === selectedMemberId) ??
-      detail?.members[0] ??
+      viewDetail?.members.find((member) => member.id === selectedMemberId) ??
+      viewDetail?.members[0] ??
       null,
-    [detail, selectedMemberId],
+    [viewDetail, selectedMemberId],
   );
   const selectedMemberIndex = useMemo(
     () =>
-      selectedMember && detail
+      selectedMember && viewDetail
         ? Math.max(
-            detail.members.findIndex(
+            viewDetail.members.findIndex(
               (member) => member.id === selectedMember.id,
             ),
             0,
           )
         : 0,
-    [detail, selectedMember],
+    [viewDetail, selectedMember],
   );
 
-  if (detailLoading) {
+  if (!isEditing && detailLoading) {
     return (
       <div className="mx-auto w-full max-w-[1280px] p-6 md:p-8 lg:p-10 animate-pulse">
         <div className="mb-8 h-6 w-32 rounded bg-[var(--team-template-surface-hover)]"></div>
@@ -1327,7 +1710,7 @@ function TemplateDetailView({
     );
   }
 
-  if (detailError || !detail) {
+  if (!isEditing && (detailError || !viewDetail)) {
     return (
       <div className="mx-auto w-full max-w-[1280px] p-6 pt-24 text-center md:p-8 lg:p-10">
         <h2 className="text-[16px] font-medium text-[var(--team-template-title)]">
@@ -1354,19 +1737,101 @@ function TemplateDetailView({
     );
   }
 
-  const presentation = getTemplatePresentation(detail.team.id);
+  if (!viewDetail) return null;
+
+  const presentation = getTemplatePresentation(viewDetail.id);
   const DetailCategoryIcon = getTemplateIcon(
-    detail.team.id,
-    detail.team.name,
+    viewDetail.id,
+    viewDetail.name,
     presentation.categories[0],
   );
+  const workflowSteps =
+    isEditing && form
+      ? form.workflowSteps
+      : viewDetail.workflow_steps.length > 0
+        ? viewDetail.workflow_steps
+        : viewDetail.is_builtin
+          ? presentation.workflow
+          : [];
+  const selectedFormMemberIndex =
+    form?.members.findIndex((member) => member.id === selectedMemberId) ?? -1;
+  const selectedFormMember =
+    form && selectedFormMemberIndex >= 0
+      ? form.members[selectedFormMemberIndex]
+      : (form?.members[0] ?? null);
+
+  const commitFormChange = (
+    nextForm: TeamPresetForm,
+    options?: DraftCommitOptions,
+  ) => {
+    onFormChange?.(nextForm, options);
+    if (options?.validateTools && selectedFormMember?.id) {
+      onValidateMemberTools?.(nextForm, selectedFormMember.id);
+    } else if (options?.autoSave) {
+      onAutoSave?.(nextForm);
+    }
+  };
+
+  const updateSelectedFormMember = (
+    patch: Partial<MemberForm>,
+    options?: DraftCommitOptions,
+  ) => {
+    if (!form || !selectedFormMember) return;
+    const targetIndex =
+      selectedFormMemberIndex >= 0 ? selectedFormMemberIndex : 0;
+    const previousId = form.members[targetIndex]?.id;
+    const members = form.members.map((member, index) =>
+      index === targetIndex ? { ...member, ...patch } : member,
+    );
+    const nextId = members[targetIndex]?.id ?? previousId;
+    const nextForm = {
+      ...form,
+      leadMemberId:
+        previousId && form.leadMemberId === previousId && nextId
+          ? nextId
+          : form.leadMemberId,
+      members,
+    };
+    commitFormChange(nextForm, options);
+    if (patch.id && patch.id !== selectedMemberId) {
+      setSelectedMemberId(patch.id);
+    }
+  };
+
+  const addCustomMember = () => {
+    if (!form) return;
+    const nextMember = nextMemberDraft(form.members);
+    const nextForm = {
+      ...form,
+      leadMemberId: form.leadMemberId || nextMember.id,
+      members: [...form.members, nextMember],
+    };
+    commitFormChange(nextForm);
+    setSelectedMemberId(nextMember.id);
+  };
+
+  const removeFormMember = (memberId: string) => {
+    if (!form) return;
+    const members = form.members.filter((member) => member.id !== memberId);
+    const nextForm = {
+      ...form,
+      leadMemberId: members.some((member) => member.id === form.leadMemberId)
+        ? form.leadMemberId
+        : (members[0]?.id ?? ""),
+      members,
+    };
+    commitFormChange(nextForm);
+    if (selectedMemberId === memberId) {
+      setSelectedMemberId(members[0]?.id ?? null);
+    }
+  };
 
   return (
     <div className="mx-auto grid h-auto min-h-full w-full max-w-[1280px] grid-cols-1 lg:h-full lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(420px,40vw)] 2xl:grid-cols-[minmax(0,1fr)_540px]">
       <div className="team-template-scrollbar min-w-0 p-5 md:p-7 lg:min-h-0 lg:overflow-y-auto lg:p-8">
       <button
         type="button"
-        onClick={onBack}
+        onClick={isEditing ? (onCancel ?? onBack) : onBack}
         className="mb-5 flex items-center gap-2 text-[12px] font-medium text-[var(--team-template-muted)] transition-colors duration-150 hover:text-[var(--team-template-title)]"
       >
         <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.2} /> 返回模板
@@ -1378,48 +1843,93 @@ function TemplateDetailView({
             <div className="flex h-6 w-6 shrink-0 items-center justify-center text-[var(--team-template-icon)]">
               <DetailCategoryIcon className="h-4 w-4" strokeWidth={1.2} />
             </div>
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-2">
-                <h1 className="truncate text-[20px] font-semibold leading-tight text-[var(--team-template-title)]">
-                  {detail.team.name}
-                </h1>
-                {detail.team.is_builtin && <RecommendedBadge />}
-              </div>
-              <div className="mt-2">
-                <ScenarioBadges categories={presentation.categories} />
-              </div>
-              <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-[var(--team-template-muted)]">
-                {detail.team.description || "No description provided for this template."}
-              </p>
+            <div className="min-w-0 flex-1">
+              {isEditing && form ? (
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
+                    <FormInput
+                      disabled={controlsDisabled}
+                      error={fieldErrors["team:name"]}
+                      label="团队名"
+                      value={form.name}
+                      onChange={(name) => onFormChange?.({ ...form, name })}
+                    />
+                    <FormInput
+                      disabled={saving || editorMode === "edit"}
+                      label="模板 ID"
+                      value={form.id}
+                      onChange={(id) => onFormChange?.({ ...form, id })}
+                    />
+                  </div>
+                  <FormTextarea
+                    disabled={controlsDisabled}
+                    label="描述"
+                    rows={2}
+                    value={form.description}
+                    onChange={(description) =>
+                      onFormChange?.({ ...form, description })
+                    }
+                  />
+                  <label className="flex cursor-pointer items-center gap-2 text-[12px] font-medium text-[var(--team-template-title)]">
+                    <input
+                      type="checkbox"
+                      disabled={controlsDisabled}
+                      checked={form.enabled}
+                      onChange={(event) =>
+                        onFormChange?.({ ...form, enabled: event.target.checked })
+                      }
+                      className="h-4 w-4 rounded border-[var(--team-template-border-strong)] bg-[var(--team-template-surface)] text-[var(--primary)] focus:ring-[var(--primary)] disabled:opacity-60"
+                    />
+                    Enabled in picker
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <h1 className="truncate text-[20px] font-semibold leading-tight text-[var(--team-template-title)]">
+                      {viewDetail.name}
+                    </h1>
+                    {viewDetail.is_builtin && <RecommendedBadge />}
+                  </div>
+                  <div className="mt-2">
+                    <ScenarioBadges categories={presentation.categories} />
+                  </div>
+                  <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-[var(--team-template-muted)]">
+                    {viewDetail.description || "No description provided for this template."}
+                  </p>
+                </>
+              )}
             </div>
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {canEdit && (
+            {canEdit && !isEditing && (
               <>
                 <button
                   type="button"
+                  disabled={deleting}
                   onClick={onEdit}
-                  className={`${quietButtonClassName} h-8 gap-1.5 px-3 text-[12px] font-medium`}
+                  className={`${quietButtonClassName} h-8 gap-1.5 px-3 text-[12px] font-medium disabled:opacity-50`}
                 >
                   <Pencil aria-hidden="true" className="h-3.5 w-3.5 text-[var(--team-template-muted)]" strokeWidth={1.2} />
                   编辑
                 </button>
                 <button
                   type="button"
+                  disabled={deleting}
                   onClick={onDelete}
-                  className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-red-300 ${hairlineSurfaceClassName} transition-all duration-150 ease-out hover:-translate-y-px hover:border-red-400/30 hover:bg-red-500/10`}
+                  className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-red-300 ${hairlineSurfaceClassName} transition-all duration-150 ease-out hover:-translate-y-px hover:border-red-400/30 hover:bg-red-500/10 disabled:opacity-50`}
                 >
                   <Trash2 aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.2} />
-                  删除
+                  {deleting ? "Deleting..." : "Delete"}
                 </button>
               </>
             )}
-            {canUseTemplate && (
+            {canUseTemplate && !isEditing && (
               <button
                 type="button"
                 onClick={onUseTemplate}
-                disabled={usingTemplate}
+                disabled={usingTemplate || deleting}
                 className="inline-flex h-8 items-center gap-2 rounded-[6px] border border-white/20 bg-[#f4f4f5] px-3 text-[12px] font-semibold text-[#08090a] shadow-[inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-1px_0_rgba(0,0,0,0.08),0_1px_0_rgba(0,0,0,0.35),0_2px_0_rgba(0,0,0,0.16)] transition-all duration-150 ease-out hover:-translate-y-px hover:bg-white"
               >
                 {usingTemplate ? "应用中..." : "使用模板"}
@@ -1433,21 +1943,46 @@ function TemplateDetailView({
       </header>
 
       <div className="grid gap-12 lg:grid-cols-[minmax(220px,0.9fr)_minmax(0,2fr)]">
-        <WorkflowPreview steps={presentation.workflow} />
+        <WorkflowPreview
+          disabled={controlsDisabled}
+          editable={isEditing}
+          steps={workflowSteps}
+          onStepsChange={(workflowSteps) => {
+            if (form) commitFormChange({ ...form, workflowSteps });
+          }}
+        />
 
         <section className="border-t border-[var(--team-template-border)] pt-5">
           <header className="mb-3 flex items-center justify-between gap-3">
             <h2 className="text-[12px] font-medium tracking-[0.02em] text-[var(--team-template-muted)]">
               成员信息
             </h2>
-            <span className="font-mono text-[9px] font-medium text-[var(--team-template-aux)] tabular-nums">
-              MEMBERS / {String(detail.members.length).padStart(2, "0")}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[9px] font-medium text-[var(--team-template-aux)] tabular-nums">
+                MEMBERS / {String(viewDetail.members.length).padStart(2, "0")}
+              </span>
+              {isEditing && (
+                <button
+                  type="button"
+                  disabled={controlsDisabled}
+                  onClick={addCustomMember}
+                  className={`${quietButtonClassName} h-7 gap-1.5 px-2.5 text-[11px] font-medium disabled:opacity-50`}
+                >
+                  <Plus aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.4} />
+                  Add Member
+                </button>
+              )}
+            </div>
           </header>
 
           <div>
-              {detail.members.map((member, index) => {
-                const isLead = member.id === detail.team.lead_member_id;
+              {viewDetail.members.length === 0 && (
+                <p className="rounded-md border border-dashed border-[var(--team-template-border)] px-3 py-4 text-[12px] text-[var(--team-template-muted)]">
+                  No members added yet.
+                </p>
+              )}
+              {viewDetail.members.map((member, index) => {
+                const isLead = member.id === viewDetail.lead_member_id;
                 const active = selectedMember?.id === member.id;
                 const roleKey = getMemberRoleKey(member);
                 const description =
@@ -1455,24 +1990,33 @@ function TemplateDetailView({
                   member.system_prompt ||
                   "No role description.";
 
-                return (
-                  <button
-                    key={member.id}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => setSelectedMemberId(member.id)}
-                    className={[
-                      "team-template-member-row group grid min-h-[48px] w-full grid-cols-1 gap-1.5 border-b border-[var(--team-template-border)] px-2 py-2 text-left transition-colors duration-150 last:border-b-0 md:grid-cols-[minmax(150px,0.78fr)_minmax(0,1fr)_auto] md:items-center md:gap-3",
-                      active
-                        ? "bg-[var(--team-template-row-hover)]"
-                        : "hover:bg-[var(--team-template-row-hover)]",
-                    ].join(" ")}
-                  >
+                const rowClassName = [
+                  "team-template-member-row group grid min-h-[48px] w-full grid-cols-1 gap-1.5 border-b border-[var(--team-template-border)] px-2 py-2 text-left transition-colors duration-150 last:border-b-0 md:grid-cols-[minmax(150px,0.78fr)_minmax(0,1fr)_auto] md:items-center md:gap-3",
+                  active
+                    ? "bg-[var(--team-template-row-hover)]"
+                    : "hover:bg-[var(--team-template-row-hover)]",
+                ].join(" ");
+                const rowContent = (
+                  <>
                     <span className="flex min-w-0 items-center gap-2">
                       <span
                         aria-hidden="true"
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${getMemberDotClassName(member, index)}`}
                       />
+                      {isEditing && form ? (
+                        <input
+                          type="radio"
+                          disabled={controlsDisabled}
+                          checked={isLead}
+                          onChange={(event) => {
+                            event.stopPropagation();
+                            commitFormChange({ ...form, leadMemberId: member.id });
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          className="h-3.5 w-3.5 shrink-0 border-[var(--team-template-border-strong)] bg-[var(--team-template-surface)] text-[var(--primary)] focus:ring-[var(--primary)] disabled:opacity-60"
+                          aria-label="Set lead member"
+                        />
+                      ) : null}
                       <span
                         className={`min-w-0 truncate rounded-[4px] border px-1.5 py-0.5 font-mono text-[11px] font-semibold leading-none text-[var(--team-template-code-text)] transition-colors duration-150 group-hover:text-[var(--team-template-title)] ${getMemberRoleToneClassName(member, index)}`}
                         title={roleKey}
@@ -1503,17 +2047,50 @@ function TemplateDetailView({
                           {member.selected_skill_ids.length} skills
                         </span>
                       )}
-                      <ChevronRight
-                        aria-hidden="true"
-                        className={[
-                          "h-2.5 w-2.5 shrink-0 text-[var(--team-template-aux)] opacity-35 transition-all duration-150 group-hover:opacity-100 group-hover:text-[var(--team-template-muted)]",
-                          active
-                            ? "translate-x-0.5 opacity-70"
-                            : "",
-                        ].join(" ")}
-                        strokeWidth={1.4}
-                      />
+                      {isEditing ? (
+                        <button
+                          type="button"
+                          disabled={controlsDisabled}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeFormMember(member.id);
+                          }}
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--team-template-muted)] transition-colors duration-150 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
+                          aria-label="Remove member"
+                        >
+                          <Trash2 aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={1.4} />
+                        </button>
+                      ) : (
+                        <ChevronRight
+                          aria-hidden="true"
+                          className={[
+                            "h-2.5 w-2.5 shrink-0 text-[var(--team-template-aux)] opacity-35 transition-all duration-150 group-hover:opacity-100 group-hover:text-[var(--team-template-muted)]",
+                            active ? "translate-x-0.5 opacity-70" : "",
+                          ].join(" ")}
+                          strokeWidth={1.4}
+                        />
+                      )}
                     </span>
+                  </>
+                );
+
+                return isEditing ? (
+                  <div
+                    key={`${member.id}-${index}`}
+                    className={rowClassName}
+                    onClick={() => setSelectedMemberId(member.id)}
+                  >
+                    {rowContent}
+                  </div>
+                ) : (
+                  <button
+                    key={`${member.id}-${index}`}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setSelectedMemberId(member.id)}
+                    className={rowClassName}
+                  >
+                    {rowContent}
                   </button>
                 );
               })}
@@ -1521,7 +2098,7 @@ function TemplateDetailView({
         </section>
       </div>
 
-      {detail.team.team_protocol && (
+      {(isEditing || viewDetail.team_protocol) && (
         <section className="mt-12 border-t border-[var(--team-template-border)] pt-6">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 className="text-[12px] font-medium tracking-[0.02em] text-[var(--team-template-muted)]">
@@ -1532,18 +2109,74 @@ function TemplateDetailView({
             </span>
           </div>
           <div className="border-l border-[var(--team-template-border)] pl-3">
-            <AgentMarkdown content={detail.team.team_protocol} fontSize={13} />
+            {isEditing && form ? (
+              <MarkdownEditableField
+                disabled={controlsDisabled}
+                editable
+                placeholder="填写团队协作协议..."
+                rows={7}
+                value={form.teamProtocol}
+                onCommit={(teamProtocol) => {
+                  const nextForm = { ...form, teamProtocol };
+                  commitFormChange(nextForm, { autoSave: true });
+                }}
+              />
+            ) : (
+              <AgentMarkdown content={viewDetail.team_protocol} fontSize={13} />
+            )}
           </div>
         </section>
+      )}
+      {isEditing && (
+        <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-[var(--team-template-border)] pt-5">
+          {formError && (
+            <p className="mr-auto max-w-xl text-[13px] text-red-400">
+              {formError}
+            </p>
+          )}
+          {editorMode === "edit" && (
+            <button
+              type="button"
+              disabled={controlsDisabled}
+              onClick={onDelete}
+              className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-3 text-[13px] font-medium text-red-300 ${hairlineSurfaceClassName} transition-all duration-150 ease-out hover:-translate-y-px hover:border-red-400/30 hover:bg-red-500/10 disabled:opacity-50`}
+            >
+              <Trash2 aria-hidden="true" className="h-4 w-4" strokeWidth={1.4} />
+              {deleting ? "Deleting..." : "Delete"}
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={controlsDisabled}
+            onClick={onCancel}
+            className={`${quietButtonClassName} h-9 px-4 text-[13px] font-medium disabled:opacity-50`}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={controlsDisabled}
+            onClick={onSave ?? (() => undefined)}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-white/10 bg-[#ededed] px-5 text-[13px] font-medium text-[#08090a] shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition-all duration-150 ease-out hover:-translate-y-px hover:bg-white disabled:opacity-60"
+          >
+            <Save aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
       )}
       </div>
 
       <aside className="min-h-0 border-t border-[var(--team-template-border)] p-4 lg:h-full lg:border-l lg:border-t-0 lg:p-5">
         {selectedMember && (
           <TemplateMemberInfoPage
+            disabled={controlsDisabled}
+            editable={isEditing}
+            fieldErrors={fieldErrors}
+            formMember={selectedFormMember ?? undefined}
             index={selectedMemberIndex}
-            isLead={selectedMember.id === detail.team.lead_member_id}
+            isLead={selectedMember.id === viewDetail.lead_member_id}
             member={selectedMember}
+            onMemberChange={updateSelectedFormMember}
           />
         )}
       </aside>
@@ -1558,7 +2191,7 @@ function UseTeamTemplateDialog({
   onConfirm,
 }: {
   applying: boolean;
-  detail: TeamPresetDetail;
+  detail: ChatTeamPreset;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -1585,7 +2218,7 @@ function UseTeamTemplateDialog({
               使用此模板替换掉当前团队成员，并同步团队协议。
             </p>
             <p className="mt-3 truncate rounded-[7px] border border-[var(--team-template-border)] px-3 py-2 text-[12px] font-medium text-[var(--team-template-title)]">
-              {detail.team.name}
+              {detail.name}
             </p>
           </div>
           <button
@@ -1694,7 +2327,7 @@ export function TeamTemplatesPage() {
   } = useWorkspace();
   const [templates, setTemplates] = useState<TeamPresetSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedDetail, setSelectedDetail] = useState<TeamPresetDetail | null>(
+  const [selectedDetail, setSelectedDetail] = useState<ChatTeamPreset | null>(
     null,
   );
   const [loading, setLoading] = useState(true);
@@ -1704,10 +2337,14 @@ export function TeamTemplatesPage() {
   const [editorMode, setEditorMode] = useState<EditorMode>(null);
   const [form, setForm] = useState<TeamPresetForm>(blankForm);
   const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [editorSelectedMemberId, setEditorSelectedMemberId] = useState<
+    string | null
+  >(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [applyTargetDetail, setApplyTargetDetail] =
-    useState<TeamPresetDetail | null>(null);
+    useState<ChatTeamPreset | null>(null);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [projectTemplateMembers, setProjectTemplateMembers] = useState<
     ProjectMemberWithRuntime[]
@@ -1789,7 +2426,7 @@ export function TeamTemplatesPage() {
 
   const myTeamTemplates = useMemo(() => templates, [templates]);
   const selectedDetailForView =
-    selectedDetail?.team.id === selectedId ? selectedDetail : null;
+    selectedDetail?.id === selectedId ? selectedDetail : null;
   const detailViewLoading = Boolean(
     selectedId &&
       !detailError &&
@@ -1797,8 +2434,8 @@ export function TeamTemplatesPage() {
   );
   const canEditSelected = Boolean(
     selectedDetail &&
-      selectedDetail.team.id === selectedId &&
-      !selectedDetail.team.is_builtin,
+      selectedDetail.id === selectedId &&
+      !selectedDetail.is_builtin,
   );
 
   const openTemplateDetail = (teamId: string) => {
@@ -1808,32 +2445,52 @@ export function TeamTemplatesPage() {
   };
 
   const startCreate = () => {
-    setForm(blankForm());
+    const draft = blankForm();
+    setForm(draft);
     setFormError(null);
+    setFieldErrors({});
+    setEditorSelectedMemberId(draft.members[0]?.id ?? null);
     setEditorMode("create");
     setSelectedId(null);
   };
 
   const startEdit = () => {
-    if (!selectedDetailForView || selectedDetailForView.team.is_builtin) return;
-    setForm(detailToForm(selectedDetailForView));
+    if (!selectedDetailForView || selectedDetailForView.is_builtin) return;
+    const draft = detailToForm(selectedDetailForView);
+    setForm(draft);
     setFormError(null);
+    setFieldErrors({});
+    setEditorSelectedMemberId(
+      draft.leadMemberId || draft.members[0]?.id || null,
+    );
     setEditorMode("edit");
   };
 
   const saveTemplate = async () => {
-    setSaving(true);
     setFormError(null);
+    setFieldErrors({});
+    const validation = validateTeamPresetForm(form);
+    if (validation.issue) {
+      setFormError(validation.issue.message);
+      if (validation.issue.fieldKey) {
+        setFieldErrors({ [validation.issue.fieldKey]: validation.issue.message });
+      }
+      if (validation.issue.memberId) {
+        setEditorSelectedMemberId(validation.issue.memberId);
+      }
+      return;
+    }
+
+    setSaving(true);
     try {
-      const payload = formToPayload(form);
       const saved =
         editorMode === "create"
-          ? await teamPresetsApi.create(payload)
-          : await teamPresetsApi.update(form.id, payload);
+          ? await teamPresetsApi.create(validation.payload)
+          : await teamPresetsApi.update(form.id, validation.payload);
       setEditorMode(null);
       await loadTemplates();
       setSelectedDetail(saved);
-      setSelectedId(saved.team.id);
+      setSelectedId(saved.id);
     } catch (error) {
       const errorMessage = errorText(error, "Failed to save template.");
       setFormError(errorMessage);
@@ -1843,18 +2500,84 @@ export function TeamTemplatesPage() {
     }
   };
 
+  const autoSaveTemplate = useCallback(
+    async (draft: TeamPresetForm) => {
+      if (editorMode !== "edit" || saving) return;
+      const validation = validateTeamPresetForm(draft);
+      if (validation.issue) {
+        setFormError(validation.issue.message);
+        if (validation.issue.fieldKey) {
+          setFieldErrors({ [validation.issue.fieldKey]: validation.issue.message });
+        }
+        if (validation.issue.memberId) {
+          setEditorSelectedMemberId(validation.issue.memberId);
+        }
+        return;
+      }
+
+      setFormError(null);
+      setFieldErrors({});
+      setSaving(true);
+      try {
+        const saved = await teamPresetsApi.update(draft.id, validation.payload);
+        setSelectedDetail(saved);
+        await loadTemplates();
+      } catch (error) {
+        setFormError(errorText(error, "Failed to save template."));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [editorMode, loadTemplates, saving],
+  );
+
+  const validateMemberToolsOnBlur = useCallback(
+    (draft: TeamPresetForm, memberId: string) => {
+      const issue = validateMemberToolsEnabled(draft, memberId);
+      if (issue) {
+        setFormError(issue.message);
+        if (issue.fieldKey) {
+          setFieldErrors({ [issue.fieldKey]: issue.message });
+        }
+        if (issue.memberId) {
+          setEditorSelectedMemberId(issue.memberId);
+        }
+        return;
+      }
+
+      setFieldErrors((current) => {
+        const next = { ...current };
+        delete next[`member:${memberId}:tools_enabled`];
+        return next;
+      });
+      setFormError((current) =>
+        current === "Invalid JSON format. Please check your syntax."
+          ? null
+          : current,
+      );
+
+      if (editorMode === "edit") {
+        void autoSaveTemplate(draft);
+      }
+    },
+    [autoSaveTemplate, editorMode],
+  );
+
   const deleteSelected = async () => {
-    if (!selectedDetailForView || selectedDetailForView.team.is_builtin || deleting) {
+    if (!selectedDetailForView || selectedDetailForView.is_builtin || deleting) {
       return;
     }
     const confirmed = window.confirm(
-      `Delete "${selectedDetailForView.team.name}"? This removes the custom template and any private members only used by it.`,
+      `Delete "${selectedDetailForView.name}"? This removes the custom template and any private members only used by it.`,
     );
     if (!confirmed) return;
 
     setDeleting(true);
     try {
-      await teamPresetsApi.delete(selectedDetailForView.team.id);
+      await teamPresetsApi.delete(selectedDetailForView.id);
+      setEditorMode(null);
+      setFieldErrors({});
+      setFormError(null);
       setSelectedDetail(null);
       setSelectedId(null);
       await loadTemplates();
@@ -2000,7 +2723,7 @@ export function TeamTemplatesPage() {
         createdMembers.find((member) => member.role === "lead")?.agent_id ??
         createdMembers[0]?.agent_id ??
         null;
-      const teamProtocol = detail.team.team_protocol.trim();
+      const teamProtocol = detail.team_protocol.trim();
       const sessionPatch: Partial<UpdateChatSession> = {
         team_protocol: teamProtocol,
         team_protocol_enabled: teamProtocol.length > 0,
@@ -2022,7 +2745,7 @@ export function TeamTemplatesPage() {
       setProjectTemplateMembersLoaded(true);
       await Promise.all([refreshMembers(), refreshSessions()]);
       setApplyTargetDetail(null);
-      showToast(`已使用「${detail.team.name}」替换当前团队成员。`, "success");
+      showToast(`已使用「${detail.name}」替换当前团队成员。`, "success");
     } catch (error) {
       showToast(errorText(error, "使用模板失败。"), "error");
     } finally {
@@ -2077,14 +2800,39 @@ export function TeamTemplatesPage() {
         )}
 
         {!loading && !loadError && editorMode && (
-          <TemplateEditor
+          <TemplateDetailView
+            canEdit={false}
+            canUseTemplate={false}
+            detail={selectedDetailForView}
+            detailError={null}
+            detailLoading={false}
+            deleting={deleting}
+            editorMode={editorMode}
+            fieldErrors={fieldErrors}
             form={form}
             formError={formError}
-            mode={editorMode}
             saving={saving}
-            onCancel={() => setEditorMode(null)}
-            onChange={setForm}
+            selectedEditableMemberId={editorSelectedMemberId}
+            usingTemplate={false}
+            onAutoSave={(draft) => void autoSaveTemplate(draft)}
+            onBack={() => setEditorMode(null)}
+            onCancel={() => {
+              setEditorMode(null);
+              setFieldErrors({});
+              setFormError(null);
+            }}
+            onDelete={() => void deleteSelected()}
+            onEdit={() => undefined}
+            onEditableMemberSelect={setEditorSelectedMemberId}
+            onFormChange={(draft) => {
+              setForm(draft);
+              setFieldErrors({});
+              setFormError(null);
+            }}
+            onRetryDetail={() => undefined}
             onSave={() => void saveTemplate()}
+            onValidateMemberTools={validateMemberToolsOnBlur}
+            onUseTemplate={() => undefined}
           />
         )}
 
@@ -2094,11 +2842,12 @@ export function TeamTemplatesPage() {
             canUseTemplate={Boolean(
               selectedDetailForView &&
                 projectTemplateMembersLoaded &&
-                selectedDetailForView.team.id !== currentActiveTemplate?.id,
+                selectedDetailForView.id !== currentActiveTemplate?.id,
             )}
             detail={selectedDetailForView}
             detailError={detailError}
             detailLoading={detailViewLoading}
+            deleting={deleting}
             usingTemplate={applyingTemplate}
             onBack={() => setSelectedId(null)}
             onDelete={() => void deleteSelected()}

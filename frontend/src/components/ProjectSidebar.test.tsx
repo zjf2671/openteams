@@ -591,7 +591,7 @@ check(
 check(
   "create project modal keeps configured team templates after blank team",
   componentSource.includes("teamPresets.filter") &&
-    componentSource.includes("preset.member_ids.length") &&
+    componentSource.includes("preset.members.length") &&
     componentSource.includes("...blankTeamOptions") &&
     !componentSource.includes("fallbackTeamOptions"),
   componentSource,

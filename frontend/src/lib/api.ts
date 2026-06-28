@@ -118,6 +118,7 @@ import type {
 } from "@/types";
 import type {
   AddProjectMemberRequest,
+  ChatTeamPreset,
   CreateProjectRequest,
   CreateTeamPresetRequest,
   Project,
@@ -126,7 +127,6 @@ import type {
   ProjectStats,
   ProjectStatsQuery,
   Repo,
-  TeamPresetDetail,
   TeamPresetListResponse,
   UpdateProject,
   UpdateProjectMemberRequest,
@@ -280,31 +280,31 @@ export const teamPresetsApi = {
     const r = await makeRequest("/api/team-presets", { cache: "no-store" });
     return handleApiResponse<TeamPresetListResponse>(r);
   },
-  get: async (teamPresetId: string): Promise<TeamPresetDetail> => {
+  get: async (teamPresetId: string): Promise<ChatTeamPreset> => {
     const r = await makeRequest(
       `/api/team-presets/${encodeURIComponent(teamPresetId)}`,
       { cache: "no-store" },
     );
-    return handleApiResponse<TeamPresetDetail>(r);
+    return handleApiResponse<ChatTeamPreset>(r);
   },
   create: async (
     data: CreateTeamPresetRequest,
-  ): Promise<TeamPresetDetail> => {
+  ): Promise<ChatTeamPreset> => {
     const r = await makeRequest("/api/team-presets", {
       method: "POST",
       body: jsonBody(data),
     });
-    return handleApiResponse<TeamPresetDetail>(r);
+    return handleApiResponse<ChatTeamPreset>(r);
   },
   update: async (
     teamPresetId: string,
     data: UpdateTeamPresetRequest,
-  ): Promise<TeamPresetDetail> => {
+  ): Promise<ChatTeamPreset> => {
     const r = await makeRequest(
       `/api/team-presets/${encodeURIComponent(teamPresetId)}`,
       { method: "PUT", body: jsonBody(data) },
     );
-    return handleApiResponse<TeamPresetDetail>(r);
+    return handleApiResponse<ChatTeamPreset>(r);
   },
   delete: async (teamPresetId: string): Promise<void> => {
     const r = await makeRequest(

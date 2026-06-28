@@ -613,17 +613,11 @@ function WorkspaceLayout() {
     projectId: string,
     workspacePath: string | null,
     teamPreset: ChatTeamPreset,
-    memberPresets: ChatMemberPreset[],
     runtimes: AgentRuntimeStatus[],
   ): Promise<number> => {
-    const memberPresetById = new Map(
-      memberPresets
-        .filter((preset) => preset.enabled !== false)
-        .map((preset) => [preset.id, preset]),
+    const selectedMembers = teamPreset.members.filter(
+      (preset) => preset.enabled !== false,
     );
-    const selectedMembers = teamPreset.member_ids
-      .map((memberId) => memberPresetById.get(memberId))
-      .filter((preset): preset is ChatMemberPreset => !!preset);
     const leadMemberId =
       teamPreset.lead_member_id &&
       selectedMembers.some((member) => member.id === teamPreset.lead_member_id)
@@ -1281,7 +1275,6 @@ function WorkspaceLayout() {
   const chatPresets =
     (config as { chat_presets?: ChatPresetConfigView } | null)
       ?.chat_presets ?? {};
-  const memberPresets = chatPresets.members ?? [];
   const teamPresets = (chatPresets.teams ?? []).filter(
     (preset) => preset.enabled !== false,
   );
@@ -1310,7 +1303,6 @@ function WorkspaceLayout() {
           project.id,
           data.default_workspace_path,
           selectedTeamPreset,
-          memberPresets,
           runtimes,
         );
         if (templateMemberCount === 0) {

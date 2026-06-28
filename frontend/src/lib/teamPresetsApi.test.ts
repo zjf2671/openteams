@@ -39,33 +39,42 @@ globalThis.fetch = (async (input: RequestInfo | URL, options?: RequestInit) => {
   if (url === '/api/team-presets/team-one') {
     if (options?.method === 'DELETE') return jsonResponse(null);
     return jsonResponse({
-      team: {
-        id: 'team-one',
-        name: 'Team one',
-        description: 'First team',
-        member_ids: ['lead'],
-        lead_member_id: 'lead',
-        team_protocol: 'Review before merge',
-        is_builtin: false,
-        enabled: true,
-      },
+      id: 'team-one',
+      name: 'Team one',
+      description: 'First team',
       members: [],
+      lead_member_id: 'lead',
+      workflow_steps: [],
+      team_protocol: 'Review before merge',
+      is_builtin: false,
+      enabled: true,
     });
   }
   return jsonResponse({});
 }) as typeof fetch;
 
 const writePayload = {
-  team: {
-    id: 'team-one',
-    name: 'Team one',
-    description: 'First team',
-    member_ids: ['lead'],
-    lead_member_id: 'lead',
-    team_protocol: 'Review before merge',
-    enabled: true,
-  },
-  members: [],
+  id: 'team-one',
+  name: 'Team one',
+  description: 'First team',
+  lead_member_id: 'lead',
+  workflow_steps: [{ title: 'Plan', description: 'Set direction' }],
+  team_protocol: 'Review before merge',
+  enabled: true,
+  members: [
+    {
+      id: 'lead',
+      name: 'Lead',
+      description: 'Coordinates work',
+      runner_type: null,
+      recommended_model: null,
+      system_prompt: 'Lead the team.',
+      default_workspace_path: null,
+      selected_skill_ids: ['planning'],
+      tools_enabled: { mcpServers: { filesystem: true } },
+      enabled: true,
+    },
+  ],
 };
 
 console.log('teamPresetsApi');
@@ -83,8 +92,19 @@ check('update puts JSON to the detail endpoint', captured[3]?.options.method ===
 check('delete calls the detail endpoint', captured[4]?.options.method === 'DELETE', captured[4]);
 check(
   'create sends the typed write payload',
-  JSON.parse(String(captured[2]?.options.body)).team.id === 'team-one',
+  JSON.parse(String(captured[2]?.options.body)).id === 'team-one',
   captured[2],
+);
+check(
+  'create sends aggregate members in the team payload',
+  JSON.parse(String(captured[2]?.options.body)).members?.[0]?.tools_enabled?.mcpServers
+    ?.filesystem === true,
+  captured[2],
+);
+check(
+  'update sends workflow steps in the aggregate payload',
+  JSON.parse(String(captured[3]?.options.body)).workflow_steps?.[0]?.title === 'Plan',
+  captured[3],
 );
 
 if (failures > 0) {

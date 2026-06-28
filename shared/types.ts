@@ -826,11 +826,11 @@ compression_percentage: number, };
 
 export type ChatPresetsConfig = {
 /**
- * List of member preset templates
+ * Built-in role catalog and legacy member presets (build input only).
  */
 members: Array<ChatMemberPreset>,
 /**
- * List of team preset templates
+ * List of team preset templates (aggregate: each team embeds its members).
  */
 teams: Array<ChatTeamPreset>,
 /**
@@ -898,13 +898,17 @@ name: string,
  */
 description: string,
 /**
- * List of member preset IDs to include in this team
+ * Embedded team member snapshots (aggregate model).
  */
-member_ids: Array<string>,
+members: Array<ChatMemberPreset>,
 /**
- * Optional ID of the lead member preset (references a member in member_ids)
+ * Optional ID of the lead member (references a member in `members`).
  */
 lead_member_id?: string | null,
+/**
+ * Optional workflow steps for the team template.
+ */
+workflow_steps: Array<ChatWorkflowStep>,
 /**
  * Optional team protocol injected when importing this team preset
  */
@@ -917,6 +921,8 @@ is_builtin: boolean,
  * Whether this preset is enabled (visible for import)
  */
 enabled: boolean, };
+
+export type ChatWorkflowStep = { title: string, description: string, };
 
 export type CliConfig = { provider: ProviderConfig, model: ModelConfig, behavior: BehaviorConfig, };
 
@@ -1118,25 +1124,21 @@ export type TeamProtocolConfig = { content: string, enabled: boolean, };
 
 export type TeamPresetMemberSummary = { id: string, name: string, description: string, runner_type: string | null, recommended_model: string | null, is_builtin: boolean, enabled: boolean, };
 
-export type TeamPresetSummary = { id: string, name: string, description: string, member_ids: Array<string>, lead_member_id: string | null, team_protocol: string, is_builtin: boolean, enabled: boolean, member_count: number, members: Array<TeamPresetMemberSummary>, };
+export type TeamPresetSummary = { id: string, name: string, description: string, lead_member_id: string | null, team_protocol: string, is_builtin: boolean, enabled: boolean, member_count: number, members: Array<TeamPresetMemberSummary>, };
 
 export type TeamPresetListResponse = { teams: Array<TeamPresetSummary>, };
 
-export type TeamPresetDetail = { team: ChatTeamPreset, members: Array<ChatMemberPreset>, };
-
-export type TeamPresetWrite = { id: string, name: string, description: string | null, member_ids: Array<string>, lead_member_id: string | null, team_protocol: string | null, enabled: boolean | null, };
-
 export type TeamPresetMemberWrite = { id: string, name: string, description: string | null, runner_type: string | null, recommended_model: string | null, system_prompt: string | null, default_workspace_path: string | null, selected_skill_ids: Array<string>, tools_enabled: JsonValue | null, enabled: boolean | null, };
 
-export type CreateTeamPresetRequest = { team: TeamPresetWrite, members: Array<TeamPresetMemberWrite>, };
+export type CreateTeamPresetRequest = { id: string, name: string, description: string | null, lead_member_id: string | null, workflow_steps: Array<ChatWorkflowStep>, team_protocol: string | null, enabled: boolean | null, members: Array<TeamPresetMemberWrite>, };
 
-export type UpdateTeamPresetRequest = { team: TeamPresetWrite, members: Array<TeamPresetMemberWrite>, };
+export type UpdateTeamPresetRequest = { id: string, name: string, description: string | null, lead_member_id: string | null, workflow_steps: Array<ChatWorkflowStep>, team_protocol: string | null, enabled: boolean | null, members: Array<TeamPresetMemberWrite>, };
 
 export type CreatePresetSnapshotRequest = { team_preset_id: string | null, name: string | null, description: string | null, overwrite_strategy: PresetSnapshotOverwriteStrategy | null, };
 
 export type PresetSnapshotOverwriteStrategy = "fail_if_exists" | "overwrite_custom";
 
-export type CreatePresetSnapshotResponse = { team: ChatTeamPreset, members: Array<ChatMemberPreset>, overwritten: boolean, };
+export type CreatePresetSnapshotResponse = { team: ChatTeamPreset, overwritten: boolean, };
 
 export type GitBranch = { name: string, is_current: boolean, is_remote: boolean, last_commit_date: Date, };
 

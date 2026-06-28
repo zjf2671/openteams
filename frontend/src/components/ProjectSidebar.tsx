@@ -451,7 +451,7 @@ export function ProjectSidebar({
         id: preset.id,
         label: preset.name,
         description: preset.description,
-        hint: `${preset.member_ids.length}`,
+        hint: `${preset.members.length}`,
       })),
     ];
   }, [teamPresets]);
