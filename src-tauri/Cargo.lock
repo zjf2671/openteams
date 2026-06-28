@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "openteams-desktop"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "directories",
  "portpicker",
@@ -1988,6 +1988,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -41,6 +41,7 @@ import {
   sessionAgentsApi,
   projectWorkItemsApi,
 } from "@/lib/api";
+import type { AgentFileRow } from "@/lib/agentFileRows";
 import {
   CHAT_INPUT_PREFILL_EVENT,
   clearChatInputPrefill,
@@ -57,6 +58,8 @@ import {
 } from "@/lib/linkedWorkItemsEvents";
 import { markPendingIssueStatusSync } from "@/lib/pendingIssueStatusSync";
 import { notifyBuildStatsUsageUpdated } from "@/lib/buildStatsEvents";
+import { requestTeamMemberInviteNavigation } from "@/lib/teamNavigation";
+import { openInSystemFileManager } from "@/lib/systemFileManager";
 import {
   flattenWorkspaceChanges,
   hasRelatedFileDiff,
@@ -92,6 +95,12 @@ interface FreeChatWorkspaceProps {
   ) => void;
 }
 
+type AttachmentImagePreview = {
+  url: string;
+  name: string;
+  sizeBytes?: number;
+};
+
 const statusTextTone: Record<RelatedFileStatus, string> = {
   M: "text-amber-600",
   A: "text-emerald-600",
@@ -100,6 +109,11 @@ const statusTextTone: Record<RelatedFileStatus, string> = {
 };
 
 const hasLineStat = (value?: number) => typeof value === "number" && value > 0;
+
+const isOpenteamsPath = (path: string): boolean => {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+  return normalized.toLowerCase().split("/")[0] === ".openteams";
+};
 
 const allowedTextAttachmentExtensions = [
   ".txt",
@@ -722,7 +736,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     activeSessionId,
     messages,
     memberQueuesBySessionAgentId,
-    deferredQueuedMessagesById,
+    queuedUserMessagesById,
     sendMessage,
     stagePendingAgentPlaceholder,
     members,
@@ -741,7 +755,6 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     refreshMembers,
     chatMessageFontSize,
     workspaceChangesAsync,
-    sourceControlRefreshKey,
     refreshWorkspaceChanges,
     resetWorkspaceChanges,
     deleteQueuedMessage,
@@ -782,6 +795,8 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     useState<QuotedMessageReference | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+  const [attachmentImagePreview, setAttachmentImagePreview] =
+    useState<AttachmentImagePreview | null>(null);
   const [relatedFilesWidth, setRelatedFilesWidth] = useState(
     RELATED_FILES_DEFAULT_WIDTH,
   );
@@ -814,6 +829,8 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     () => projects.find((project) => project.id === selectedProjectId),
     [projects, selectedProjectId],
   );
+  const currentWorkspacePath =
+    currentProject?.default_workspace_path ?? undefined;
   const sidebarMembers = members;
   const visibleSidebarMemberCount = getVisibleSidebarMemberCount(
     sidebarMembers.length,
@@ -860,9 +877,9 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     () =>
       new Map([
         ...messages.map((message) => [message.id, message] as const),
-        ...Object.entries(deferredQueuedMessagesById),
+        ...Object.entries(queuedUserMessagesById),
       ]),
-    [deferredQueuedMessagesById, messages],
+    [queuedUserMessagesById, messages],
   );
   const visibleQueueGroups = useMemo(
     () =>
@@ -972,6 +989,23 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
       return Object.fromEntries(entries);
     });
   }, [messages]);
+
+  useEffect(() => {
+    setAttachmentImagePreview(null);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!attachmentImagePreview) return;
+
+    const handlePreviewKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setAttachmentImagePreview(null);
+      }
+    };
+
+    document.addEventListener("keydown", handlePreviewKeyDown);
+    return () => document.removeEventListener("keydown", handlePreviewKeyDown);
+  }, [attachmentImagePreview]);
 
   const openRelatedFiles = () => {
     setWasRelatedFilesAutoCollapsed(false);
@@ -1192,7 +1226,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
       resetWorkspaceChanges();
       return;
     }
-    const workspacePath = currentProject?.default_workspace_path;
+    const workspacePath = currentWorkspacePath;
     if (!workspacePath) {
       resetWorkspaceChanges();
       return;
@@ -1200,7 +1234,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     void refreshWorkspaceChanges(activeSessionId, workspacePath, true);
   }, [
     activeSessionId,
-    currentProject,
+    currentWorkspacePath,
     refreshWorkspaceChanges,
     resetWorkspaceChanges,
   ]);
@@ -1571,7 +1605,6 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     runId?: string,
   ) => {
     if (isStopPendingForMessage(sessionAgentId, runId)) return;
-    markSessionAgentStopped(sessionAgentId);
 
     setStoppingSessionAgentIds((current) => {
       return {
@@ -1582,6 +1615,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
 
     try {
       await sessionAgentsApi.stop(activeSessionId, sessionAgentId);
+      markSessionAgentStopped(sessionAgentId);
       showToast(t("agent.stopRequested"));
       void refreshMembers();
     } catch {
@@ -1829,13 +1863,55 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     showToast(t("relatedFiles.noDiffOpenFile"));
   };
 
-  // Open an artifact file from an agent message. Prefers the inline diff when
-  // the workspace changes already carry one for that path, otherwise opens the
-  // source-control diff tab (lazy-loaded), falling back to opening the file.
+  const openArtifactInExplorer = useCallback(
+    (path: string, workspacePath?: string | null) => {
+      void openInSystemFileManager(
+        path,
+        workspacePath ?? currentWorkspacePath,
+        activeSessionId,
+      )
+        .then((response) => {
+          if (!response.ok) {
+            showToast(response.error ?? "Failed to open in Explorer");
+          }
+        })
+        .catch((error) => {
+          showToast(
+            error instanceof Error
+              ? error.message
+              : "Failed to open in Explorer",
+          );
+        });
+    },
+    [activeSessionId, currentWorkspacePath, showToast],
+  );
+
+  const isDifferentWorkspace = (workspacePath?: string | null) => {
+    if (!workspacePath) return false;
+    if (!currentWorkspacePath) return true;
+    return (
+      workspacePath.replace(/\\/g, "/").toLowerCase() !==
+      currentWorkspacePath.replace(/\\/g, "/").toLowerCase()
+    );
+  };
+
+  // Open an artifact file from an agent message. Files without run diff data
+  // (including ignored `.openteams/` artifacts) open in Explorer directly.
   const handleOpenArtifact = useCallback(
-    (path: string) => {
+    (file: AgentFileRow) => {
+      const path = file.path;
+      if (
+        isOpenteamsPath(path) ||
+        file.supplementary ||
+        file.hasDiff === false
+      ) {
+        openArtifactInExplorer(path, file.workspacePath);
+        return;
+      }
+
       const match = relatedFileChanges.find(
-        (file) => normalizeArtifactPath(file.path) === normalizeArtifactPath(path),
+        (candidate) =>
+          normalizeArtifactPath(candidate.path) === normalizeArtifactPath(path),
       );
       if (match && hasRelatedFileDiff(match) && onOpenDiffTab) {
         onOpenDiffTab(
@@ -1844,6 +1920,10 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
           match.status,
           match.unified_diff ?? "",
         );
+        return;
+      }
+      if (isDifferentWorkspace(file.workspacePath)) {
+        openArtifactInExplorer(path, file.workspacePath);
         return;
       }
       if (selectedProjectId && onOpenSourceControlDiffTab) {
@@ -1855,7 +1935,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
         );
         return;
       }
-      openFileInVSCode(path, { openAsDiff: false });
+      openArtifactInExplorer(path, file.workspacePath);
     },
     [
       relatedFileChanges,
@@ -1863,6 +1943,8 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
       onOpenSourceControlDiffTab,
       activeSessionId,
       selectedProjectId,
+      openArtifactInExplorer,
+      currentWorkspacePath,
     ],
   );
 
@@ -2061,6 +2143,53 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
           : "relative rounded-xl border border-[var(--hairline)] bg-[var(--canvas)] overflow-hidden font-sans text-xs select-none"
       }
     >
+      {attachmentImagePreview && (
+        <div
+          className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={() => setAttachmentImagePreview(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={attachmentImagePreview.name}
+            className="flex max-h-[min(84vh,760px)] w-[min(92vw,960px)] flex-col overflow-hidden rounded-md border border-[var(--hairline-strong)] bg-[var(--surface-1)] text-[var(--ink)] shadow-[0_24px_80px_rgba(0,0,0,0.36)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex min-h-0 items-center gap-3 border-b border-[var(--hairline)] px-3 py-2">
+              <ImageIcon className="h-4 w-4 shrink-0 text-[var(--ink-tertiary)]" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[12px] font-medium text-[var(--ink)]">
+                  {attachmentImagePreview.name}
+                </div>
+                {attachmentImagePreview.sizeBytes ? (
+                  <div className="font-mono text-[10px] text-[var(--ink-tertiary)]">
+                    {formatFileSize(attachmentImagePreview.sizeBytes)}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+                onClick={() => setAttachmentImagePreview(null)}
+                title={t("aria.closeTab")}
+                aria-label={t("aria.closeTab")}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--canvas)] p-3">
+              <img
+                src={attachmentImagePreview.url}
+                alt={attachmentImagePreview.name}
+                className="max-w-full rounded-sm object-contain"
+                style={{
+                  maxHeight: "calc(min(84vh, 760px) - 64px)",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       <div
         style={
           isRelatedFilesOpen
@@ -2219,6 +2348,47 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                           attachment.id,
                         );
                         const isImage = isImageChatAttachment(attachment);
+                        if (isImage) {
+                          return (
+                            <button
+                              key={attachment.id}
+                              type="button"
+                              className="group/attachment max-w-md rounded-md border border-[var(--hairline)] bg-[var(--surface-2)] p-2 text-left text-[11px] text-[var(--ink-muted)] transition hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-3)]"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setAttachmentImagePreview({
+                                  url,
+                                  name: attachment.name,
+                                  sizeBytes: attachment.size_bytes,
+                                });
+                              }}
+                              title={attachment.name}
+                              aria-label={attachment.name}
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                <ImageIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+                                <span
+                                  className="min-w-0 flex-1 truncate font-medium text-[var(--ink)]"
+                                  title={attachment.name}
+                                >
+                                  {attachment.name}
+                                </span>
+                                {attachment.size_bytes ? (
+                                  <span className="shrink-0 font-mono text-[10px] text-[var(--ink-tertiary)]">
+                                    {formatFileSize(attachment.size_bytes)}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <img
+                                src={url}
+                                alt={attachment.name}
+                                className="mt-2 max-h-44 max-w-full rounded-sm border border-[var(--hairline)] object-contain"
+                                loading="lazy"
+                              />
+                            </button>
+                          );
+                        }
+
                         return (
                           <a
                             key={attachment.id}
@@ -2229,11 +2399,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                             onClick={(event) => event.stopPropagation()}
                           >
                             <div className="flex min-w-0 items-center gap-2">
-                              {isImage ? (
-                                <ImageIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
-                              ) : (
-                                <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
-                              )}
+                              <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
                               <span
                                 className="min-w-0 flex-1 truncate font-medium text-[var(--ink)]"
                                 title={attachment.name}
@@ -2246,14 +2412,6 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                                 </span>
                               ) : null}
                             </div>
-                            {isImage && (
-                              <img
-                                src={url}
-                                alt={attachment.name}
-                                className="mt-2 max-h-44 max-w-full rounded-sm border border-[var(--hairline)] object-contain"
-                                loading="lazy"
-                              />
-                            )}
                           </a>
                         );
                       })}
@@ -2720,7 +2878,11 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
                 )}
                 <button
                   type="button"
-                  onClick={() => showToast(t("toast.memberInviteReady"))}
+                  onClick={() =>
+                    requestTeamMemberInviteNavigation({
+                      projectId: selectedProjectId ?? undefined,
+                    })
+                  }
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--ink-subtle)] transition hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
                   title={t("inviteMember")}
                   aria-label={t("inviteMember")}
@@ -2786,7 +2948,11 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
               projectId={selectedProjectId || null}
               sessionId={activeSessionId || null}
               enabled={Boolean(selectedProjectId && activeSessionId)}
-              refreshKey={sourceControlRefreshKey}
+              worktreeMode={
+                sessionsAsync.data?.find(
+                  (session) => session.id === activeSessionId,
+                )?.worktreeMode
+              }
               fallbackRelatedFiles={plainRelatedFilesContent}
               linkedWorkItemIds={linkedWorkItems.map((item) => item.id)}
               onOpenDiff={(projectId, sessionId, filePath, area) => {

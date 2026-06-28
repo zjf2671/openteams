@@ -7,6 +7,7 @@ pub mod sessions;
 pub mod skills;
 pub mod work_items;
 pub mod workflow;
+pub mod worktree;
 
 use axum::{Router, extract::DefaultBodyLimit, middleware::from_fn_with_state, routing::get};
 
@@ -25,6 +26,8 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         )
         .route("/archive", axum::routing::post(sessions::archive_session))
         .route("/restore", axum::routing::post(sessions::restore_session))
+        .route("/pin", axum::routing::post(sessions::pin_session))
+        .route("/unpin", axum::routing::post(sessions::unpin_session))
         .route("/stream", get(sessions::stream_session_ws))
         .route("/workspaces", get(sessions::get_session_workspaces))
         .route(
@@ -157,6 +160,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/presets/snapshot",
             axum::routing::post(presets::create_preset_snapshot),
         )
+        .nest("/worktree", worktree::router())
         .layer(from_fn_with_state(
             deployment.clone(),
             load_chat_session_middleware,
@@ -243,27 +247,29 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             axum::routing::post(skills::install_builtin_skill_api),
         );
 
-    Router::new().nest(
-        "/chat",
-        Router::new()
-            .nest("/sessions", sessions_router)
-            .nest("/agents", agents_router)
-            .nest("/messages", messages_router)
-            .nest("/skills", skills_router)
-            .nest("/agents/{agent_id}/skills", agent_skills_router)
-            .nest("/registry", registry_router)
-            .nest("/builtin", builtin_router)
-            .route(
-                "/validate-workspace-path",
-                axum::routing::post(sessions::validate_workspace_path_endpoint),
-            )
-            .route("/runs/{run_id}/log", get(runs::get_run_log))
-            .route("/runs/{run_id}/activity", get(runs::get_run_activity))
-            .route("/runs/{run_id}/diff", get(runs::get_run_diff))
-            .route("/runs/{run_id}/files", get(runs::get_run_files))
-            .route(
-                "/runs/{run_id}/untracked",
-                get(runs::get_run_untracked_file),
-            ),
-    )
+    Router::new()
+        .nest("/team-presets", presets::team_presets_router())
+        .nest(
+            "/chat",
+            Router::new()
+                .nest("/sessions", sessions_router)
+                .nest("/agents", agents_router)
+                .nest("/messages", messages_router)
+                .nest("/skills", skills_router)
+                .nest("/agents/{agent_id}/skills", agent_skills_router)
+                .nest("/registry", registry_router)
+                .nest("/builtin", builtin_router)
+                .route(
+                    "/validate-workspace-path",
+                    axum::routing::post(sessions::validate_workspace_path_endpoint),
+                )
+                .route("/runs/{run_id}/log", get(runs::get_run_log))
+                .route("/runs/{run_id}/activity", get(runs::get_run_activity))
+                .route("/runs/{run_id}/diff", get(runs::get_run_diff))
+                .route("/runs/{run_id}/files", get(runs::get_run_files))
+                .route(
+                    "/runs/{run_id}/untracked",
+                    get(runs::get_run_untracked_file),
+                ),
+        )
 }

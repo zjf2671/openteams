@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Error;
+use anyhow::{Context, Error};
 use executors::{executors::BaseCodingAgent, profile::ExecutorProfileId};
 use serde::{Deserialize, Deserializer, Serialize};
 use ts_rs::TS;
@@ -109,7 +109,16 @@ pub struct ChatMemberPreset {
     pub enabled: bool,
 }
 
-/// Chat Team Preset Template
+/// A single workflow step in a team template.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct ChatWorkflowStep {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Chat Team Preset Template (aggregate: embeds member snapshots)
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
 pub struct ChatTeamPreset {
     /// Unique identifier for the preset
@@ -118,11 +127,15 @@ pub struct ChatTeamPreset {
     pub name: String,
     /// Description of the team's purpose
     pub description: String,
-    /// List of member preset IDs to include in this team
-    pub member_ids: Vec<String>,
-    /// Optional ID of the lead member preset (references a member in member_ids)
+    /// Embedded team member snapshots (aggregate model).
+    #[serde(default)]
+    pub members: Vec<ChatMemberPreset>,
+    /// Optional ID of the lead member (references a member in `members`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead_member_id: Option<String>,
+    /// Optional workflow steps for the team template.
+    #[serde(default)]
+    pub workflow_steps: Vec<ChatWorkflowStep>,
     /// Optional team protocol injected when importing this team preset
     #[serde(default)]
     pub team_protocol: String,
@@ -133,16 +146,119 @@ pub struct ChatTeamPreset {
     pub enabled: bool,
 }
 
+/// Intermediate representation used only to deserialize legacy and aggregate
+/// team preset JSON. Supports both the legacy `member_ids` form and the new
+/// embedded `members` form.
+#[derive(Deserialize)]
+struct ChatTeamPresetRaw {
+    id: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    member_ids: Vec<String>,
+    #[serde(default)]
+    members: Vec<ChatMemberPreset>,
+    #[serde(default)]
+    lead_member_id: Option<String>,
+    #[serde(default)]
+    workflow_steps: Vec<ChatWorkflowStep>,
+    #[serde(default)]
+    team_protocol: String,
+    #[serde(default)]
+    is_builtin: bool,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct ChatPresetsConfigRaw {
+    #[serde(default)]
+    members: Vec<ChatMemberPreset>,
+    #[serde(default)]
+    teams: Vec<ChatTeamPresetRaw>,
+    #[serde(default)]
+    team_protocol: Option<String>,
+}
+
 /// Chat Presets Configuration
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, TS, PartialEq, Eq)]
 pub struct ChatPresetsConfig {
-    /// List of member preset templates
+    /// Built-in role catalog and legacy member presets (build input only).
     pub members: Vec<ChatMemberPreset>,
-    /// List of team preset templates
+    /// List of team preset templates (aggregate: each team embeds its members).
     pub teams: Vec<ChatTeamPreset>,
     /// Team collaboration protocol content; empty string disables injection
-    #[serde(default)]
     pub team_protocol: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ChatPresetsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = ChatPresetsConfigRaw::deserialize(deserializer)?;
+        let member_by_id: HashMap<&str, &ChatMemberPreset> = raw
+            .members
+            .iter()
+            .map(|member| (member.id.as_str(), member))
+            .collect();
+
+        let teams = raw
+            .teams
+            .into_iter()
+            .map(|team_raw| {
+                let members = if !team_raw.members.is_empty() {
+                    team_raw.members
+                } else if !team_raw.member_ids.is_empty() {
+                    team_raw
+                        .member_ids
+                        .iter()
+                        .map(|member_id| {
+                            member_by_id
+                                .get(member_id.as_str())
+                                .copied()
+                                .cloned()
+                                .ok_or_else(|| {
+                                    serde::de::Error::custom(format!(
+                                        "team preset \"{}\" references unknown member preset: {}",
+                                        team_raw.id, member_id
+                                    ))
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                } else {
+                    Vec::new()
+                };
+                let lead_member_id = team_raw.lead_member_id;
+                if let Some(ref lead_id) = lead_member_id
+                    && !members.iter().any(|member| &member.id == lead_id)
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "team preset \"{}\" lead_member_id references unknown member: {}",
+                        team_raw.id, lead_id
+                    )));
+                }
+                Ok(ChatTeamPreset {
+                    id: team_raw.id,
+                    name: team_raw.name,
+                    description: team_raw.description,
+                    members,
+                    lead_member_id,
+                    workflow_steps: team_raw.workflow_steps,
+                    team_protocol: team_raw.team_protocol,
+                    is_builtin: team_raw.is_builtin,
+                    enabled: team_raw.enabled,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(ChatPresetsConfig {
+            members: raw.members,
+            teams,
+            team_protocol: raw.team_protocol,
+        })
+    }
 }
 
 /// Chat Compression Configuration
@@ -253,8 +369,10 @@ fn complete_chat_presets_with_builtins(chat_presets: &mut ChatPresetsConfig) {
         {
             preset.name = default_preset.name.clone();
             preset.description = default_preset.description.clone();
-            preset.member_ids = default_preset.member_ids.clone();
+            preset.members = default_preset.members.clone();
             preset.lead_member_id = default_preset.lead_member_id.clone();
+            preset.workflow_steps = default_preset.workflow_steps.clone();
+            preset.team_protocol = default_preset.team_protocol.clone();
             preset.enabled = default_preset.enabled;
         }
     }
@@ -389,27 +507,48 @@ impl Config {
         let old_config = v8::Config::from(raw_config.to_string());
         Ok(Self::from_v8_config(old_config))
     }
+
+    pub fn try_from_raw_config(raw_config: &str) -> Result<Self, Error> {
+        match serde_json::from_str::<Config>(raw_config) {
+            Ok(config) if config.config_version == "v9" => {
+                return Ok(config.with_completed_chat_presets());
+            }
+            Ok(_) => {}
+            Err(error) if raw_config_declares_v9(raw_config) => {
+                return Err(error).context("failed to parse v9 config");
+            }
+            Err(_) => {}
+        }
+
+        Self::from_previous_version(raw_config).map(|config| {
+            tracing::info!("Config upgraded to v9");
+            config.with_completed_chat_presets()
+        })
+    }
 }
 
 impl From<String> for Config {
     fn from(raw_config: String) -> Self {
-        if let Ok(config) = serde_json::from_str::<Config>(&raw_config)
-            && config.config_version == "v9"
-        {
-            return config.with_completed_chat_presets();
-        }
-
-        match Self::from_previous_version(&raw_config) {
-            Ok(config) => {
-                tracing::info!("Config upgraded to v9");
-                config.with_completed_chat_presets()
-            }
+        match Self::try_from_raw_config(&raw_config) {
+            Ok(config) => config,
             Err(e) => {
-                tracing::warn!("Config migration failed: {}, using default", e);
+                tracing::warn!("Config load failed: {}, using default", e);
                 Self::default().with_completed_chat_presets()
             }
         }
     }
+}
+
+fn raw_config_declares_v9(raw_config: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw_config)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("config_version")
+                .and_then(serde_json::Value::as_str)
+                .map(|version| version == "v9")
+        })
+        .unwrap_or(false)
 }
 
 impl Default for Config {
@@ -554,13 +693,318 @@ mod tests {
             "id": "custom_team",
             "name": "Custom Team",
             "description": "Custom description",
-            "member_ids": ["backend_engineer"],
+            "members": [{
+                "id": "lead",
+                "name": "Lead",
+                "description": "Lead member",
+                "system_prompt": "You are the lead.",
+                "is_builtin": false,
+                "enabled": true
+            }],
             "is_builtin": false,
             "enabled": true
         }))
         .expect("team preset should deserialize");
 
         assert_eq!(preset.team_protocol, "");
+        assert_eq!(preset.members.len(), 1);
+        assert!(preset.workflow_steps.is_empty());
+    }
+
+    #[test]
+    fn chat_presets_config_migrates_legacy_member_ids_to_embedded_members() {
+        let raw = json!({
+            "members": [
+                {
+                    "id": "lead",
+                    "name": "Lead",
+                    "description": "Lead member",
+                    "system_prompt": "You are the lead.",
+                    "is_builtin": false,
+                    "enabled": true
+                },
+                {
+                    "id": "backend",
+                    "name": "Backend",
+                    "description": "Backend member",
+                    "system_prompt": "You are backend.",
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ],
+            "teams": [
+                {
+                    "id": "custom_team",
+                    "name": "Custom Team",
+                    "description": "Custom description",
+                    "member_ids": ["lead", "backend"],
+                    "lead_member_id": "lead",
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ]
+        });
+
+        let config: ChatPresetsConfig =
+            serde_json::from_value(raw).expect("legacy config should migrate");
+
+        let team = &config.teams[0];
+        assert_eq!(team.members.len(), 2);
+        assert_eq!(team.members[0].id, "lead");
+        assert_eq!(team.members[1].id, "backend");
+        assert_eq!(team.lead_member_id.as_deref(), Some("lead"));
+    }
+
+    #[test]
+    fn config_try_from_raw_v9_migrates_legacy_member_ids_and_serializes_aggregate_teams() {
+        let mut raw_config =
+            serde_json::to_value(Config::default()).expect("serialize default config");
+        raw_config["chat_presets"] = json!({
+            "members": [
+                {
+                    "id": "legacy_lead",
+                    "name": "LegacyLead",
+                    "description": "Leads the migrated team",
+                    "system_prompt": "Lead the migrated team.",
+                    "selected_skill_ids": ["planning"],
+                    "tools_enabled": { "mcpServers": { "filesystem": true } },
+                    "is_builtin": false,
+                    "enabled": true
+                },
+                {
+                    "id": "legacy_reviewer",
+                    "name": "LegacyReviewer",
+                    "description": "Reviews the migrated team",
+                    "system_prompt": "Review migrated work.",
+                    "selected_skill_ids": ["review"],
+                    "tools_enabled": { "mcpServers": { "browser": true } },
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ],
+            "teams": [
+                {
+                    "id": "legacy_team",
+                    "name": "Legacy Team",
+                    "description": "Uses member_ids before migration",
+                    "member_ids": ["legacy_lead", "legacy_reviewer"],
+                    "lead_member_id": "legacy_lead",
+                    "workflow_steps": [
+                        { "title": "Plan", "description": "Migrate safely." }
+                    ],
+                    "team_protocol": "Coordinate migrated work.",
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ]
+        });
+
+        let config = Config::try_from_raw_config(&raw_config.to_string())
+            .expect("legacy v9 config should migrate");
+        let team = config
+            .chat_presets
+            .teams
+            .iter()
+            .find(|team| team.id == "legacy_team")
+            .expect("legacy team should remain after completion");
+
+        assert_eq!(team.members.len(), 2);
+        assert_eq!(team.lead_member_id.as_deref(), Some("legacy_lead"));
+        assert_eq!(team.members[0].system_prompt, "Lead the migrated team.");
+        assert_eq!(team.members[1].selected_skill_ids, vec!["review"]);
+        assert_eq!(
+            team.members[0].tools_enabled,
+            json!({ "mcpServers": { "filesystem": true } })
+        );
+
+        let serialized = serde_json::to_value(&config).expect("serialize migrated config");
+        let serialized_team = serialized["chat_presets"]["teams"]
+            .as_array()
+            .expect("teams should serialize as an array")
+            .iter()
+            .find(|team| team["id"] == "legacy_team")
+            .expect("legacy team should serialize");
+        assert!(serialized_team.get("member_ids").is_none());
+        assert_eq!(serialized_team["members"][0]["id"], "legacy_lead");
+        assert_eq!(
+            serialized_team["members"][1]["tools_enabled"]["mcpServers"]["browser"],
+            true
+        );
+    }
+
+    #[test]
+    fn chat_presets_config_returns_diagnostic_error_for_dangling_member_ids() {
+        let raw = json!({
+            "members": [],
+            "teams": [
+                {
+                    "id": "custom_team",
+                    "name": "Custom Team",
+                    "description": "Custom description",
+                    "member_ids": ["missing_member"],
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ]
+        });
+
+        let error = serde_json::from_value::<ChatPresetsConfig>(raw)
+            .expect_err("dangling member reference should fail");
+        let message = format!("{error}");
+        assert!(
+            message.contains("missing_member"),
+            "error should mention missing member id: {message}"
+        );
+        assert!(
+            message.contains("custom_team"),
+            "error should mention team id: {message}"
+        );
+    }
+
+    #[test]
+    fn chat_presets_config_prefers_embedded_members_over_legacy_member_ids() {
+        let raw = json!({
+            "members": [
+                {
+                    "id": "global_lead",
+                    "name": "GlobalLead",
+                    "description": "global",
+                    "system_prompt": "global prompt",
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ],
+            "teams": [
+                {
+                    "id": "custom_team",
+                    "name": "Custom Team",
+                    "description": "Custom description",
+                    "member_ids": ["global_lead"],
+                    "members": [{
+                        "id": "embedded_lead",
+                        "name": "EmbeddedLead",
+                        "description": "embedded",
+                        "system_prompt": "embedded prompt",
+                        "is_builtin": false,
+                        "enabled": true
+                    }],
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ]
+        });
+
+        let config: ChatPresetsConfig =
+            serde_json::from_value(raw).expect("aggregate config should deserialize");
+
+        assert_eq!(config.teams[0].members.len(), 1);
+        assert_eq!(config.teams[0].members[0].id, "embedded_lead");
+    }
+
+    #[test]
+    fn chat_presets_config_rejects_dangling_lead_member_id() {
+        let raw = json!({
+            "members": [
+                {
+                    "id": "lead",
+                    "name": "Lead",
+                    "description": "Lead member",
+                    "system_prompt": "You are the lead.",
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ],
+            "teams": [
+                {
+                    "id": "custom_team",
+                    "name": "Custom Team",
+                    "description": "Custom description",
+                    "member_ids": ["lead"],
+                    "lead_member_id": "missing_lead",
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ]
+        });
+
+        let error = serde_json::from_value::<ChatPresetsConfig>(raw)
+            .expect_err("dangling lead_member_id should fail");
+        let message = format!("{error}");
+        assert!(
+            message.contains("missing_lead"),
+            "error should mention dangling lead id: {message}"
+        );
+        assert!(
+            message.contains("custom_team"),
+            "error should mention team id: {message}"
+        );
+    }
+
+    #[test]
+    fn config_try_from_raw_config_returns_diagnostic_error_for_invalid_v9_chat_presets() {
+        let mut raw_config =
+            serde_json::to_value(Config::default()).expect("serialize default config");
+        raw_config["chat_presets"] = json!({
+            "members": [],
+            "teams": [
+                {
+                    "id": "custom_team",
+                    "name": "Custom Team",
+                    "description": "Custom description",
+                    "member_ids": ["missing_member"],
+                    "is_builtin": false,
+                    "enabled": true
+                }
+            ]
+        });
+
+        let error = Config::try_from_raw_config(&raw_config.to_string())
+            .expect_err("invalid v9 chat presets should return a diagnostic error");
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("failed to parse v9 config"),
+            "error should identify v9 parse failure: {message}"
+        );
+        assert!(
+            message.contains("custom_team"),
+            "error should mention the team id: {message}"
+        );
+        assert!(
+            message.contains("missing_member"),
+            "error should mention the missing member id: {message}"
+        );
+    }
+
+    #[test]
+    fn chat_team_preset_round_trips_workflow_steps() {
+        let preset = ChatTeamPreset {
+            id: "custom_team".to_string(),
+            name: "Custom Team".to_string(),
+            description: "Custom description".to_string(),
+            members: vec![],
+            lead_member_id: None,
+            workflow_steps: vec![
+                ChatWorkflowStep {
+                    title: "Plan".to_string(),
+                    description: "Clarify scope.".to_string(),
+                },
+                ChatWorkflowStep {
+                    title: "Build".to_string(),
+                    description: String::new(),
+                },
+            ],
+            team_protocol: "Coordinate tightly.".to_string(),
+            is_builtin: false,
+            enabled: true,
+        };
+
+        let serialized = serde_json::to_string(&preset).expect("serialize");
+        let deserialized: ChatTeamPreset = serde_json::from_str(&serialized).expect("deserialize");
+
+        assert_eq!(preset, deserialized);
+        assert_eq!(deserialized.workflow_steps.len(), 2);
+        assert_eq!(deserialized.workflow_steps[0].title, "Plan");
     }
 
     #[test]
@@ -586,8 +1030,13 @@ mod tests {
             fullstack.description,
             "Planner-led web delivery across design, frontend, backend, QA, and review."
         );
+        let fullstack_member_ids = fullstack
+            .members
+            .iter()
+            .map(|member| member.id.clone())
+            .collect::<Vec<_>>();
         assert_eq!(
-            fullstack.member_ids,
+            fullstack_member_ids,
             vec![
                 "coordinator_pmo".to_string(),
                 "ux_ui_designer".to_string(),
@@ -655,22 +1104,78 @@ mod tests {
     }
 
     #[test]
-    fn complete_chat_presets_preserves_customized_builtin_team_protocol() {
+    fn complete_chat_presets_refreshes_builtin_team_aggregate_fields() {
         let mut chat_presets = default_chat_presets();
+        let custom_team = ChatTeamPreset {
+            id: "custom_team".to_string(),
+            name: "Custom Team".to_string(),
+            description: "Custom description".to_string(),
+            members: vec![ChatMemberPreset {
+                id: "custom_member".to_string(),
+                name: "custom_member".to_string(),
+                description: "Custom member".to_string(),
+                runner_type: None,
+                recommended_model: None,
+                system_prompt: "Custom prompt".to_string(),
+                default_workspace_path: None,
+                selected_skill_ids: vec![],
+                tools_enabled: serde_json::json!({}),
+                is_builtin: false,
+                enabled: true,
+            }],
+            lead_member_id: Some("custom_member".to_string()),
+            workflow_steps: vec![ChatWorkflowStep {
+                title: "Custom".to_string(),
+                description: "Keep this custom workflow.".to_string(),
+            }],
+            team_protocol: "Custom team protocol".to_string(),
+            is_builtin: false,
+            enabled: true,
+        };
+        chat_presets.teams.push(custom_team.clone());
+
         let team = chat_presets
             .teams
             .iter_mut()
             .find(|preset| preset.id == "rapid_bugfix_team")
             .expect("rapid bugfix team should exist");
-        team.team_protocol = "Custom rapid response protocol".to_string();
+        team.name = "Stale Built-in".to_string();
+        team.members = vec![ChatMemberPreset {
+            id: "stale_member".to_string(),
+            name: "stale_member".to_string(),
+            description: "Stale member".to_string(),
+            runner_type: None,
+            recommended_model: None,
+            system_prompt: "Stale prompt".to_string(),
+            default_workspace_path: None,
+            selected_skill_ids: vec![],
+            tools_enabled: serde_json::json!({}),
+            is_builtin: true,
+            enabled: true,
+        }];
+        team.workflow_steps = vec![ChatWorkflowStep {
+            title: "Stale".to_string(),
+            description: "Stale workflow.".to_string(),
+        }];
+        team.team_protocol = "Stale rapid response protocol".to_string();
 
         complete_chat_presets_with_builtins(&mut chat_presets);
 
+        let defaults = default_chat_presets();
+        let default_team = defaults
+            .teams
+            .iter()
+            .find(|preset| preset.id == "rapid_bugfix_team")
+            .expect("default rapid bugfix team should exist");
         let team = chat_presets
             .teams
             .iter()
             .find(|preset| preset.id == "rapid_bugfix_team")
             .expect("rapid bugfix team should exist");
-        assert_eq!(team.team_protocol, "Custom rapid response protocol");
+        assert_eq!(team.name, default_team.name);
+        assert_eq!(team.members, default_team.members);
+        assert_eq!(team.workflow_steps, default_team.workflow_steps);
+        assert_eq!(team.team_protocol, default_team.team_protocol);
+        assert!(chat_presets.teams.iter().any(|team| team == &custom_team));
     }
 }

@@ -176,6 +176,44 @@ const completedAgentSessionHtml = renderToStaticMarkup(
     onProjectAction={() => undefined}
   />,
 );
+const pendingWorkflowInputSessionHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    sessions={[
+      {
+        ...mockWorkspaceBootstrap.sessions[0],
+        hasPendingWorkflowInput: true,
+        pendingWorkflowInputId: "input-1",
+      },
+    ]}
+    activeSessionId="another-session"
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
+const pendingWorkflowReviewSessionHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    sessions={[
+      {
+        ...mockWorkspaceBootstrap.sessions[0],
+        hasPendingWorkflowReview: true,
+        pendingWorkflowReviewId: "review-1",
+      },
+    ]}
+    activeSessionId="another-session"
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
 const runningOrderedHtml = renderToStaticMarkup(
   <ProjectSidebar
     shellOptions={mockShellOptions}
@@ -271,6 +309,20 @@ check(
     completedAgentSessionHtml.includes("agent completed") &&
     !completedAgentSessionHtml.includes("animate-spin"),
   completedAgentSessionHtml,
+);
+check(
+  "renders pending workflow input sessions with non-running highlighted icon",
+  pendingWorkflowInputSessionHtml.includes("text-[var(--primary)]") &&
+    pendingWorkflowInputSessionHtml.includes("waiting for input") &&
+    !pendingWorkflowInputSessionHtml.includes("animate-spin"),
+  pendingWorkflowInputSessionHtml,
+);
+check(
+  "renders pending workflow review sessions with spinning activity icon",
+  pendingWorkflowReviewSessionHtml.includes("animate-spin") &&
+    pendingWorkflowReviewSessionHtml.includes("text-[var(--primary)]") &&
+    pendingWorkflowReviewSessionHtml.includes("waiting for review"),
+  pendingWorkflowReviewSessionHtml,
 );
 check(
   "moves running workflow sessions to the top of the collapsed session group",
@@ -442,13 +494,32 @@ check(
   componentSource,
 );
 check(
-  "session context menu includes rename archive and delete actions",
+  "session context menu includes rename pin view id archive and delete actions",
   componentSource.includes('translate("sidebar.renameSession"') &&
+    componentSource.includes('translate("sidebar.pinSession"') &&
+    componentSource.includes('translate("sidebar.unpinSession"') &&
+    componentSource.includes('translate("sidebar.viewSessionId"') &&
     componentSource.includes('translate("sidebar.archiveSession"') &&
     componentSource.includes('translate("sidebar.deleteSession"') &&
+    componentSource.includes("handlePinSession(menuSession)") &&
+    componentSource.includes("startViewSessionId(menuSession)") &&
     componentSource.includes("onRenameSession(renamingSession.id") &&
+    componentSource.includes("onPinSession(session.id") &&
     componentSource.includes("onArchiveSession(session.id)") &&
     componentSource.includes("onDeleteSession(deletingSession.id)"),
+  componentSource,
+);
+check(
+  "session ID dialog shows and copies the selected session id",
+  componentSource.includes('aria-labelledby="view-session-id-dialog-title"') &&
+    componentSource.includes('id="view-session-id-value"') &&
+    componentSource.includes("value={viewingSession.id}") &&
+    componentSource.includes("navigator.clipboard.writeText(viewingSession.id)") &&
+    componentSource.includes("copyViewingSessionId()") &&
+    componentSource.includes("aria-label={copySessionIdLabel}") &&
+    componentSource.includes("inline-flex h-9 w-9") &&
+    componentSource.includes('translate("sidebar.copySessionId"') &&
+    componentSource.includes('translate("sidebar.sessionId"'),
   componentSource,
 );
 check(
@@ -470,9 +541,11 @@ check(
   "wires WorkspaceContext session actions into ProjectSidebar",
   appSource.includes("renameSession,") &&
     appSource.includes("archiveSession,") &&
+    appSource.includes("pinSession,") &&
     appSource.includes("deleteSession,") &&
     appSource.includes("onRenameSession: renameSession") &&
     appSource.includes("onArchiveSession: archiveSession") &&
+    appSource.includes("onPinSession: pinSession") &&
     appSource.includes("onDeleteSession: deleteSession"),
   appSource,
 );
@@ -518,7 +591,7 @@ check(
 check(
   "create project modal keeps configured team templates after blank team",
   componentSource.includes("teamPresets.filter") &&
-    componentSource.includes("preset.member_ids.length") &&
+    componentSource.includes("preset.members.length") &&
     componentSource.includes("...blankTeamOptions") &&
     !componentSource.includes("fallbackTeamOptions"),
   componentSource,

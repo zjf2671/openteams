@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BuiltInProviderId,
   CliConfig,
@@ -10,8 +10,9 @@ import {
   isMaskedSecret,
 } from '@/lib/cliConfigTypes';
 import {
+  AutosaveStatus,
+  type AutosaveStatusState,
   Field,
-  ProviderSaveBar,
   technicalInputClassName,
 } from './providerSettingsUi';
 
@@ -78,45 +79,87 @@ function setProviderEndpoint(
 }
 
 export function BuiltInProviderEditor({
-  busyAction,
   config,
   copy,
   isBusy,
   isDirty,
-  onDiscard,
   onSave,
   provider,
   status,
   setConfig,
 }: {
-  busyAction: string | null;
   config: CliConfig;
   copy: (key: string, fallback: string) => string;
   isBusy: boolean;
   isDirty: boolean;
-  onDiscard: () => void;
-  onSave: () => void;
+  onSave: () => Promise<void> | void;
   provider: BuiltInProviderId;
   status: StatusState;
   setConfig: (updater: (draft: CliConfig) => void) => void;
 }) {
   const credentials = getProviderCredentials(config, provider);
+  const [autosaveState, setAutosaveState] =
+    useState<AutosaveStatusState>('idle');
+  const autosaveTimerRef = useRef<number | null>(null);
+  const autosaveFadeTimerRef = useRef<number | null>(null);
+  const autosaveInFlightRef = useRef(false);
+
+  const clearAutosaveTimers = useCallback(() => {
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    if (autosaveFadeTimerRef.current != null) {
+      window.clearTimeout(autosaveFadeTimerRef.current);
+      autosaveFadeTimerRef.current = null;
+    }
+  }, []);
+
+  const runAutosave = useCallback(async () => {
+    if (!isDirty || autosaveInFlightRef.current) return;
+    clearAutosaveTimers();
+    autosaveInFlightRef.current = true;
+    setAutosaveState('saving');
+    try {
+      await onSave();
+      setAutosaveState('saved');
+      autosaveFadeTimerRef.current = window.setTimeout(() => {
+        setAutosaveState('idle');
+      }, 1500);
+    } catch {
+      setAutosaveState('idle');
+    } finally {
+      autosaveInFlightRef.current = false;
+    }
+  }, [clearAutosaveTimers, isDirty, onSave]);
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') {
-        return;
+    if (!isDirty || isBusy) return;
+    setAutosaveState('saving');
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void runAutosave();
+    }, 500);
+    return () => {
+      if (autosaveTimerRef.current != null) {
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
       }
-      event.preventDefault();
-      if (!isBusy && isDirty) onSave();
     };
+  }, [config, isBusy, isDirty, runAutosave]);
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isBusy, isDirty, onSave]);
+  useEffect(() => clearAutosaveTimers, [clearAutosaveTimers]);
 
   return (
-    <div className="provider-editor-shell">
+    <div
+      className="provider-editor-shell"
+      onBlurCapture={() => {
+        if (isDirty) void runAutosave();
+      }}
+    >
+      <AutosaveStatus state={autosaveState} />
       <div className="provider-editor-content space-y-6">
         <StatusMessage status={status} />
 
@@ -179,17 +222,6 @@ export function BuiltInProviderEditor({
           </div>
         </section>
       </div>
-      {isDirty ? (
-        <ProviderSaveBar
-          disabled={isBusy}
-          isSaving={busyAction === 'save'}
-          onDiscard={onDiscard}
-          onSave={onSave}
-          discardLabel={copy('settings.providers.discardChanges', '放弃')}
-          saveLabel={copy('settings.providers.saveChanges', 'Save changes')}
-          savingLabel={copy('settings.providers.saving', 'Saving...')}
-        />
-      ) : null}
     </div>
   );
 }

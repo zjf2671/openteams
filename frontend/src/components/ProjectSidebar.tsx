@@ -19,15 +19,18 @@ import {
   ChevronRight,
   CircleDot,
   ChevronUp,
+  Copy,
   FileText,
   Folder,
   FolderOpen,
   Github,
+  Hash,
   History,
   Inbox,
   LoaderCircle,
   MoreHorizontal,
   Pencil,
+  Pin,
   Plus,
   PlusCircle,
   Settings2,
@@ -96,6 +99,7 @@ interface ProjectSidebarProps {
   onProjectSelect?: (projectId: string) => void;
   onRenameSession?: (sessionId: string, title: string) => Promise<void>;
   onArchiveSession?: (sessionId: string) => Promise<void>;
+  onPinSession?: (sessionId: string, pinned: boolean) => Promise<void>;
   onDeleteSession?: (sessionId: string) => Promise<void>;
   onCreateProject?: (
     data: CreateProjectRequest,
@@ -113,6 +117,7 @@ const primaryActionIcons: Record<SidebarPrimaryAction["icon"], LucideIcon> = {
 
 const navigationIcons: Record<string, LucideIcon> = {
   bot: Bot,
+  "circle-dot": CircleDot,
   "file-text": FileText,
   github: Github,
   settings: Settings2,
@@ -134,10 +139,22 @@ const blankTeamId = "blank_team";
 const hasRunningSessionActivity = (session: Session): boolean =>
   Boolean(session.hasRunningAgent || session.hasRunningWorkflow);
 
-const prioritizeRunningSessions = (sessions: Session[]): Session[] => [
-  ...sessions.filter(hasRunningSessionActivity),
-  ...sessions.filter((session) => !hasRunningSessionActivity(session)),
-];
+const hasSidebarPrioritySessionActivity = (session: Session): boolean =>
+  hasRunningSessionActivity(session) ||
+  Boolean(session.hasPendingWorkflowInput) ||
+  Boolean(session.hasPendingWorkflowReview);
+
+const isPinnedSession = (session: Session): boolean => Boolean(session.pinnedAt);
+
+const prioritizeSessions = (sessions: Session[]): Session[] => {
+  const pinned = sessions.filter(isPinnedSession);
+  const unpinned = sessions.filter((session) => !isPinnedSession(session));
+  return [
+    ...pinned,
+    ...unpinned.filter(hasSidebarPrioritySessionActivity),
+    ...unpinned.filter((session) => !hasSidebarPrioritySessionActivity(session)),
+  ];
+};
 
 const blankTeamOptions: DropdownSelectOption[] = [
   {
@@ -296,6 +313,7 @@ export function ProjectSidebar({
   onProjectSelect,
   onRenameSession,
   onArchiveSession,
+  onPinSession,
   onDeleteSession,
   onCreateProject,
   onUpdateProject,
@@ -325,6 +343,10 @@ export function ProjectSidebar({
   const [sessionActionError, setSessionActionError] = useState<string | null>(
     null,
   );
+  const [viewingSession, setViewingSession] = useState<Session | null>(null);
+  const [copySessionIdState, setCopySessionIdState] = useState<
+    "idle" | "copied" | "error"
+  >("idle");
   const [renamingSession, setRenamingSession] = useState<Session | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -332,6 +354,7 @@ export function ProjectSidebar({
   const [archivingSessionId, setArchivingSessionId] = useState<string | null>(
     null,
   );
+  const [pinningSessionId, setPinningSessionId] = useState<string | null>(null);
   const [deletingSession, setDeletingSession] = useState<Session | null>(null);
   const [deleteSessionError, setDeleteSessionError] = useState<string | null>(
     null,
@@ -400,7 +423,7 @@ export function ProjectSidebar({
   );
   const buildStats = realBuildStats ?? ZERO_BUILD_STATS;
   const orderedSessions = useMemo(
-    () => prioritizeRunningSessions(sessions),
+    () => prioritizeSessions(sessions),
     [sessions],
   );
   const hasOverflowSessions = orderedSessions.length > visibleSessionLimit;
@@ -428,7 +451,7 @@ export function ProjectSidebar({
         id: preset.id,
         label: preset.name,
         description: preset.description,
-        hint: `${preset.member_ids.length}`,
+        hint: `${preset.members.length}`,
       })),
     ];
   }, [teamPresets]);
@@ -441,6 +464,13 @@ export function ProjectSidebar({
     const translated = t?.(key, replacements);
     return translated && translated !== key ? translated : fallback;
   };
+
+  const copySessionIdLabel =
+    copySessionIdState === "copied"
+      ? translate("sidebar.sessionIdCopied", "Copied")
+      : copySessionIdState === "error"
+        ? translate("sidebar.sessionIdCopyFailed", "Copy failed")
+        : translate("sidebar.copySessionId", "Copy");
 
   const sessionToggleLabel = sessionsExpanded
     ? translate("sidebar.less", "Less")
@@ -693,7 +723,7 @@ export function ProjectSidebar({
     const viewportWidth = toOverlayValue(window.innerWidth);
     const viewportHeight = toOverlayValue(window.innerHeight);
     const menuWidth = 180;
-    const menuHeight = 132;
+    const menuHeight = 200;
     setSessionContextMenu({
       sessionId: session.id,
       left: Math.min(
@@ -713,6 +743,29 @@ export function ProjectSidebar({
     setRenameError(null);
     setSessionContextMenu(null);
     setSessionActionError(null);
+  };
+
+  const startViewSessionId = (session: Session) => {
+    setViewingSession(session);
+    setCopySessionIdState("idle");
+    setSessionContextMenu(null);
+    setSessionActionError(null);
+  };
+
+  const closeViewSessionIdDialog = () => {
+    setViewingSession(null);
+    setCopySessionIdState("idle");
+  };
+
+  const copyViewingSessionId = async () => {
+    if (!viewingSession) return;
+    setCopySessionIdState("idle");
+    try {
+      await navigator.clipboard.writeText(viewingSession.id);
+      setCopySessionIdState("copied");
+    } catch {
+      setCopySessionIdState("error");
+    }
   };
 
   const closeRenameDialog = () => {
@@ -747,7 +800,7 @@ export function ProjectSidebar({
   };
 
   const handleArchiveSession = async (session: Session) => {
-    if (!onArchiveSession || archivingSessionId) return;
+    if (!onArchiveSession || archivingSessionId || pinningSessionId) return;
 
     setArchivingSessionId(session.id);
     setSessionActionError(null);
@@ -763,6 +816,26 @@ export function ProjectSidebar({
       );
     } finally {
       setArchivingSessionId(null);
+    }
+  };
+
+  const handlePinSession = async (session: Session) => {
+    if (!onPinSession || pinningSessionId || archivingSessionId) return;
+
+    setPinningSessionId(session.id);
+    setSessionActionError(null);
+    try {
+      await onPinSession(session.id, !isPinnedSession(session));
+      setSessionContextMenu(null);
+    } catch (error) {
+      setSessionActionError(
+        sessionErrorMessage(
+          error,
+          translate("sidebar.pinSessionFailed", "Failed to update pin"),
+        ),
+      );
+    } finally {
+      setPinningSessionId(null);
     }
   };
 
@@ -892,19 +965,19 @@ export function ProjectSidebar({
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (target && sessionMenuRef.current?.contains(target)) return;
-      if (!archivingSessionId) {
+      if (!archivingSessionId && !pinningSessionId) {
         setSessionContextMenu(null);
         setSessionActionError(null);
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !archivingSessionId) {
+      if (event.key === "Escape" && !archivingSessionId && !pinningSessionId) {
         setSessionContextMenu(null);
         setSessionActionError(null);
       }
     };
     const closeOnViewportChange = () => {
-      if (!archivingSessionId) {
+      if (!archivingSessionId && !pinningSessionId) {
         setSessionContextMenu(null);
         setSessionActionError(null);
       }
@@ -921,7 +994,7 @@ export function ProjectSidebar({
       window.removeEventListener("resize", closeOnViewportChange);
       window.removeEventListener("scroll", closeOnViewportChange, true);
     };
-  }, [archivingSessionId, sessionContextMenu]);
+  }, [archivingSessionId, pinningSessionId, sessionContextMenu]);
 
   useEffect(() => {
     if (sessionContextMenu && !menuSession) {
@@ -931,17 +1004,24 @@ export function ProjectSidebar({
   }, [menuSession, sessionContextMenu]);
 
   useEffect(() => {
-    if (!renamingSession && !deletingSession) return;
+    if (!viewingSession && !renamingSession && !deletingSession) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (viewingSession) closeViewSessionIdDialog();
       if (renamingSession) closeRenameDialog();
       if (deletingSession) closeDeleteSessionDialog();
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [deleteSessionInFlight, deletingSession, renameInFlight, renamingSession]);
+  }, [
+    deleteSessionInFlight,
+    deletingSession,
+    renameInFlight,
+    renamingSession,
+    viewingSession,
+  ]);
 
   useEffect(() => {
     if (!createFormOpen) return;
@@ -1594,7 +1674,11 @@ export function ProjectSidebar({
               role="menuitem"
               className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-[var(--ink-muted)] transition hover:bg-[var(--surface-1)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => startRenameSession(menuSession)}
-              disabled={!onRenameSession || Boolean(archivingSessionId)}
+              disabled={
+                !onRenameSession ||
+                Boolean(archivingSessionId) ||
+                Boolean(pinningSessionId)
+              }
             >
               <Pencil className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
               {translate("sidebar.renameSession", "Rename")}
@@ -1603,9 +1687,43 @@ export function ProjectSidebar({
               type="button"
               role="menuitem"
               className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-[var(--ink-muted)] transition hover:bg-[var(--surface-1)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => void handlePinSession(menuSession)}
+              disabled={
+                !onPinSession ||
+                pinningSessionId === menuSession.id ||
+                Boolean(archivingSessionId)
+              }
+            >
+              {pinningSessionId === menuSession.id ? (
+                <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--primary)]" />
+              ) : (
+                <Pin className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+              )}
+              {pinningSessionId === menuSession.id
+                ? translate("sidebar.updatingPin", "Updating...")
+                : isPinnedSession(menuSession)
+                  ? translate("sidebar.unpinSession", "Unpin")
+                  : translate("sidebar.pinSession", "Pin to top")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-[var(--ink-muted)] transition hover:bg-[var(--surface-1)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => startViewSessionId(menuSession)}
+              disabled={Boolean(archivingSessionId) || Boolean(pinningSessionId)}
+            >
+              <Hash className="h-3.5 w-3.5 shrink-0 text-[var(--ink-tertiary)]" />
+              {translate("sidebar.viewSessionId", "View ID")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-[var(--ink-muted)] transition hover:bg-[var(--surface-1)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => void handleArchiveSession(menuSession)}
               disabled={
-                !onArchiveSession || archivingSessionId === menuSession.id
+                !onArchiveSession ||
+                archivingSessionId === menuSession.id ||
+                Boolean(pinningSessionId)
               }
             >
               {archivingSessionId === menuSession.id ? (
@@ -1623,7 +1741,11 @@ export function ProjectSidebar({
               role="menuitem"
               className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-red-400 transition hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => startDeleteSession(menuSession)}
-              disabled={!onDeleteSession || Boolean(archivingSessionId)}
+              disabled={
+                !onDeleteSession ||
+                Boolean(archivingSessionId) ||
+                Boolean(pinningSessionId)
+              }
             >
               <Trash2 className="h-3.5 w-3.5 shrink-0" />
               {translate("sidebar.deleteSession", "Delete")}
@@ -1633,6 +1755,96 @@ export function ProjectSidebar({
                 {sessionActionError}
               </p>
             )}
+          </div>,
+          portalTarget,
+        )}
+
+      {viewingSession &&
+        portalTarget &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[1002] flex items-center justify-center p-4"
+            role="presentation"
+          >
+            <div
+              className="absolute inset-0 bg-black/60 backdrop-blur-xs"
+              onClick={closeViewSessionIdDialog}
+            />
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="view-session-id-dialog-title"
+              className="relative w-full max-w-md overflow-hidden rounded-xl border border-[var(--hairline-strong)] bg-[var(--canvas)]"
+            >
+              <header className="flex items-center justify-between border-b border-[var(--hairline)] px-5 py-4">
+                <h2
+                  id="view-session-id-dialog-title"
+                  className="text-[14px] font-semibold tracking-tight text-[var(--ink)]"
+                >
+                  {translate("sidebar.viewSessionId", "View ID")}
+                </h2>
+                <button
+                  type="button"
+                  className="rounded-md p-1 text-[var(--ink-tertiary)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+                  onClick={closeViewSessionIdDialog}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </header>
+              <div className="space-y-4 p-5">
+                <div>
+                  <p className="mb-2 truncate text-[13px] font-medium text-[var(--ink-subtle)]">
+                    {viewingSession.title}
+                  </p>
+                  <label
+                    htmlFor="view-session-id-value"
+                    className="mb-1.5 block text-[13px] font-medium tracking-[0.4px] text-[var(--ink-tertiary)]"
+                  >
+                    {translate("sidebar.sessionId", "Session ID")}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="view-session-id-value"
+                      className="min-w-0 flex-1 rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2 font-mono text-[13px] text-[var(--ink)] outline-none focus:border-[var(--primary)]"
+                      value={viewingSession.id}
+                      readOnly
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                    <button
+                      type="button"
+                      aria-label={copySessionIdLabel}
+                      title={copySessionIdLabel}
+                      className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-md border border-[var(--hairline-strong)] text-[var(--ink-muted)] transition hover:bg-[var(--surface-3)] hover:text-[var(--ink)]"
+                      onClick={() => void copyViewingSessionId()}
+                    >
+                      {copySessionIdState === "copied" ? (
+                        <Check className="h-3.5 w-3.5 text-[var(--success)]" />
+                      ) : (
+                        <Copy
+                          className={`h-3.5 w-3.5 ${
+                            copySessionIdState === "error"
+                              ? "text-red-400"
+                              : ""
+                          }`}
+                        />
+                      )}
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between border-t border-[var(--hairline)] bg-[var(--surface-1)] -mx-5 -mb-5 mt-2 px-5 py-3">
+                  <span className="font-mono text-[10px] text-[var(--ink-tertiary)]">
+                    {translate("escToCancel", "Esc to cancel")}
+                  </span>
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-md border border-[var(--hairline-strong)] px-3 py-1.5 text-xs font-medium text-[var(--ink-muted)] transition hover:bg-[var(--surface-3)]"
+                    onClick={closeViewSessionIdDialog}
+                  >
+                    {translate("sidebar.closeSessionId", "Close")}
+                  </button>
+                </div>
+              </div>
+            </section>
           </div>,
           portalTarget,
         )}
@@ -1914,13 +2126,35 @@ export function ProjectSidebar({
                     activePage === "workspace" &&
                     session.id === activeSessionId;
                   const isRunning = hasRunningSessionActivity(session);
+                  const hasPendingWorkflowReview =
+                    !isRunning && Boolean(session.hasPendingWorkflowReview);
+                  const hasPendingWorkflowInput =
+                    !isRunning &&
+                    !hasPendingWorkflowReview &&
+                    Boolean(session.hasPendingWorkflowInput);
                   const hasUnreadAgentCompletion =
                     !isRunning && Boolean(session.hasUnreadAgentCompletion);
-                  const SessionIcon = isRunning ? LoaderCircle : Box;
+                  const pinned = isPinnedSession(session);
+                  const SessionIcon =
+                    isRunning || hasPendingWorkflowReview
+                      ? LoaderCircle
+                      : hasPendingWorkflowInput
+                        ? CircleDot
+                        : Box;
                   const sessionLabel = isRunning
                     ? `${session.title} - ${translate(
                         "sidebar.sessionRunning",
                         "agent running",
+                      )}`
+                    : hasPendingWorkflowReview
+                    ? `${session.title} - ${translate(
+                        "sidebar.sessionWaitingReview",
+                        "waiting for review",
+                      )}`
+                    : hasPendingWorkflowInput
+                    ? `${session.title} - ${translate(
+                        "sidebar.sessionNeedsInput",
+                        "waiting for input",
                       )}`
                     : hasUnreadAgentCompletion
                     ? `${session.title} - ${translate(
@@ -1946,8 +2180,10 @@ export function ProjectSidebar({
                     >
                       <SessionIcon
                         className={`h-3.5 w-3.5 shrink-0 ${
-                          isRunning
+                          isRunning || hasPendingWorkflowReview
                             ? "animate-spin text-[var(--primary)]"
+                            : hasPendingWorkflowInput
+                            ? "text-[var(--primary)]"
                             : hasUnreadAgentCompletion
                             ? "text-[var(--primary)]"
                             : active
@@ -1958,6 +2194,9 @@ export function ProjectSidebar({
                       <span className="min-w-0 flex-1 truncate">
                         {session.title}
                       </span>
+                      {pinned && (
+                        <Pin className="h-3 w-3 shrink-0 text-[var(--primary)]" />
+                      )}
                     </button>
                   );
                 })}

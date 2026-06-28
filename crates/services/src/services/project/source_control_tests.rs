@@ -19,6 +19,7 @@ use db::models::{
 use git::{GitCli, GitService};
 use serde_json::json;
 use sqlx::SqlitePool;
+use utils::assets::asset_dir;
 use uuid::Uuid;
 
 use super::source_control::{
@@ -112,6 +113,7 @@ async fn seed_session_with_observed_source(
             title: Some("Session".to_string()),
             workspace_path: Some(workspace_path.to_string_lossy().to_string()),
             project_id: Some(project_id),
+            worktree_mode: None,
         },
         Uuid::new_v4(),
     )
@@ -360,6 +362,121 @@ async fn git_workspace_ignores_openteams_artifact_observed_paths() {
 
     let (changes, staged) = git_status_paths(&status);
     assert!(changes.is_empty());
+    assert!(staged.is_empty());
+}
+
+#[tokio::test]
+async fn git_workspace_ignores_artifact_only_observed_paths() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let session_id = seed_session_with_observed_source(
+        &pool,
+        project.id,
+        &repo_path,
+        &["tracked.txt"],
+        "artifact_record",
+    )
+    .await;
+
+    fs::write(repo_path.join("tracked.txt"), "recorded as artifact only\n")
+        .expect("modify tracked");
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("status");
+
+    let (changes, staged) = git_status_paths(&status);
+    assert!(
+        changes.is_empty(),
+        "artifact_record-only paths must not own source-control changes: {changes:?}"
+    );
+    assert!(staged.is_empty());
+}
+
+#[tokio::test]
+async fn git_workspace_keeps_git_source_with_artifact_record_combo() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let session_id = seed_session_with_observed_source(
+        &pool,
+        project.id,
+        &repo_path,
+        &["tracked.txt"],
+        "git_diff,artifact_record",
+    )
+    .await;
+
+    fs::write(
+        repo_path.join("tracked.txt"),
+        "combined git and artifact source\n",
+    )
+    .expect("modify tracked");
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("status");
+
+    let (changes, staged) = git_status_paths(&status);
+    assert_eq!(changes, vec!["tracked.txt"]);
+    assert!(staged.is_empty());
+}
+
+#[tokio::test]
+async fn git_workspace_ignores_work_records_artifact_paths() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+
+    fs::create_dir_all(repo_path.join("binaries")).expect("create binaries dir");
+    fs::write(repo_path.join("binaries").join("test.txt"), "baseline\n")
+        .expect("write tracked binary");
+    git_add(&repo_path, "binaries/test.txt");
+    GitService::new()
+        .commit(&repo_path, "track binaries test file")
+        .expect("commit binaries file");
+
+    let session_id = seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+
+    let runs = ChatRun::list_for_session_workspace(&pool, session_id, &repo_path.to_string_lossy())
+        .await
+        .expect("list runs");
+    let run_id = runs.first().expect("seeded run").id;
+
+    let protocol_dir = asset_dir()
+        .join("chat")
+        .join(format!("session_{session_id}"))
+        .join("protocol");
+    fs::create_dir_all(&protocol_dir).expect("create protocol dir");
+    fs::write(
+        protocol_dir.join("work_records.jsonl"),
+        format!(
+            "{{\"session_id\":\"{session_id}\",\"run_id\":\"{run_id}\",\"message_type\":\"artifact\",\"content\":\"Saved binaries/test.txt.\"}}\n"
+        ),
+    )
+    .expect("write work records");
+
+    fs::write(repo_path.join("binaries").join("test.txt"), "updated\n")
+        .expect("modify binaries file");
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("status");
+
+    let session_asset_dir = asset_dir()
+        .join("chat")
+        .join(format!("session_{session_id}"));
+    let _ = fs::remove_dir_all(session_asset_dir);
+
+    let (changes, staged) = git_status_paths(&status);
+    assert!(
+        !changes.iter().any(|path| path == "binaries/test.txt"),
+        "work_records artifact paths must not own source-control changes: {changes:?}"
+    );
     assert!(staged.is_empty());
 }
 
@@ -840,4 +957,185 @@ async fn status_maps_untracked_without_collapsing_to_added() {
         panic!("expected git status");
     };
     assert_eq!(changes[0].status, SourceControlFileStatus::Untracked);
+}
+
+// ---------------------------------------------------------------------------
+// Session worktree workspace selection tests
+// ---------------------------------------------------------------------------
+
+use db::models::{
+    chat_session::ChatSessionWorktreeMode,
+    chat_session_worktree::{
+        CreateSessionWorktree, SessionWorktree, SessionWorktreeMode as WorktreeMode,
+        SessionWorktreeStatus,
+    },
+};
+
+async fn seed_isolated_session(pool: &SqlitePool, project_id: Uuid, workspace_path: &Path) -> Uuid {
+    let session = ChatSession::create(
+        pool,
+        &CreateChatSession {
+            title: Some("Isolated Session".to_string()),
+            workspace_path: Some(workspace_path.to_string_lossy().to_string()),
+            project_id: Some(project_id),
+            worktree_mode: Some(ChatSessionWorktreeMode::Isolated),
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("create isolated session");
+    session.id
+}
+
+async fn seed_worktree_row(
+    pool: &SqlitePool,
+    session_id: Uuid,
+    project_id: Uuid,
+    base_workspace: &Path,
+    worktree_path: &Path,
+    status: SessionWorktreeStatus,
+) -> Uuid {
+    let row = SessionWorktree::create(
+        pool,
+        &CreateSessionWorktree {
+            session_id,
+            project_id: Some(project_id),
+            base_workspace_path: base_workspace.to_string_lossy().to_string(),
+            repo_path: base_workspace.to_string_lossy().to_string(),
+            base_branch: "main".to_string(),
+            base_commit: None,
+            branch_name: format!("openteams/session/{}", &format!("{session_id}")[..8]),
+            worktree_path: worktree_path.to_string_lossy().to_string(),
+            mode: WorktreeMode::Session,
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("create worktree row");
+
+    if status != SessionWorktreeStatus::Creating {
+        SessionWorktree::transition_status(pool, row.id, SessionWorktreeStatus::Creating, status)
+            .await
+            .expect("transition to target status");
+    }
+    row.id
+}
+
+#[tokio::test]
+async fn source_control_uses_worktree_path_for_active_worktree() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let session_id = seed_isolated_session(&pool, project.id, &repo_path).await;
+
+    let worktree_dir = tempfile::TempDir::new().unwrap();
+    let worktree_path = worktree_dir.path();
+    // Create a minimal git structure in the worktree path so it's accessible
+    fs::create_dir_all(worktree_path).unwrap();
+
+    seed_worktree_row(
+        &pool,
+        session_id,
+        project.id,
+        &repo_path,
+        worktree_path,
+        SessionWorktreeStatus::Active,
+    )
+    .await;
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("status with active worktree");
+
+    // Should NOT fail — the active worktree path is used, not the project workspace.
+    // Even if the worktree path isn't a real git repo, session_status should resolve
+    // the workspace context successfully (it may return a Plain status).
+    match status {
+        SessionSourceControlStatus::Git { .. } | SessionSourceControlStatus::Plain { .. } => {}
+    }
+}
+
+#[tokio::test]
+async fn source_control_switches_to_base_workspace_after_merge() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let session_id = seed_isolated_session(&pool, project.id, &repo_path).await;
+
+    let worktree_dir = tempfile::TempDir::new().unwrap();
+    let worktree_path = worktree_dir.path();
+    fs::create_dir_all(worktree_path).unwrap();
+
+    // Seed a merged worktree — source-control should use base_workspace_path
+    seed_worktree_row(
+        &pool,
+        session_id,
+        project.id,
+        &repo_path,
+        worktree_path,
+        SessionWorktreeStatus::Merged,
+    )
+    .await;
+
+    // session_status should succeed and use the base workspace (repo_path),
+    // NOT the worktree_path (which is a temp dir with no git).
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("status with merged worktree");
+
+    // The status should be Git (from repo_path), not Plain.
+    match status {
+        SessionSourceControlStatus::Git { .. } => {}
+        SessionSourceControlStatus::Plain { .. } => {
+            panic!("expected git status from base workspace after merge");
+        }
+    }
+}
+
+#[tokio::test]
+async fn source_control_switches_to_base_workspace_for_cleanup_failed() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let session_id = seed_isolated_session(&pool, project.id, &repo_path).await;
+
+    let worktree_dir = tempfile::TempDir::new().unwrap();
+    let worktree_path = worktree_dir.path();
+    fs::create_dir_all(worktree_path).unwrap();
+
+    // Seed a cleanup_failed worktree — source-control should use base_workspace_path,
+    // NOT the worktree_path (which would be stale after a failed cleanup).
+    // cleanup_failed requires going through cleanup_pending first.
+    let row_id = seed_worktree_row(
+        &pool,
+        session_id,
+        project.id,
+        &repo_path,
+        worktree_path,
+        SessionWorktreeStatus::CleanupPending,
+    )
+    .await;
+    SessionWorktree::transition_status(
+        &pool,
+        row_id,
+        SessionWorktreeStatus::CleanupPending,
+        SessionWorktreeStatus::CleanupFailed,
+    )
+    .await
+    .expect("transition to cleanup_failed");
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("status with cleanup_failed worktree");
+
+    // Should use base workspace, not the stale worktree path.
+    match status {
+        SessionSourceControlStatus::Git { .. } => {}
+        SessionSourceControlStatus::Plain { .. } => {
+            panic!("expected git status from base workspace for cleanup_failed");
+        }
+    }
 }

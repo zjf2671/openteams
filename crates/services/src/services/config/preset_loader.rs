@@ -1,10 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use utils::{path::home_directory, text::sanitize_member_handle};
 
-use crate::services::config::versions::v9::{ChatMemberPreset, ChatPresetsConfig, ChatTeamPreset};
+use crate::services::config::versions::v9::{
+    ChatMemberPreset, ChatPresetsConfig, ChatTeamPreset, ChatWorkflowStep,
+};
 
 const TEAM_PROTOCOL_MARKDOWN: &str =
     include_str!("presets/protocol/team_collaboration_protocol.md");
@@ -739,6 +741,18 @@ struct TeamPresetFrontmatter {
     name: String,
     description: String,
     member_ids: Vec<String>,
+    #[serde(default)]
+    workflow_steps: Vec<ChatWorkflowStep>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TeamPresetMd {
+    id: String,
+    name: String,
+    description: String,
+    member_ids: Vec<String>,
+    workflow_steps: Vec<ChatWorkflowStep>,
+    team_protocol: String,
 }
 
 pub struct PresetLoader;
@@ -751,9 +765,45 @@ impl PresetLoader {
             .map(|(path, raw)| Self::parse_chat_member_preset(path, raw, &default_workspace_path))
             .collect::<Result<Vec<_>>>()
             .expect("built-in role preset markdown should be valid");
+        let member_by_id: HashMap<&str, &ChatMemberPreset> = members
+            .iter()
+            .map(|member| (member.id.as_str(), member))
+            .collect();
         let teams = TEAM_PRESET_MARKDOWN
             .iter()
             .map(|(path, raw)| Self::parse_team_preset_markdown(path, raw))
+            .map(|team_result| {
+                team_result.and_then(|team_md| {
+                    let team_members = team_md
+                        .member_ids
+                        .iter()
+                        .map(|member_id| {
+                            member_by_id
+                                .get(member_id.as_str())
+                                .copied()
+                                .cloned()
+                                .ok_or_else(|| {
+                                    anyhow!(
+                                        "built-in team \"{}\" references unknown member preset: {}",
+                                        team_md.id,
+                                        member_id
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(ChatTeamPreset {
+                        id: team_md.id,
+                        name: team_md.name,
+                        description: team_md.description,
+                        members: team_members,
+                        lead_member_id: None,
+                        workflow_steps: team_md.workflow_steps,
+                        team_protocol: team_md.team_protocol,
+                        is_builtin: true,
+                        enabled: true,
+                    })
+                })
+            })
             .collect::<Result<Vec<_>>>()
             .expect("built-in team preset markdown should be valid");
 
@@ -838,7 +888,7 @@ impl PresetLoader {
         })
     }
 
-    fn parse_team_preset_markdown(path: &str, raw: &str) -> Result<ChatTeamPreset> {
+    fn parse_team_preset_markdown(path: &str, raw: &str) -> Result<TeamPresetMd> {
         let normalized = normalize_newlines(raw);
         let (frontmatter_raw, body) = split_frontmatter(&normalized)
             .ok_or_else(|| anyhow!("missing frontmatter delimiters in {path}"))?;
@@ -857,15 +907,13 @@ impl PresetLoader {
             bail!("team preset contains no member_ids in {path}");
         }
 
-        Ok(ChatTeamPreset {
+        Ok(TeamPresetMd {
             id: frontmatter.id,
             name: frontmatter.name,
             description: frontmatter.description,
             member_ids,
-            lead_member_id: None,
+            workflow_steps: frontmatter.workflow_steps,
             team_protocol: body.trim().to_string(),
-            is_builtin: true,
-            enabled: true,
         })
     }
 }
@@ -970,8 +1018,13 @@ mod tests {
             team.description,
             "Planner-led web delivery across design, frontend, backend, QA, and review."
         );
+        let team_member_ids = team
+            .members
+            .iter()
+            .map(|member| member.id.clone())
+            .collect::<Vec<_>>();
         assert_eq!(
-            team.member_ids,
+            team_member_ids,
             vec![
                 "coordinator_pmo".to_string(),
                 "ux_ui_designer".to_string(),
@@ -1092,8 +1145,7 @@ Coordinate tightly and document every handoff.
             parsed.team_protocol,
             "Coordinate tightly and document every handoff.\n- Backend owns API behavior.\n- Frontend owns UX delivery."
         );
-        assert!(parsed.is_builtin);
-        assert!(parsed.enabled);
+        assert!(parsed.workflow_steps.is_empty());
     }
 
     #[test]

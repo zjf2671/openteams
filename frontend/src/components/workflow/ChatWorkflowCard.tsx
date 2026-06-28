@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { motion } from 'framer-motion';
 import type { WorkflowCardData } from '@/lib/api';
 import { AgentMarkdown } from '@/components/AgentMarkdown';
-import { ChatMarkdown } from '@/components/ui-new/primitives/conversation/ChatMarkdown';
+import { ChatMarkdown } from '@/components/conversation/ChatMarkdown';
 import { WorkflowIterationFeedbackCard } from './WorkflowIterationFeedbackCard';
 import { WorkflowPendingInputCard } from './WorkflowPendingInputCard';
 import { WorkflowPendingReviewCard } from './WorkflowPendingReviewCard';
@@ -635,7 +635,7 @@ export function ChatWorkflowCard({
       )}
 
       {shouldShowProgressInfo ? (
-        <div className="mt-4 flex flex-wrap items-start gap-3">
+        <div className="mt-4 flex w-full flex-wrap items-start gap-3">
           <div
             className={`max-w-full shrink-0 ${
               shouldExpandFeedbackCard ? 'w-[320px]' : 'w-[200px]'

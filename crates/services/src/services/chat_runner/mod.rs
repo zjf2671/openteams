@@ -18,8 +18,8 @@ use db::{
         chat_run::{
             ChatRun, ChatRunArtifactState, ChatRunLogState, ChatRunRetentionSummary, CreateChatRun,
         },
-        chat_session::ChatSession,
-        chat_session_agent::{ChatSessionAgent, ChatSessionAgentState, CreateChatSessionAgent},
+        chat_session::{ChatSession, ChatSessionWorktreeMode},
+        chat_session_agent::{ChatSessionAgent, ChatSessionAgentState},
         chat_skill::ChatSkill,
         chat_work_item::{ChatWorkItem, ChatWorkItemType, CreateChatWorkItem},
         project_member::{ProjectMember, ProjectMemberType},
@@ -63,6 +63,9 @@ use crate::services::{
     member_execution::build_effective_member_executor,
     queued_message::{
         CreateQueuedMessage, MemberQueueSnapshot, QueuedMessage, QueuedMessageService,
+    },
+    session_worktree::{
+        EnsureOutcome, EnsureWorktreeInput, SessionWorktreeError, SessionWorktreeService,
     },
 };
 

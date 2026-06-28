@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::OsString,
     fs,
     path::{Component, Path, PathBuf},
@@ -9,7 +9,7 @@ use std::{
 use dashmap::DashMap;
 use db::models::{
     chat_run::ChatRun,
-    chat_session::{ChatSession, ChatSessionStatus},
+    chat_session::{ChatSession, ChatSessionStatus, ChatSessionWorktreeMode},
     project::Project,
     project_path::{ProjectPath, ProjectPathKind},
     project_work_item::ProjectWorkItem,
@@ -21,13 +21,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use thiserror::Error;
 use ts_rs::TS;
-use utils::{
-    assets::asset_dir,
-    diff::{compute_line_change_counts, create_unified_diff},
-};
+use utils::diff::{compute_line_change_counts, create_unified_diff};
 use uuid::Uuid;
 
 use super::delivery::ProjectDeliveryService;
+use crate::services::session_worktree::{SessionWorktreeError, SessionWorktreeService};
 
 const MAX_INLINE_DIFF_BYTES: u64 = 2 * 1024 * 1024;
 const SOURCE_CONTROL_CACHE_TTL: Duration = Duration::from_secs(2);
@@ -359,14 +357,6 @@ struct RunMetaFile {
     workspace_observed_paths: Vec<WorkspaceObservedPathRecord>,
 }
 
-#[derive(Debug, Deserialize)]
-struct WorkRecordJsonLine {
-    run_id: Uuid,
-    #[serde(default)]
-    message_type: String,
-    content: String,
-}
-
 #[derive(Debug, Clone)]
 struct StatusPathEntry {
     path: String,
@@ -376,33 +366,10 @@ struct StatusPathEntry {
     is_untracked: bool,
 }
 
-fn is_output_text_only_observed_source(source: &str) -> bool {
-    let mut saw_output_text = false;
-    let mut saw_other_source = false;
-    for part in source
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
-        if part.eq_ignore_ascii_case("output_text") {
-            saw_output_text = true;
-        } else {
-            saw_other_source = true;
-        }
-    }
-    saw_output_text && !saw_other_source
-}
-
-fn is_artifact_observed_source(source: &str) -> bool {
-    source
-        .split(',')
-        .any(|part| part.trim().eq_ignore_ascii_case("artifact_record"))
-}
-
-fn is_openteams_relative_path(path: &str) -> bool {
-    PathBuf::from(path).components().next().is_some_and(
-        |component| matches!(component, Component::Normal(part) if part == ".openteams"),
-    )
+fn is_source_control_observed_source(source: &str) -> bool {
+    source.split(',').map(str::trim).any(|part| {
+        part.eq_ignore_ascii_case("git_diff") || part.eq_ignore_ascii_case("git_untracked")
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1080,8 +1047,58 @@ async fn resolve_workspace_context(
         return Err(SourceControlError::SessionProjectMismatch);
     }
 
+    // For isolated sessions, check the session worktree FIRST — before
+    // resolving the project workspace. This ensures that:
+    // 1. An active worktree is used even when the project has no default
+    //    workspace configured (e.g. worktree was prepared via the API with
+    //    a custom base_workspace_path).
+    // 2. Archived/failed worktrees fall back to the worktree row's
+    //    base_workspace_path, not the (possibly changed) project default.
+    if session.worktree_mode == ChatSessionWorktreeMode::Isolated {
+        let worktree_service = SessionWorktreeService::new(pool.clone());
+        let latest = worktree_service
+            .get_latest_for_session(session_id)
+            .await
+            .map_err(|e| match e {
+                SessionWorktreeError::Database(db) => SourceControlError::Database(db),
+                SessionWorktreeError::Io(io) => SourceControlError::Io(io),
+                other => SourceControlError::WorkspaceNotAccessible(other.to_string()),
+            })?;
+        if let Some(wt) = latest {
+            // Active worktree (creating/active/dirty/merging/needs_conflict_resolution/cleanup_pending)
+            // → use worktree path as the active workspace.
+            if wt.status.is_active_for_workspace() {
+                let workspace_path = PathBuf::from(&wt.worktree_path);
+                ensure_workspace_accessible(&workspace_path)?;
+                return Ok(WorkspaceContext {
+                    project_id,
+                    session_id,
+                    workspace_id: None,
+                    workspace_path_string: workspace_path.to_string_lossy().to_string(),
+                    workspace_path,
+                });
+            }
+            // Terminal/audit states (merged/archived/cleanup_failed)
+            // → switch back to the worktree row's base_workspace_path,
+            // not the (possibly changed) project default.
+            let workspace_path = PathBuf::from(&wt.base_workspace_path);
+            ensure_workspace_accessible(&workspace_path)?;
+            return Ok(WorkspaceContext {
+                project_id,
+                session_id,
+                workspace_id: None,
+                workspace_path_string: workspace_path.to_string_lossy().to_string(),
+                workspace_path,
+            });
+        }
+        // No worktree row — fall through to project workspace resolution
+    }
+
+    // Non-isolated sessions, or isolated sessions with no worktree row,
+    // use the project workspace.
     let (workspace_id, workspace_path) =
         resolve_project_workspace(pool, &project, workspace_id).await?;
+
     ensure_workspace_accessible(&workspace_path)?;
     let workspace_path_string = workspace_path.to_string_lossy().to_string();
 
@@ -1160,7 +1177,7 @@ async fn collect_session_paths(
     let runs =
         ChatRun::list_for_session_workspace(pool, session_id, &context.workspace_path_string)
             .await?;
-    let paths = collect_paths_from_runs(session_id, &context.workspace_path, &runs)?;
+    let paths = collect_paths_from_runs(&context.workspace_path, &runs)?;
     SESSION_PATH_CACHE.insert(
         key,
         SessionPathCacheEntry {
@@ -1272,20 +1289,16 @@ fn invalidate_source_control_session_caches(session_id: Uuid) {
 }
 
 fn collect_paths_from_runs(
-    session_id: Uuid,
     workspace_path: &Path,
     runs: &[ChatRun],
 ) -> Result<BTreeMap<String, SessionPathState>> {
     let mut paths = BTreeMap::<String, SessionPathState>::new();
     for run in runs {
         for entry in load_run_meta_observed_paths(run)? {
-            if is_output_text_only_observed_source(&entry.source) {
+            if !is_source_control_observed_source(&entry.source) {
                 continue;
             }
             if let Ok(path) = normalize_workspace_relative_path(&entry.path, workspace_path) {
-                if is_artifact_observed_source(&entry.source) && is_openteams_relative_path(&path) {
-                    continue;
-                }
                 let state = paths.entry(path).or_default();
                 state.existed_after_run |= entry.existed_after_run;
             }
@@ -1307,19 +1320,6 @@ fn collect_paths_from_runs(
                     });
                 }
             }
-        }
-    }
-
-    let run_ids = runs.iter().map(|run| run.id).collect::<HashSet<_>>();
-    for line in load_work_record_lines(session_id)? {
-        if !run_ids.contains(&line.run_id) || !line.message_type.eq_ignore_ascii_case("artifact") {
-            continue;
-        }
-        for path in extract_workspace_paths_from_text(&line.content, workspace_path) {
-            if is_openteams_relative_path(&path) {
-                continue;
-            }
-            paths.entry(path).or_default();
         }
     }
 
@@ -1410,28 +1410,6 @@ fn collect_relative_file_paths(root: &Path) -> Vec<String> {
         walk(root, root, &mut result);
     }
     result
-}
-
-fn load_work_record_lines(session_id: Uuid) -> Result<Vec<WorkRecordJsonLine>> {
-    let path = asset_dir()
-        .join("chat")
-        .join(format!("session_{session_id}"))
-        .join("protocol")
-        .join("work_records.jsonl");
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = fs::read_to_string(path)?;
-    Ok(content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<WorkRecordJsonLine>(line).ok())
-        .collect())
-}
-
-fn extract_workspace_paths_from_text(text: &str, workspace_path: &Path) -> Vec<String> {
-    text.split_whitespace()
-        .filter_map(|token| normalize_workspace_relative_path(token, workspace_path).ok())
-        .collect()
 }
 
 fn normalize_workspace_relative_path(

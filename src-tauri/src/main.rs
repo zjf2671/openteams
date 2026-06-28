@@ -1,10 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::sync::Mutex;
+use std::{
+    path::{Path, PathBuf},
+    process::Command as StdCommand,
+    sync::Mutex,
+};
 
 use directories::ProjectDirs;
 use portpicker::pick_unused_port;
-use tauri::{api::process::{Command, CommandChild}, Manager};
+use tauri::{
+    api::process::{Command as SidecarCommand, CommandChild},
+    Manager,
+};
 
 struct BackendState {
     child: Mutex<Option<CommandChild>>,
@@ -95,8 +102,155 @@ fn delete_cache_data() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+fn reveal_path_in_file_manager(path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Path is required".to_string());
+    }
+
+    let target_path = PathBuf::from(trimmed);
+    let metadata = std::fs::metadata(&target_path)
+        .map_err(|err| format!("Failed to read path metadata: {err}"))?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err("Path is not a file or directory".to_string());
+    }
+
+    reveal_path_in_file_manager_impl(&target_path, metadata.is_dir())
+        .map_err(|err| err.to_string())
+}
+
+fn spawn_detached_command(command: &mut StdCommand) -> Result<(), std::io::Error> {
+    command.current_dir(safe_detached_command_cwd());
+    let _child = command.spawn()?;
+    Ok(())
+}
+
+fn safe_detached_command_cwd() -> PathBuf {
+    std::env::temp_dir()
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path_in_file_manager_impl(path: &Path, is_directory: bool) -> Result<(), std::io::Error> {
+    let mut command = StdCommand::new("open");
+    if is_directory {
+        command.args(["-a", "Finder"]).arg(path);
+    } else {
+        command.arg("-R").arg(path);
+    }
+    spawn_detached_command(&mut command)
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path_in_file_manager_impl(path: &Path, is_directory: bool) -> Result<(), std::io::Error> {
+    if !is_directory {
+        match windows_select_file_in_explorer(path) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                eprintln!(
+                    "Failed to select file through Windows Shell API, falling back to explorer.exe: {} ({})",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    let mut command = StdCommand::new("explorer");
+    if is_directory {
+        command.arg(windows_normalized_shell_path(path));
+    } else {
+        command
+            .arg("/select,")
+            .arg(windows_normalized_shell_path(path));
+    }
+    spawn_detached_command(&mut command)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_normalized_shell_path(path: &Path) -> std::ffi::OsString {
+    std::ffi::OsString::from(path.to_string_lossy().replace('/', "\\"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_select_file_in_explorer(path: &Path) -> Result<(), std::io::Error> {
+    let path = path.to_path_buf();
+    std::thread::spawn(move || windows_select_file_in_explorer_on_current_thread(&path))
+        .join()
+        .map_err(|_| std::io::Error::other("Windows Shell API thread panicked"))?
+}
+
+#[cfg(target_os = "windows")]
+fn windows_select_file_in_explorer_on_current_thread(path: &Path) -> Result<(), std::io::Error> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::{
+        System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
+        UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems},
+    };
+
+    const S_OK: i32 = 0;
+    const S_FALSE: i32 = 1;
+    const RPC_E_CHANGED_MODE: i32 = 0x80010106u32 as i32;
+
+    let shell_path = windows_normalized_shell_path(path);
+    let wide_path: Vec<u16> = shell_path
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let init_result = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+        let should_uninitialize = init_result == S_OK || init_result == S_FALSE;
+        if init_result < 0 && init_result != RPC_E_CHANGED_MODE {
+            return Err(hresult_error("CoInitializeEx", init_result));
+        }
+
+        let pidl = ILCreateFromPathW(wide_path.as_ptr());
+        if pidl.is_null() {
+            if should_uninitialize {
+                CoUninitialize();
+            }
+            return Err(std::io::Error::other(
+                "ILCreateFromPathW failed to create a shell item",
+            ));
+        }
+
+        let select_result = SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0);
+        ILFree(pidl);
+        if should_uninitialize {
+            CoUninitialize();
+        }
+
+        if select_result >= 0 {
+            Ok(())
+        } else {
+            Err(hresult_error("SHOpenFolderAndSelectItems", select_result))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hresult_error(context: &str, hresult: i32) -> std::io::Error {
+    std::io::Error::other(format!(
+        "{context} failed with HRESULT 0x{:08X}",
+        hresult as u32
+    ))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal_path_in_file_manager_impl(path: &Path, is_directory: bool) -> Result<(), std::io::Error> {
+    let mut command = StdCommand::new("xdg-open");
+    if is_directory {
+        command.arg(path);
+    } else {
+        command.arg(path.parent().unwrap_or(path));
+    }
+    spawn_detached_command(&mut command)
+}
+
 fn spawn_backend(port: u16) -> Result<CommandChild, Box<dyn std::error::Error>> {
-    let mut cmd = Command::new_sidecar("server")?;
+    let mut cmd = SidecarCommand::new_sidecar("server")?;
     let mut envs = std::collections::HashMap::new();
     envs.insert("BACKEND_PORT".to_string(), port.to_string());
     envs.insert("HOST".to_string(), "127.0.0.1".to_string());
@@ -156,7 +310,11 @@ fn wait_for_backend_then_navigate(window: tauri::Window, port: u16) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![delete_all_user_data, delete_cache_data])
+        .invoke_handler(tauri::generate_handler![
+            delete_all_user_data,
+            delete_cache_data,
+            reveal_path_in_file_manager
+        ])
         .setup(|app| {
             let port = pick_unused_port().unwrap_or(3999);
             let child = spawn_backend(port)?;

@@ -566,7 +566,7 @@ export const SettingsWorkspace: React.FC = () => {
   };
 
   const renderMenuIcon = (icon: string) => {
-    const iconProps = { className: 'h-3.5 w-3.5', strokeWidth: 1.5 };
+    const iconProps = { className: 'h-3.5 w-3.5', strokeWidth: 1.35 };
     const icons: Record<string, React.ReactNode> = {
       user: <User {...iconProps} />,
       archive: <Archive {...iconProps} />,
@@ -585,6 +585,7 @@ export const SettingsWorkspace: React.FC = () => {
   };
 
   const menuItems = settingsOptions?.menu ?? [];
+  const isProviderSettingsTab = activeSettingsTab === 'providers';
   const getMenuSectionLabel = (section: string) =>
     translate(`settings.menu.section.${section.toLowerCase()}`, section);
   const getMenuItemLabel = (id: string, label: string) => {
@@ -684,10 +685,10 @@ export const SettingsWorkspace: React.FC = () => {
                     key={item.id}
                     onClick={() => !item.disabled && setActiveSettingsTab(item.id)}
                     disabled={item.disabled}
-                    className={`w-full flex min-h-8 items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left border transition-colors ${
+                    className={`settings-nav-row w-full flex min-h-8 items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left border transition-colors ${
                       active 
-                        ? 'text-[var(--ink)] bg-[var(--surface-1)] font-medium border-[var(--hairline)]' 
-                        : 'text-[var(--ink-subtle)] hover:bg-[var(--surface-1)] hover:text-[var(--ink)] border-transparent'
+                        ? 'settings-nav-row-active text-[var(--ink)] font-medium border-transparent' 
+                        : 'text-[var(--ink-subtle)] hover:text-[var(--ink)] border-transparent'
                     } ${item.disabled ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : 'cursor-pointer'}`}
                   >
                     <span className="shrink-0">{renderMenuIcon(item.icon)}</span>
@@ -700,7 +701,13 @@ export const SettingsWorkspace: React.FC = () => {
         </aside>
 
         {/* Right content manager */}
-        <main className="p-6 min-w-0 overflow-y-auto">
+        <main
+          className={`min-h-0 min-w-0 p-6 ${
+            isProviderSettingsTab
+              ? 'settings-provider-main overflow-hidden'
+              : 'overflow-y-auto'
+          }`}
+        >
           {renderActiveSettingPanel()}
         </main>
       </div>

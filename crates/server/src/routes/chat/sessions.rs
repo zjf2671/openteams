@@ -17,8 +17,12 @@ use db::models::{
     analytics::AnalyticsSessionStats,
     chat_agent::ChatAgent,
     chat_run::ChatRun,
-    chat_session::{ChatSession, ChatSessionStatus, CreateChatSession, UpdateChatSession},
+    chat_session::{
+        ChatSession, ChatSessionStatus, ChatSessionWorktreeMode, CreateChatSession,
+        UpdateChatSession,
+    },
     chat_session_agent::{ChatSessionAgent, CreateChatSessionAgent},
+    chat_session_worktree::SessionWorktree,
     member_execution_config::MemberExecutionConfig,
 };
 use deployment::Deployment;
@@ -28,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use services::services::{
     analytics_events::{AnalyticsProjector, DomainEvent},
     chat::create_session_with_project_members,
+    session_worktree::SessionWorktreeService,
     workflow::workflow_analytics::{self, hash_user_id},
 };
 use sqlx::FromRow;
@@ -231,6 +236,7 @@ struct RunMetaFile {
 
 #[derive(Debug, Deserialize)]
 struct WorkRecordJsonLine {
+    session_id: Uuid,
     run_id: Uuid,
     message_type: String,
     content: String,
@@ -241,33 +247,16 @@ struct PlainWorkspaceObservedPath {
     existed_after_run: bool,
 }
 
-fn is_output_text_only_observed_source(source: &str) -> bool {
-    let mut saw_output_text = false;
-    let mut saw_other_source = false;
-    for part in source
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
-        if part.eq_ignore_ascii_case("output_text") {
-            saw_output_text = true;
-        } else {
-            saw_other_source = true;
-        }
-    }
-    saw_output_text && !saw_other_source
-}
-
 fn is_artifact_observed_source(source: &str) -> bool {
     source
         .split(',')
         .any(|part| part.trim().eq_ignore_ascii_case("artifact_record"))
 }
 
-fn is_openteams_relative_path(path: &str) -> bool {
-    PathBuf::from(path).components().next().is_some_and(
-        |component| matches!(component, Component::Normal(part) if part == ".openteams"),
-    )
+fn is_source_control_observed_source(source: &str) -> bool {
+    source.split(',').map(str::trim).any(|part| {
+        part.eq_ignore_ascii_case("git_diff") || part.eq_ignore_ascii_case("git_untracked")
+    })
 }
 
 static INLINE_CODE_PATH_RE: LazyLock<Regex> =
@@ -292,11 +281,11 @@ fn build_session_workspaces(rows: Vec<SessionWorkspaceRow>) -> Vec<SessionWorksp
                 is_git_repo: git2::Repository::open(&row.workspace_path).is_ok(),
             });
 
-        if !workspace.agent_ids.contains(&row.agent_id) {
+        if row.agent_id != Uuid::nil() && !workspace.agent_ids.contains(&row.agent_id) {
             workspace.agent_ids.push(row.agent_id);
         }
 
-        if !workspace.agent_names.contains(&row.agent_name) {
+        if !row.agent_name.is_empty() && !workspace.agent_names.contains(&row.agent_name) {
             workspace.agent_names.push(row.agent_name);
         }
     }
@@ -524,8 +513,10 @@ fn extract_workspace_paths_from_text_with_options(
         }
     }
 
-    for token in text.split_whitespace() {
-        candidates.push(token.to_string());
+    if candidates.is_empty() {
+        for token in text.split_whitespace() {
+            candidates.push(token.to_string());
+        }
     }
 
     candidates
@@ -877,6 +868,23 @@ pub(crate) fn collect_run_files(run: &ChatRun, include_diff: bool) -> WorkspaceC
         });
     }
 
+    // Protocol artifact work records are written after the run delta/meta path
+    // capture, so read them at request time as a fallback for message-bottom
+    // run files. These rows deliberately have no inline diff.
+    for path in load_run_artifact_work_record_paths(run, root) {
+        if !covered.insert(path.clone()) {
+            continue;
+        }
+
+        changes.untracked.push(WorkspaceChangedFile {
+            path,
+            additions: 0,
+            deletions: 0,
+            unified_diff: None,
+            has_diff: false,
+        });
+    }
+
     changes.modified.sort_by(|a, b| a.path.cmp(&b.path));
     changes.added.sort_by(|a, b| a.path.cmp(&b.path));
     changes.deleted.sort_by(|a, b| a.path.cmp(&b.path));
@@ -950,6 +958,23 @@ fn load_work_record_lines(session_id: Uuid) -> Vec<WorkRecordJsonLine> {
         .collect()
 }
 
+fn load_run_artifact_work_record_paths(
+    run: &ChatRun,
+    workspace_path: &std::path::Path,
+) -> HashSet<String> {
+    load_work_record_lines(run.session_id)
+        .into_iter()
+        .filter(|record| {
+            record.session_id == run.session_id
+                && record.run_id == run.id
+                && record.message_type.eq_ignore_ascii_case("artifact")
+        })
+        .flat_map(|record| {
+            extract_workspace_paths_from_artifact_text(&record.content, workspace_path)
+        })
+        .collect()
+}
+
 fn collect_session_git_path_union(
     workspace_path: &std::path::Path,
     runs: &[ChatRun],
@@ -960,11 +985,7 @@ fn collect_session_git_path_union(
         let meta_paths = load_run_meta_observed_paths(run);
         let mut added_from_meta = false;
         for entry in meta_paths {
-            let is_git_source = entry
-                .source
-                .split(',')
-                .any(|source| matches!(source.trim(), "git_diff" | "git_untracked"));
-            if !is_git_source {
+            if !is_source_control_observed_source(&entry.source) {
                 continue;
             }
             if let Some(path) = normalize_workspace_relative_path(&entry.path, workspace_path) {
@@ -990,46 +1011,22 @@ fn collect_session_git_path_union(
 }
 
 fn collect_session_plain_observed_paths(
-    session_id: Uuid,
     workspace_path: &std::path::Path,
     runs: &[ChatRun],
 ) -> BTreeMap<String, PlainWorkspaceObservedPath> {
-    let work_records = load_work_record_lines(session_id);
     let mut observed = BTreeMap::<String, PlainWorkspaceObservedPath>::new();
 
     for run in runs {
         let meta_paths = load_run_meta_observed_paths(run);
         for entry in meta_paths {
-            if is_output_text_only_observed_source(&entry.source) {
+            if !is_source_control_observed_source(&entry.source) {
                 continue;
             }
-            let is_artifact = is_artifact_observed_source(&entry.source);
-            if let Some(path) = normalize_workspace_relative_path_with_options(
-                &entry.path,
-                workspace_path,
-                is_artifact,
-            ) {
-                if is_artifact && is_openteams_relative_path(&path) {
-                    continue;
-                }
+            if let Some(path) = normalize_workspace_relative_path(&entry.path, workspace_path) {
                 let state = observed.entry(path).or_insert(PlainWorkspaceObservedPath {
                     existed_after_run: false,
                 });
                 state.existed_after_run |= entry.existed_after_run;
-            }
-        }
-
-        for record in work_records.iter().filter(|record| {
-            record.run_id == run.id && record.message_type.eq_ignore_ascii_case("artifact")
-        }) {
-            for path in extract_workspace_paths_from_artifact_text(&record.content, workspace_path)
-            {
-                if is_openteams_relative_path(&path) {
-                    continue;
-                }
-                observed.entry(path).or_insert(PlainWorkspaceObservedPath {
-                    existed_after_run: false,
-                });
             }
         }
     }
@@ -1096,7 +1093,6 @@ fn build_plain_workspace_changes(
 }
 
 fn collect_session_scoped_git_changes(
-    session_id: Uuid,
     workspace_path: &std::path::Path,
     runs: &[ChatRun],
     include_diff: bool,
@@ -1105,7 +1101,7 @@ fn collect_session_scoped_git_changes(
 
     // Also collect all observed paths (including those in .gitignore'd directories)
     // so we can fall back to plain file logic for files git cannot see.
-    let all_observed = collect_session_plain_observed_paths(session_id, workspace_path, runs);
+    let all_observed = collect_session_plain_observed_paths(workspace_path, runs);
     let first_run_at = runs.iter().map(|run| run.created_at).min();
 
     if session_paths.is_empty() {
@@ -1165,17 +1161,22 @@ fn collect_session_scoped_git_changes(
         }
     };
 
-    let path_filter = session_paths.iter().map(String::as_str).collect::<Vec<_>>();
     let head_commit = Commit::new(head_oid);
-    let diffs = if path_filter.is_empty() {
+    let diffs = if session_paths.is_empty() {
         Vec::new()
     } else {
+        // Do not pass `session_paths` as git pathspec arguments here. Large
+        // sessions can produce enough paths to exceed Windows' command-line
+        // length limit (os error 206). Collect the workspace diff with the
+        // standard runtime-directory excludes, then filter back to the
+        // session-observed paths in Rust so unrelated files still do not leak
+        // into the response.
         match git_service.get_diffs(
             DiffTarget::Worktree {
                 worktree_path: workspace_path,
                 base_commit: &head_commit,
             },
-            Some(&path_filter),
+            None,
         ) {
             Ok(diffs) => diffs
                 .into_iter()
@@ -1230,11 +1231,10 @@ fn collect_session_scoped_git_changes(
 }
 
 fn collect_session_scoped_plain_changes(
-    session_id: Uuid,
     workspace_path: &std::path::Path,
     runs: &[ChatRun],
 ) -> WorkspaceChangesResponse {
-    let observed = collect_session_plain_observed_paths(session_id, workspace_path, runs);
+    let observed = collect_session_plain_observed_paths(workspace_path, runs);
     let first_run_at = runs.iter().map(|run| run.created_at).min();
 
     WorkspaceChangesResponse {
@@ -1250,7 +1250,7 @@ fn collect_session_scoped_plain_changes(
 }
 
 fn collect_workspace_changes(
-    session_id: Uuid,
+    _session_id: Uuid,
     workspace_path: &str,
     include_diff: bool,
     runs: Vec<ChatRun>,
@@ -1278,10 +1278,10 @@ fn collect_workspace_changes(
     }
 
     if git2::Repository::open(&path).is_ok() {
-        return collect_session_scoped_git_changes(session_id, &path, &runs, include_diff);
+        return collect_session_scoped_git_changes(&path, &runs, include_diff);
     }
 
-    collect_session_scoped_plain_changes(session_id, &path, &runs)
+    collect_session_scoped_plain_changes(&path, &runs)
 }
 
 #[cfg(windows)]
@@ -1419,7 +1419,17 @@ async fn normalize_or_inherit_workspace_path(
 ) -> Result<Option<String>, ApiError> {
     match workspace_path {
         Some(path) => normalize_workspace_path(Some(path)).await,
-        None => Ok(session.default_workspace_path.clone()),
+        None => {
+            // For isolated sessions, do NOT inherit the session default
+            // workspace path. Keeping it None ensures the ChatRunner
+            // resolver always runs worktree resolution instead of treating
+            // the inherited default as an "explicit agent workspace".
+            if session.worktree_mode == ChatSessionWorktreeMode::Isolated {
+                Ok(None)
+            } else {
+                Ok(session.default_workspace_path.clone())
+            }
+        }
     }
 }
 
@@ -1508,6 +1518,72 @@ async fn list_session_workspace_rows(
     .await
 }
 
+fn same_workspace_path(left: &str, right: &str) -> bool {
+    !left.trim().is_empty()
+        && !right.trim().is_empty()
+        && (left == right || PathBuf::from(left) == PathBuf::from(right))
+}
+
+fn synthetic_workspace_row(workspace_path: String) -> SessionWorkspaceRow {
+    SessionWorkspaceRow {
+        workspace_path,
+        agent_id: Uuid::nil(),
+        agent_name: String::new(),
+    }
+}
+
+fn worktree_workspace_for_request(
+    session: &ChatSession,
+    worktree: &SessionWorktree,
+    requested_path: &str,
+) -> Option<String> {
+    let matches_base = same_workspace_path(requested_path, &worktree.base_workspace_path);
+    let matches_worktree = same_workspace_path(requested_path, &worktree.worktree_path);
+    let matches_session_default = session
+        .default_workspace_path
+        .as_deref()
+        .is_some_and(|path| same_workspace_path(requested_path, path));
+
+    if !(matches_base || matches_worktree || matches_session_default) {
+        return None;
+    }
+
+    if worktree.status.is_active_for_workspace() {
+        Some(worktree.worktree_path.clone())
+    } else {
+        Some(worktree.base_workspace_path.clone())
+    }
+}
+
+async fn latest_session_worktree(
+    pool: &sqlx::SqlitePool,
+    session: &ChatSession,
+) -> Result<Option<SessionWorktree>, ApiError> {
+    if session.worktree_mode != ChatSessionWorktreeMode::Isolated {
+        return Ok(None);
+    }
+
+    SessionWorktreeService::new(pool.clone())
+        .get_latest_for_session(session.id)
+        .await
+        .map_err(|err| ApiError::BadRequest(format!("Failed to inspect session worktree: {err}")))
+}
+
+pub(crate) async fn resolve_session_workspace_path_for_request(
+    pool: &sqlx::SqlitePool,
+    session: &ChatSession,
+    requested_path: &str,
+) -> Result<Option<String>, ApiError> {
+    let Some(worktree) = latest_session_worktree(pool, session).await? else {
+        return Ok(None);
+    };
+    Ok(worktree_workspace_for_request(
+        session,
+        &worktree,
+        requested_path,
+    ))
+}
+
 pub async fn get_session_agents(
     Extension(session): Extension<ChatSession>,
     State(deployment): State<DeploymentImpl>,
@@ -1520,7 +1596,18 @@ pub async fn get_session_workspaces(
     Extension(session): Extension<ChatSession>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<SessionWorkspacesResponse>>, ApiError> {
-    let rows = list_session_workspace_rows(&deployment.db().pool, session.id).await?;
+    let mut rows = list_session_workspace_rows(&deployment.db().pool, session.id).await?;
+    if let Some(default_workspace) = session.default_workspace_path.clone() {
+        rows.push(synthetic_workspace_row(default_workspace));
+    }
+    if let Some(worktree) = latest_session_worktree(&deployment.db().pool, &session).await? {
+        let workspace_path = if worktree.status.is_active_for_workspace() {
+            worktree.worktree_path
+        } else {
+            worktree.base_workspace_path
+        };
+        rows.push(synthetic_workspace_row(workspace_path));
+    }
 
     Ok(ResponseJson(ApiResponse::success(
         SessionWorkspacesResponse {
@@ -1554,7 +1641,12 @@ pub async fn get_session_workspace_changes(
         ));
     }
 
-    if !session_has_workspace_path(&deployment.db().pool, session.id, workspace_path).await? {
+    let worktree_workspace_path =
+        resolve_session_workspace_path_for_request(&deployment.db().pool, &session, workspace_path)
+            .await?;
+    if worktree_workspace_path.is_none()
+        && !session_has_workspace_path(&deployment.db().pool, session.id, workspace_path).await?
+    {
         workflow_analytics::track_permission_denied(
             workflow_analytics::analytics_if_enabled(
                 deployment.analytics().as_ref(),
@@ -1579,10 +1671,31 @@ pub async fn get_session_workspace_changes(
         ));
     }
 
-    let runs =
-        ChatRun::list_for_session_workspace(&deployment.db().pool, session.id, workspace_path)
-            .await?;
-    let workspace_path_owned = workspace_path.to_string();
+    let workspace_path_owned =
+        worktree_workspace_path.unwrap_or_else(|| workspace_path.to_string());
+    let mut run_workspace_paths = vec![workspace_path_owned.clone()];
+    if !same_workspace_path(&workspace_path_owned, workspace_path) {
+        run_workspace_paths.push(workspace_path.to_string());
+    }
+    let mut seen_run_workspace_paths = Vec::<String>::new();
+    let mut runs = Vec::new();
+    for run_workspace_path in run_workspace_paths {
+        if seen_run_workspace_paths
+            .iter()
+            .any(|seen| same_workspace_path(seen, &run_workspace_path))
+        {
+            continue;
+        }
+        seen_run_workspace_paths.push(run_workspace_path.clone());
+        runs.extend(
+            ChatRun::list_for_session_workspace(
+                &deployment.db().pool,
+                session.id,
+                &run_workspace_path,
+            )
+            .await?,
+        );
+    }
     let session_id = session.id;
     let response = tokio::task::spawn_blocking(move || {
         collect_workspace_changes(session_id, &workspace_path_owned, include_diff, runs)
@@ -1857,6 +1970,7 @@ pub async fn delete_session_agent(
             team_protocol_enabled: None,
             default_workspace_path: None,
             chat_input_mode: None,
+            worktree_mode: None,
         };
         ChatSession::update(&deployment.db().pool, session.id, &update).await?;
     }
@@ -1903,6 +2017,7 @@ pub async fn archive_session(
             team_protocol_enabled: None,
             default_workspace_path: None,
             chat_input_mode: None,
+            worktree_mode: None,
         },
     )
     .await?;
@@ -1945,6 +2060,7 @@ pub async fn restore_session(
             team_protocol_enabled: None,
             default_workspace_path: None,
             chat_input_mode: None,
+            worktree_mode: None,
         },
     )
     .await?;
@@ -1960,6 +2076,30 @@ pub async fn restore_session(
         true,
     );
 
+    Ok(ResponseJson(ApiResponse::success(updated)))
+}
+
+pub async fn pin_session(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<ChatSession>>, ApiError> {
+    if session.status != ChatSessionStatus::Active {
+        return Err(ApiError::Conflict("Chat session is archived".to_string()));
+    }
+
+    let updated = ChatSession::set_pinned(&deployment.db().pool, session.id, true).await?;
+    Ok(ResponseJson(ApiResponse::success(updated)))
+}
+
+pub async fn unpin_session(
+    Extension(session): Extension<ChatSession>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<ChatSession>>, ApiError> {
+    if session.status != ChatSessionStatus::Active {
+        return Err(ApiError::Conflict("Chat session is archived".to_string()));
+    }
+
+    let updated = ChatSession::set_pinned(&deployment.db().pool, session.id, false).await?;
     Ok(ResponseJson(ApiResponse::success(updated)))
 }
 
@@ -2048,6 +2188,7 @@ pub struct ValidateWorkspacePathRequest {
 #[derive(Debug, Serialize, TS)]
 pub struct ValidateWorkspacePathResponse {
     pub valid: bool,
+    pub is_git_repo: bool,
     pub error: Option<String>,
 }
 
@@ -2060,6 +2201,7 @@ pub async fn validate_workspace_path_endpoint(
         return Ok(ResponseJson(ApiResponse::success(
             ValidateWorkspacePathResponse {
                 valid: false,
+                is_git_repo: false,
                 error: Some("Workspace path is required.".to_string()),
             },
         )));
@@ -2069,6 +2211,7 @@ pub async fn validate_workspace_path_endpoint(
         return Ok(ResponseJson(ApiResponse::success(
             ValidateWorkspacePathResponse {
                 valid: false,
+                is_git_repo: false,
                 error: Some(e.to_string()),
             },
         )));
@@ -2081,6 +2224,7 @@ pub async fn validate_workspace_path_endpoint(
                 Ok(ResponseJson(ApiResponse::success(
                     ValidateWorkspacePathResponse {
                         valid: true,
+                        is_git_repo: git2::Repository::open(&parsed_path).is_ok(),
                         error: None,
                     },
                 )))
@@ -2088,6 +2232,7 @@ pub async fn validate_workspace_path_endpoint(
                 Ok(ResponseJson(ApiResponse::success(
                     ValidateWorkspacePathResponse {
                         valid: false,
+                        is_git_repo: false,
                         error: Some("Workspace path must be an existing directory.".to_string()),
                     },
                 )))
@@ -2101,6 +2246,7 @@ pub async fn validate_workspace_path_endpoint(
             Ok(ResponseJson(ApiResponse::success(
                 ValidateWorkspacePathResponse {
                     valid: false,
+                    is_git_repo: false,
                     error: Some(error_msg),
                 },
             )))
@@ -2116,12 +2262,41 @@ mod tests {
     use db::models::{
         chat_run::{ChatRun, ChatRunArtifactState, ChatRunLogState},
         chat_session::ChatSessionStatus,
+        chat_session_worktree::{SessionWorktree, SessionWorktreeMode, SessionWorktreeStatus},
     };
     use git::GitService;
     use sqlx::SqlitePool;
     use uuid::Uuid;
 
     use super::*;
+
+    #[tokio::test]
+    async fn validate_workspace_path_reports_git_repository_state() {
+        let git_dir = tempfile::tempdir().expect("create git dir");
+        git2::Repository::init(git_dir.path()).expect("init git repo");
+        let ResponseJson(response) =
+            validate_workspace_path_endpoint(Json(ValidateWorkspacePathRequest {
+                workspace_path: git_dir.path().to_string_lossy().to_string(),
+            }))
+            .await
+            .expect("validate git workspace");
+        let data = response.into_data().expect("git validation data");
+        assert!(data.valid);
+        assert!(data.is_git_repo);
+        assert!(data.error.is_none());
+
+        let plain_dir = tempfile::tempdir().expect("create plain dir");
+        let ResponseJson(response) =
+            validate_workspace_path_endpoint(Json(ValidateWorkspacePathRequest {
+                workspace_path: plain_dir.path().to_string_lossy().to_string(),
+            }))
+            .await
+            .expect("validate plain workspace");
+        let data = response.into_data().expect("plain validation data");
+        assert!(data.valid);
+        assert!(!data.is_git_repo);
+        assert!(data.error.is_none());
+    }
 
     async fn setup_workspace_history_pool() -> (SqlitePool, Uuid, Uuid) {
         let pool = SqlitePool::connect("sqlite::memory:")
@@ -2208,10 +2383,83 @@ mod tests {
             default_workspace_path: default_workspace_path.map(str::to_string),
             chat_input_mode: None,
             project_id: None,
+            pinned_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,
+            worktree_mode: Default::default(),
         }
+    }
+
+    fn test_worktree(
+        session_id: Uuid,
+        status: SessionWorktreeStatus,
+        base_workspace: &str,
+        worktree_workspace: &str,
+    ) -> SessionWorktree {
+        let now = Utc::now();
+        SessionWorktree {
+            id: Uuid::new_v4(),
+            session_id,
+            project_id: None,
+            base_workspace_path: base_workspace.to_string(),
+            repo_path: base_workspace.to_string(),
+            base_branch: "main".to_string(),
+            base_commit: None,
+            branch_name: "openteams/session/test".to_string(),
+            worktree_path: worktree_workspace.to_string(),
+            mode: SessionWorktreeMode::Session,
+            status,
+            merge_target_branch: None,
+            merge_operation: None,
+            conflict_files_json: "[]".to_string(),
+            operation_started_at: None,
+            cleanup_error: None,
+            last_used_at: None,
+            merged_at: None,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn worktree_workspace_request_uses_active_worktree_for_base_request() {
+        let mut session = test_session(Some("E:/workspace/base"));
+        session.worktree_mode = ChatSessionWorktreeMode::Isolated;
+        let worktree = test_worktree(
+            session.id,
+            SessionWorktreeStatus::Active,
+            "E:/workspace/base",
+            "E:/workspace/base/.openteams/worktrees/session",
+        );
+
+        let resolved = worktree_workspace_for_request(&session, &worktree, "E:/workspace/base");
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("E:/workspace/base/.openteams/worktrees/session")
+        );
+    }
+
+    #[test]
+    fn worktree_workspace_request_returns_base_for_archived_worktree() {
+        let mut session = test_session(Some("E:/workspace/base"));
+        session.worktree_mode = ChatSessionWorktreeMode::Isolated;
+        let worktree = test_worktree(
+            session.id,
+            SessionWorktreeStatus::Archived,
+            "E:/workspace/base",
+            "E:/workspace/base/.openteams/worktrees/session",
+        );
+
+        let resolved = worktree_workspace_for_request(
+            &session,
+            &worktree,
+            "E:/workspace/base/.openteams/worktrees/session",
+        );
+
+        assert_eq!(resolved.as_deref(), Some("E:/workspace/base"));
     }
 
     fn test_run(
@@ -2411,6 +2659,55 @@ new file mode 100644
         assert!(!changes.untracked[0].has_diff);
         assert_eq!(changes.untracked[1].additions, 2);
         assert!(changes.untracked[1].has_diff);
+    }
+
+    #[test]
+    fn collect_run_files_reads_artifact_work_records_after_meta_capture() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let run_dir = tempdir.path().join("run-record");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            run_dir.join("meta.json"),
+            r#"{"workspace_observed_paths":[]}"#,
+        )
+        .expect("write meta");
+
+        let session_id = Uuid::new_v4();
+        let other_session_id = Uuid::new_v4();
+        let run = test_run(session_id, Uuid::new_v4(), 1, &run_dir, Utc::now());
+        let protocol_dir = asset_dir()
+            .join("chat")
+            .join(format!("session_{session_id}"))
+            .join("protocol");
+        fs::create_dir_all(&protocol_dir).expect("create protocol dir");
+        fs::write(
+            protocol_dir.join("work_records.jsonl"),
+            format!(
+                concat!(
+                    "{{\"session_id\":\"{other_session_id}\",\"run_id\":\"{run_id}\",\"message_type\":\"artifact\",\"content\":\"Saved `docs/other-session.md`.\"}}\n",
+                    "{{\"session_id\":\"{session_id}\",\"run_id\":\"{run_id}\",\"message_type\":\"artifact\",\"content\":\"Saved `.openteams/context/demo/report.md` and `docs/report.md`.\"}}\n"
+                ),
+                other_session_id = other_session_id,
+                session_id = session_id,
+                run_id = run.id
+            ),
+        )
+        .expect("write work records");
+
+        let changes = collect_run_files(&run, false);
+
+        let session_asset_dir = asset_dir()
+            .join("chat")
+            .join(format!("session_{session_id}"));
+        let _ = fs::remove_dir_all(session_asset_dir);
+
+        let untracked_paths: Vec<_> = changes.untracked.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            untracked_paths,
+            vec![".openteams/context/demo/report.md", "docs/report.md"]
+        );
+        assert!(changes.untracked.iter().all(|entry| !entry.has_diff));
+        assert!(changes.untracked.iter().all(|entry| entry.additions == 0));
     }
 
     #[test]
@@ -2707,6 +3004,56 @@ new file mode 100644
     }
 
     #[test]
+    fn collect_workspace_changes_handles_large_session_path_union() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let repo_path = tempdir.path().join("repo");
+        let git = GitService::new();
+        git.initialize_repo_with_main_branch(&repo_path)
+            .expect("init repo");
+
+        fs::write(repo_path.join("tracked.txt"), "base\n").expect("write tracked");
+        fs::write(repo_path.join("outside.txt"), "base\n").expect("write outside");
+        git.commit(&repo_path, "baseline").expect("commit baseline");
+
+        fs::write(repo_path.join("tracked.txt"), "updated\n").expect("modify tracked");
+        fs::write(repo_path.join("outside.txt"), "outside\n").expect("modify outside");
+
+        let session_id = Uuid::new_v4();
+        let session_agent_id = Uuid::new_v4();
+        let run_dir = tempdir.path().join("run-record");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        let mut patch = String::new();
+        patch.push_str(
+            "diff --git a/tracked.txt b/tracked.txt\n--- a/tracked.txt\n+++ b/tracked.txt\n",
+        );
+        for i in 0..5_000 {
+            patch.push_str(&format!(
+                "diff --git a/very/long/nonmatching/path/{i:04}/placeholder.txt b/very/long/nonmatching/path/{i:04}/placeholder.txt\n",
+            ));
+        }
+        fs::write(run_dir.join("diff.patch"), patch).expect("write diff patch");
+        let run = test_run(session_id, session_agent_id, 1, &run_dir, Utc::now());
+
+        let response =
+            collect_workspace_changes(session_id, &repo_path.to_string_lossy(), false, vec![run]);
+
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let changes = response.changes.expect("changes present");
+        assert!(
+            changes
+                .modified
+                .iter()
+                .any(|entry| entry.path == "tracked.txt")
+        );
+        assert!(
+            changes
+                .modified
+                .iter()
+                .all(|entry| entry.path != "outside.txt")
+        );
+    }
+
+    #[test]
     fn collect_workspace_changes_can_skip_diff_payload_for_session_scoped_git() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let repo_path = tempdir.path().join("repo");
@@ -2742,7 +3089,7 @@ new file mode 100644
     }
 
     #[test]
-    fn collect_workspace_changes_returns_non_git_changes_from_manifest() {
+    fn collect_workspace_changes_ignores_artifact_only_manifest_entries() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let workspace_path = tempdir.path();
         fs::write(workspace_path.join("plain.txt"), "plain\n").expect("write plain file");
@@ -2774,13 +3121,71 @@ new file mode 100644
         assert!(!response.is_git_repo);
         let changes = response.changes.expect("plain changes present");
         assert!(
-            changes.added.iter().any(|entry| entry.path == "plain.txt")
-                || changes
-                    .modified
-                    .iter()
-                    .any(|entry| entry.path == "plain.txt")
+            changes.modified.is_empty(),
+            "artifact_record-only manifest entries must not appear as modified: {:?}",
+            changes.modified
         );
+        assert!(
+            changes.added.is_empty(),
+            "artifact_record-only manifest entries must not appear as added: {:?}",
+            changes.added
+        );
+        assert!(
+            changes.deleted.is_empty(),
+            "artifact_record-only manifest entries must not appear as deleted: {:?}",
+            changes.deleted
+        );
+        assert!(changes.untracked.is_empty());
         assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn collect_workspace_changes_keeps_git_source_with_artifact_record_combo() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let repo_path = tempdir.path().join("repo");
+        let git = GitService::new();
+        git.initialize_repo_with_main_branch(&repo_path)
+            .expect("init repo");
+
+        fs::write(repo_path.join("tracked.txt"), "base\n").expect("write tracked");
+        git.commit(&repo_path, "baseline").expect("commit baseline");
+        fs::write(
+            repo_path.join("tracked.txt"),
+            "combined git and artifact source\n",
+        )
+        .expect("modify tracked");
+
+        let session_id = Uuid::new_v4();
+        let session_agent_id = Uuid::new_v4();
+        let run_dir = tempdir.path().join("run-record");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            run_dir.join("meta.json"),
+            r#"{"workspace_observed_paths":[{"path":"tracked.txt","source":"git_diff,artifact_record","existed_after_run":true}]}"#,
+        )
+        .expect("write meta");
+        let run = test_run(
+            session_id,
+            session_agent_id,
+            1,
+            &run_dir,
+            Utc::now() - chrono::Duration::minutes(1),
+        );
+
+        let response =
+            collect_workspace_changes(session_id, &repo_path.to_string_lossy(), true, vec![run]);
+
+        assert!(response.is_git_repo);
+        assert!(response.error.is_none());
+        let changes = response.changes.expect("changes present");
+        assert!(
+            changes
+                .modified
+                .iter()
+                .any(|entry| entry.path == "tracked.txt"),
+            "real Git diff must still surface when combined with artifact_record: {:?}",
+            changes.modified
+        );
     }
 
     #[test]
@@ -2823,7 +3228,7 @@ new file mode 100644
     }
 
     #[test]
-    fn collect_workspace_changes_marks_deleted_non_git_manifest_entries() {
+    fn collect_workspace_changes_ignores_deleted_non_git_manifest_entries() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let session_id = Uuid::new_v4();
         let session_agent_id = Uuid::new_v4();
@@ -2851,12 +3256,14 @@ new file mode 100644
 
         assert!(!response.is_git_repo);
         let changes = response.changes.expect("plain changes present");
-        assert_eq!(
-            changes.deleted,
-            vec![WorkspacePathEntry {
-                path: "deleted.txt".to_string()
-            }]
+        assert!(
+            changes.deleted.is_empty(),
+            "artifact_record-only deleted entries must not pollute file changes: {:?}",
+            changes.deleted
         );
+        assert!(changes.modified.is_empty());
+        assert!(changes.added.is_empty());
+        assert!(changes.untracked.is_empty());
     }
 
     #[test]
@@ -2899,7 +3306,7 @@ new file mode 100644
     }
 
     #[test]
-    fn collect_workspace_changes_merges_artifact_paths_but_excludes_openteams_artifacts() {
+    fn collect_workspace_changes_excludes_work_records_artifacts_from_file_changes() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let repo_path = tempdir.path().join("repo");
         let git = GitService::new();
@@ -2982,9 +3389,10 @@ new file mode 100644
             protocol_dir.join("work_records.jsonl"),
             format!(
                 concat!(
-                    "{{\"run_id\":\"{run_id}\",\"message_type\":\"artifact\",\"content\":\"Saved `binaries/test.txt`.\"}}\n",
-                    "{{\"run_id\":\"{run_id}\",\"message_type\":\"artifact\",\"content\":\"Saved `.openteams/test.txt`, `.openteams/context/demo/messages.jsonl`, `.openteams/context/demo/attachments/message-1/input.txt`, and `.openteams/context/demo/independent-mode-discussion-proposal.md`.\"}}\n"
+                    "{{\"session_id\":\"{session_id}\",\"run_id\":\"{run_id}\",\"message_type\":\"artifact\",\"content\":\"Saved `binaries/test.txt`.\"}}\n",
+                    "{{\"session_id\":\"{session_id}\",\"run_id\":\"{run_id}\",\"message_type\":\"artifact\",\"content\":\"Saved `.openteams/test.txt`, `.openteams/context/demo/messages.jsonl`, `.openteams/context/demo/attachments/message-1/input.txt`, and `.openteams/context/demo/independent-mode-discussion-proposal.md`.\"}}\n"
                 ),
+                session_id = session_id,
                 run_id = run.id
             ),
         )
@@ -3011,7 +3419,10 @@ new file mode 100644
             .collect::<Vec<_>>();
 
         assert!(all_paths.contains(&"tracked.txt"));
-        assert!(all_paths.contains(&"binaries/test.txt"));
+        assert!(
+            !all_paths.contains(&"binaries/test.txt"),
+            "work_records artifact paths must not pollute the file changes panel: {all_paths:?}"
+        );
         assert!(!all_paths.contains(&".openteams/test.txt"));
         assert!(
             !all_paths.contains(&".openteams/context/demo/independent-mode-discussion-proposal.md")

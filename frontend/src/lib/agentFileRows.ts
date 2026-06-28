@@ -13,10 +13,14 @@ export type AgentFileStatus = 'M' | 'A' | 'D' | 'U';
 
 export interface AgentFileRow {
   path: string;
+  /** Absolute workspace root that this run/file row belongs to, when known. */
+  workspacePath?: string | null;
   /** Additions (+) for this file in the run, when known. */
   additions?: number;
   /** Deletions (-) for this file in the run, when known. */
   deletions?: number;
+  /** True when the run endpoint has inline diff content for this file. */
+  hasDiff?: boolean;
   status?: AgentFileStatus;
   /**
    * True when the path came from an artifact mention rather than the run's git
@@ -35,21 +39,25 @@ interface RunFileChanges {
     path: string;
     additions?: number;
     deletions?: number;
+    has_diff?: boolean;
   }>;
   added: Array<{
     path: string;
     additions?: number;
     deletions?: number;
+    has_diff?: boolean;
   }>;
   deleted: Array<{ path: string }>;
   untracked: Array<{
     path: string;
     additions?: number;
     deletions?: number;
+    has_diff?: boolean;
   }>;
 }
 
 interface RunFileChangesPayload {
+  workspace_path?: string | null;
   changes?: RunFileChanges | null;
 }
 
@@ -63,32 +71,39 @@ export const flattenRunFileChanges = (
 ): AgentFileRow[] => {
   const changes = payload?.changes;
   if (!changes) return [];
+  const workspacePath = payload.workspace_path ?? null;
 
   const rows: AgentFileRow[] = [];
   for (const file of changes.modified) {
     rows.push({
       path: file.path,
+      workspacePath,
       additions: file.additions,
       deletions: file.deletions,
+      hasDiff: file.has_diff,
       status: 'M',
     });
   }
   for (const file of changes.added) {
     rows.push({
       path: file.path,
+      workspacePath,
       additions: file.additions,
       deletions: file.deletions,
+      hasDiff: file.has_diff,
       status: 'A',
     });
   }
   for (const file of changes.deleted) {
-    rows.push({ path: file.path, status: 'D' });
+    rows.push({ path: file.path, workspacePath, hasDiff: false, status: 'D' });
   }
   for (const file of changes.untracked) {
     rows.push({
       path: file.path,
+      workspacePath,
       additions: file.additions,
       deletions: file.deletions,
+      hasDiff: file.has_diff,
       status: 'U',
     });
   }
@@ -115,6 +130,7 @@ export const flattenRunFileChanges = (
 export const mergeArtifactPaths = (
   runRows: AgentFileRow[],
   artifactPaths: string[],
+  workspacePath?: string | null,
 ): AgentFileRow[] => {
   const covered = new Set(
     runRows.map((row) => normalizeArtifactPath(row.path)),
@@ -125,7 +141,7 @@ export const mergeArtifactPaths = (
     const key = normalizeArtifactPath(path);
     if (covered.has(key)) continue;
     covered.add(key);
-    merged.push({ path, supplementary: true });
+    merged.push({ path, workspacePath, hasDiff: false, supplementary: true });
   }
 
   return merged.sort((a, b) => {

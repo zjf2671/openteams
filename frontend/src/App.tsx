@@ -10,7 +10,6 @@ import { WorkspaceProvider, useWorkspace } from "@/context/WorkspaceContext";
 import { AppScaleContext } from "@/context/AppScaleContext";
 import { WorkflowWorkspace } from "@/components/WorkflowWorkspace";
 import { CreateAgentSessionModal } from "@/components/CreateAgentSessionModal";
-import { DialogManager } from "@/components/DialogManager";
 import { DiffViewTab } from "@/components/DiffViewTab";
 import { NotificationToast } from "@/components/NotificationToast";
 import { ProjectSidebar } from "@/components/ProjectSidebar";
@@ -18,7 +17,6 @@ import { GitHubRepositoryPage } from "@/pages/GitHubRepositoryPage";
 import { IssuePage } from "@/pages/IssuePage";
 import { RoutingPage } from "@/pages/RoutingPage";
 import { SettingsPage } from "@/pages/SettingsPage";
-import { TasksPage } from "@/pages/TasksPage";
 import { BuildStatsPage } from "@/pages/BuildStatsPage";
 import { AgentsPage } from "@/pages/AgentsPage";
 import { TeamPage } from "@/pages/TeamPage";
@@ -27,6 +25,7 @@ import {
   Activity,
   Bot,
   Box,
+  CircleDot,
   FileText,
   Github,
   Menu,
@@ -34,7 +33,6 @@ import {
   Plus,
   Route,
   Settings2,
-  SquareCheckBig,
   Users,
   X,
   type LucideIcon,
@@ -52,6 +50,12 @@ import {
   storeIssueNavigationTarget,
   type IssueNavigationTarget,
 } from "@/lib/issueNavigation";
+import {
+  TEAM_MEMBER_INVITE_NAVIGATION_EVENT,
+  TEAM_MEMBER_INVITE_TARGET_CHANGED_EVENT,
+  storeTeamMemberInviteTarget,
+  type TeamMemberInviteNavigationTarget,
+} from "@/lib/teamNavigation";
 import { notifyLinkedWorkItemsChanged } from "@/lib/linkedWorkItemsEvents";
 import { mapSession } from "@/lib/mappers";
 import { mockFrontendApi } from "@/lib/mockFrontendApi";
@@ -72,6 +76,7 @@ import {
 } from "../../shared/types";
 import type {
   AgentRuntimeStatus,
+  ChatSessionWorktreeMode,
   JsonValue,
   Member,
   SidebarNavigationItem,
@@ -122,10 +127,9 @@ const pageTabConfig: Record<
   { label: string; icon: LucideIcon }
 > = {
   workspace: { label: "Workspace", icon: Network },
-  issue: { label: "Issues", icon: FileText },
+  issue: { label: "Issues", icon: CircleDot },
   team: { label: "Members", icon: Users },
   "team-templates": { label: "Team templates", icon: Users },
-  tasks: { label: "Action center", icon: SquareCheckBig },
   routing: { label: "Routing engine", icon: Route },
   github: { label: "GitHub", icon: Github },
   providers: { label: "Settings", icon: Settings2 },
@@ -210,6 +214,30 @@ const findWorkflowProjectAgent = (projectMembers: ProjectMemberWithRuntime[]) =>
   projectMembers.find(
     (member) => member.member_type === ProjectMemberType.agent,
   );
+
+type CreateSessionWorkspaceLookup = {
+  workflowWorkspacePath: string | null;
+  memberWorkspacePaths: Record<string, string | null>;
+};
+
+const normalizeMemberLookupName = (name?: string | null): string =>
+  name?.replace(/^@/, "").trim().toLowerCase() ?? "";
+
+const buildCreateSessionWorkspaceLookup = (
+  projectMembers: ProjectMemberWithRuntime[],
+): CreateSessionWorkspaceLookup => {
+  const workflowProjectAgent = findWorkflowProjectAgent(projectMembers);
+  const memberWorkspacePaths: Record<string, string | null> = {};
+  for (const member of projectMembers) {
+    const key = normalizeMemberLookupName(member.member_name);
+    if (!key) continue;
+    memberWorkspacePaths[key] = member.default_workspace_path ?? null;
+  }
+  return {
+    workflowWorkspacePath: workflowProjectAgent?.default_workspace_path ?? null,
+    memberWorkspacePaths,
+  };
+};
 
 const clampSidebarWidth = (width: number) =>
   Math.min(maxSidebarWidth, Math.max(minSidebarWidth, width));
@@ -337,6 +365,7 @@ function WorkspaceLayout() {
     refreshSessions,
     renameSession,
     archiveSession,
+    pinSession,
     deleteSession,
     members,
     refreshMembers,
@@ -366,6 +395,11 @@ function WorkspaceLayout() {
     null,
   );
   const [leadMember, setLeadMember] = useState<Member | null>(null);
+  const [createSessionWorkspaceLookup, setCreateSessionWorkspaceLookup] =
+    useState<CreateSessionWorkspaceLookup>({
+      workflowWorkspacePath: null,
+      memberWorkspacePaths: {},
+    });
   const sidebarResizeRef = useRef({
     startX: 0,
     startWidth: defaultSidebarWidth,
@@ -410,9 +444,21 @@ function WorkspaceLayout() {
     [],
   );
 
+  const loadCreateSessionWorkspaceLookup = useCallback(
+    async (projectId: string): Promise<CreateSessionWorkspaceLookup> => {
+      const projectMembers = await projectApi.listMembers(projectId);
+      return buildCreateSessionWorkspaceLookup(projectMembers);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!selectedProjectId) {
       setLeadMember(null);
+      setCreateSessionWorkspaceLookup({
+        workflowWorkspacePath: null,
+        memberWorkspacePaths: {},
+      });
       return;
     }
     setLeadMember(null);
@@ -433,6 +479,18 @@ function WorkspaceLayout() {
     if (!isCreateSessionModalOpen || !selectedProjectId) return;
     let cancelled = false;
     void refreshMembers().catch(() => undefined);
+    void loadCreateSessionWorkspaceLookup(selectedProjectId)
+      .then((lookup) => {
+        if (!cancelled) setCreateSessionWorkspaceLookup(lookup);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCreateSessionWorkspaceLookup({
+            workflowWorkspacePath: null,
+            memberWorkspacePaths: {},
+          });
+        }
+      });
     void loadLeadMember(selectedProjectId)
       .then((nextLeadMember) => {
         if (!cancelled) setLeadMember(nextLeadMember);
@@ -445,6 +503,7 @@ function WorkspaceLayout() {
     };
   }, [
     isCreateSessionModalOpen,
+    loadCreateSessionWorkspaceLookup,
     loadLeadMember,
     refreshMembers,
     selectedProjectId,
@@ -554,17 +613,11 @@ function WorkspaceLayout() {
     projectId: string,
     workspacePath: string | null,
     teamPreset: ChatTeamPreset,
-    memberPresets: ChatMemberPreset[],
     runtimes: AgentRuntimeStatus[],
   ): Promise<number> => {
-    const memberPresetById = new Map(
-      memberPresets
-        .filter((preset) => preset.enabled !== false)
-        .map((preset) => [preset.id, preset]),
+    const selectedMembers = teamPreset.members.filter(
+      (preset) => preset.enabled !== false,
     );
-    const selectedMembers = teamPreset.member_ids
-      .map((memberId) => memberPresetById.get(memberId))
-      .filter((preset): preset is ChatMemberPreset => !!preset);
     const leadMemberId =
       teamPreset.lead_member_id &&
       selectedMembers.some((member) => member.id === teamPreset.lead_member_id)
@@ -697,17 +750,26 @@ function WorkspaceLayout() {
 
   const renderActivePage = () => {
     if (activeTab?.kind === "diff") {
+      const workspacePath = projects.find(
+        (project) => project.id === selectedProjectId,
+      )?.default_workspace_path ?? undefined;
       return (
         <DiffViewTab
+          sessionId={activeTab.sessionId}
           filePath={activeTab.filePath}
           status={activeTab.status}
           unifiedDiff={activeTab.unified_diff}
+          workspacePath={workspacePath}
         />
       );
     }
     if (activeTab?.kind === "sc-diff") {
+      const workspacePath = projects.find(
+        (project) => project.id === activeTab.projectId,
+      )?.default_workspace_path ?? undefined;
       return (
         <DiffViewTab
+          workspacePath={workspacePath}
           sourceControlRef={{
             projectId: activeTab.projectId,
             sessionId: activeTab.sessionId,
@@ -725,8 +787,6 @@ function WorkspaceLayout() {
         return <IssuePage />;
       case "team-templates":
         return <TeamTemplatesPage />;
-      case "tasks":
-        return <TasksPage />;
       case "routing":
         return <RoutingPage />;
       case "github":
@@ -816,17 +876,38 @@ function WorkspaceLayout() {
         new CustomEvent(ISSUE_NAVIGATION_TARGET_CHANGED_EVENT),
       );
     };
+    const handleNavigateTeamMemberInvite = (event: Event) => {
+      const target =
+        (event as CustomEvent<TeamMemberInviteNavigationTarget>).detail ?? {};
+
+      storeTeamMemberInviteTarget(target);
+      if (target.projectId && target.projectId !== selectedProjectId) {
+        setSelectedProjectId(target.projectId);
+      }
+      openPageTab("team", getPageTabLabel("team"));
+      window.dispatchEvent(
+        new CustomEvent(TEAM_MEMBER_INVITE_TARGET_CHANGED_EVENT),
+      );
+    };
     window.addEventListener(
       "openteams:navigate-session",
       handleNavigateSession,
     );
     window.addEventListener(ISSUE_NAVIGATION_EVENT, handleNavigateIssue);
+    window.addEventListener(
+      TEAM_MEMBER_INVITE_NAVIGATION_EVENT,
+      handleNavigateTeamMemberInvite,
+    );
     return () => {
       window.removeEventListener(
         "openteams:navigate-session",
         handleNavigateSession,
       );
       window.removeEventListener(ISSUE_NAVIGATION_EVENT, handleNavigateIssue);
+      window.removeEventListener(
+        TEAM_MEMBER_INVITE_NAVIGATION_EVENT,
+        handleNavigateTeamMemberInvite,
+      );
     };
   });
 
@@ -970,6 +1051,7 @@ function WorkspaceLayout() {
       memberAvatar?: string;
       memberModelName?: string;
       workItemId?: string;
+      worktreeMode?: ChatSessionWorktreeMode;
     },
   ) => {
     if (!selectedProjectId) {
@@ -993,10 +1075,10 @@ function WorkspaceLayout() {
           workspacePath = workflowProjectAgent?.default_workspace_path ?? null;
           workflowLeadAgentId = workflowProjectAgent?.agent_id ?? null;
         } else {
-          const normalizedName = options.memberName?.replace(/^@/, '').toLowerCase();
+          const normalizedName = normalizeMemberLookupName(options.memberName);
           const matched = projectMembers.find((pm) => {
             if (normalizedName && pm.member_name) {
-              return pm.member_name.replace(/^@/, '').toLowerCase() === normalizedName;
+              return normalizeMemberLookupName(pm.member_name) === normalizedName;
             }
             return false;
           });
@@ -1006,11 +1088,32 @@ function WorkspaceLayout() {
         }
       } catch {}
 
+      let worktreeMode = options.worktreeMode;
+      if (worktreeMode === 'isolated') {
+        const workspacePathForWorktree =
+          workspacePath?.trim() || activeProjectWorkspacePath?.trim() || '';
+        if (!workspacePathForWorktree) {
+          worktreeMode = undefined;
+        } else {
+          try {
+            const workspace = await chatSessionsApi.validateWorkspacePath(
+              workspacePathForWorktree,
+            );
+            if (!workspace.valid || !workspace.is_git_repo) {
+              worktreeMode = undefined;
+            }
+          } catch {
+            worktreeMode = undefined;
+          }
+        }
+      }
+
       const backendSession = await projectApi.createSession(
         selectedProjectId,
         {
           title: prompt,
           workspace_path: workspacePath,
+          ...(worktreeMode ? { worktree_mode: worktreeMode } : {}),
         },
       );
       let sessionForUi = backendSession;
@@ -1172,7 +1275,6 @@ function WorkspaceLayout() {
   const chatPresets =
     (config as { chat_presets?: ChatPresetConfigView } | null)
       ?.chat_presets ?? {};
-  const memberPresets = chatPresets.members ?? [];
   const teamPresets = (chatPresets.teams ?? []).filter(
     (preset) => preset.enabled !== false,
   );
@@ -1201,7 +1303,6 @@ function WorkspaceLayout() {
           project.id,
           data.default_workspace_path,
           selectedTeamPreset,
-          memberPresets,
           runtimes,
         );
         if (templateMemberCount === 0) {
@@ -1318,6 +1419,8 @@ function WorkspaceLayout() {
   const activeProjectName = currentProject
     ? projectDisplayName(currentProject)
     : shellOptions?.projects.find((project) => project.active)?.label;
+  const activeProjectWorkspacePath =
+    currentProject?.default_workspace_path ?? null;
 
   const projectSidebarProps = {
     shellOptions,
@@ -1337,6 +1440,7 @@ function WorkspaceLayout() {
     onProjectSelect: handleProjectSelect,
     onRenameSession: renameSession,
     onArchiveSession: archiveSession,
+    onPinSession: pinSession,
     onDeleteSession: deleteSession,
     onCreateProject: handleCreateProject,
     onUpdateProject: handleUpdateProject,
@@ -1349,11 +1453,16 @@ function WorkspaceLayout() {
         <NotificationToast message={toast.message} tone={toast.tone} />
       )}
 
-      <DialogManager />
       <CreateAgentSessionModal
         open={isCreateSessionModalOpen}
         projectId={selectedProjectId}
         projectName={activeProjectName}
+        workspacePath={activeProjectWorkspacePath}
+        workflowWorkspacePath={
+          createSessionWorkspaceLookup.workflowWorkspacePath ??
+          activeProjectWorkspacePath
+        }
+        memberWorkspacePaths={createSessionWorkspaceLookup.memberWorkspacePaths}
         members={members}
         leadMember={leadMember}
         t={t}

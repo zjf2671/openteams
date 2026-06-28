@@ -102,15 +102,28 @@ check(
     source.includes('chatSessionsApi.streamUrl') &&
     source.includes('parsed.type ===') &&
     source.includes('agent_run_started') &&
-    source.includes('agent_activity_line'),
+    source.includes('agent_activity_line') &&
+    source.includes('agent_delta'),
   source,
 );
 check(
   'stream events create placeholders, append lines, and replace final messages',
   source.includes('insertRunningPlaceholder(parsed)') &&
     source.includes('appendStreamActivityLine(parsed.line)') &&
+    source.includes('upsertStreamDeltaActivityLine(parsed)') &&
     source.includes('const incomingMessage = mapBackendChatMessage(parsed.message)') &&
     source.includes('upsertStreamedMessage(sid, incomingMessage)'),
+  source,
+);
+check(
+  'agent_delta thinking is bridged into live activity lines',
+  source.includes("type: 'agent_delta'") &&
+    source.includes('LIVE_DELTA_ACTIVITY_LINE_PREFIX') &&
+    source.includes("event.stream_type !== 'thinking'") &&
+    source.includes('liveDeltaActivityLineId') &&
+    source.includes('event.delta && existingLine') &&
+    source.includes('activityLines: nextLines') &&
+    source.includes('liveDeltaActivityLineId(line.run_id, line.stream_type)'),
   source,
 );
 check(
@@ -138,7 +151,6 @@ check(
     source.includes('OPTIMISTIC_USER_MESSAGE_PREFIX') &&
     source.includes('clientMessageId: userMsgId') &&
     source.includes('const shouldQueueForMember = Boolean(') &&
-    source.includes('rememberDeferredQueuedUserMessage(userMsg)') &&
     source.includes('!shouldQueueForMember && pendingAgentMsg') &&
     source.includes('const messagesToAppend =') &&
     /shouldQueueForMember\s*\?\s*\[\]/.test(source) &&
@@ -153,6 +165,7 @@ check(
     source.includes('mentions: visibleMentions') &&
     source.includes('options.routeMentions') &&
     source.includes('meta.client_message_id = userMsgId') &&
+    source.includes('upsertStreamedMessage(sid, incomingMessage)') &&
     pendingPlaceholderIndex < sendApiIndex,
   { pendingPlaceholderIndex, sendApiIndex },
 );
@@ -188,12 +201,22 @@ check(
   source,
 );
 check(
+  'workflow plan cards do not suppress optimistic agent placeholders',
+  !source.includes('const isWorkflowPlanCardMessage =') &&
+    !source.includes('const hasWorkflowPlanCard =') &&
+    !source.includes('shouldCreatePendingAgentPlaceholder') &&
+    /const pendingAgentMsg = shouldPersistToBackend\s*\?\s*makePendingAgentPlaceholder/.test(
+      source,
+    ),
+  source,
+);
+check(
   'a new run evicts stale running placeholders for the same agent session',
   source.includes('evictStaleRunPlaceholders') &&
     source.includes('message.runId !== runId') &&
     source.includes('Boolean(message.runId)') &&
     source.includes('message.sessionAgentId === sessionAgentId') &&
-    /evictStaleRunPlaceholders\(\s*currentWithoutReleasedUser,\s*event\.session_agent_id/.test(source) &&
+    /evictStaleRunPlaceholders\(\s*currentWithoutQueuedSource,\s*event\.session_agent_id/.test(source) &&
     /evictStaleRunPlaceholders\(\s*current,\s*line\.session_agent_id/.test(
       source,
     ) &&
@@ -315,6 +338,7 @@ check(
     source.includes('shouldUpdateActiveMessages') &&
     /filterMessagesForSession\(\s*activeSessionId/.test(source) &&
     source.includes('filterMessagesForSession(sid, prev[sid] ?? [])') &&
+    source.includes('filterQueuedUserMessagesFromSnapshot(') &&
     source.includes('activeSessionIdRef.current === sid'),
   source,
 );
@@ -342,7 +366,15 @@ check(
     source.includes('hasRemainingRunningAgent') &&
     source.includes('setSessionRunningIndicator(sid, hasRemainingRunningAgent)') &&
     source.includes('message.sessionAgentId !== parsed.session_agent_id') &&
-    source.includes("sessionAgent.state !== 'running'"),
+    source.includes('wasStopRequested'),
+  source,
+);
+check(
+  'stop-requested agent placeholders remain visible until the stopped message replaces them',
+  source.includes('persisted stop') &&
+    source.includes('!isActiveAgentState(parsed.state) && !wasStopRequested') &&
+    source.includes('optimisticallyStoppedSessionAgentIdsRef.current.delete') &&
+    source.includes('nextMessage.sessionAgentId'),
   source,
 );
 check(
@@ -357,11 +389,31 @@ check(
   source,
 );
 check(
-  'polls non-active running sessions so sidebar icons leave running state',
+  'workflow input highlights persist until the session is opened',
+  source.includes('ACKED_WORKFLOW_INPUT_IDS_STORAGE_KEY') &&
+    source.includes('acknowledgedWorkflowInputIdsRef') &&
+    source.includes('syncSessionWorkflowInputIndicator') &&
+    source.includes('hasPendingWorkflowInput') &&
+    source.includes('pendingWorkflowInputId') &&
+    source.includes('clearPendingWorkflowInput(activeSessionId)'),
+  source,
+);
+check(
+  'workflow review status is tracked for the sidebar activity icon',
+  source.includes('pending_workflow_review_id') &&
+    source.includes('pendingWorkflowReviewId') &&
+    source.includes('hasPendingWorkflowReview'),
+  source,
+);
+check(
+  'polls non-active running and waiting workflow sessions so sidebar icons update',
   source.includes('SIDEBAR_RUNNING_INDICATOR_POLL_MS') &&
     source.includes('runningSidebarSessionIds') &&
     source.includes('session.id !== activeSessionId') &&
-    source.includes('session.hasRunningAgent || session.hasRunningWorkflow') &&
+    source.includes('session.hasRunningAgent') &&
+    source.includes('session.hasRunningWorkflow') &&
+    source.includes('session.hasPendingWorkflowInput') &&
+    source.includes('session.hasPendingWorkflowReview') &&
     source.includes('refreshRunningSidebarSessions') &&
     source.includes('window.setInterval(') &&
     source.includes('refreshSessionRunningIndicators(sessionId)'),
@@ -440,31 +492,24 @@ check(
 );
 
 check(
-  'defers queued user messages until their queued run starts',
-    source.includes('deferredQueuedMessageIdsRef') &&
-    source.includes('deferredQueuedClientMessageIdsRef') &&
-    source.includes('deferredQueuedUserMessagesRef') &&
-    source.includes('deferredQueuedMessagesById') &&
-    source.includes('setDeferredQueuedMessagesById') &&
-    source.includes('setDeferredQueuedMessagesById({})') &&
-    source.includes('isDeferredQueuedUserMessage') &&
-    source.includes('filterDeferredQueuedUserMessages') &&
-    source.includes('hasDeferredQueuedUserMessage') &&
-    source.includes('releaseDeferredQueuedUserMessage') &&
-    source.includes('revealDeferredQueuedBackendMessage') &&
-    source.includes('insertDeferredQueuedUserMessage') &&
-    source.includes('const visibleCurrent = shouldQueueForMember') &&
-    source.includes('filterDeferredQueuedUserMessages(cur)') &&
-    source.includes('const current = filterDeferredQueuedUserMessages(') &&
-    source.includes('matchesUserMessageIdentity') &&
-    source.includes('currentWithoutReleasedUser') &&
-    source.includes('if (shouldQueueForMember) {') &&
-    source.includes('rememberDeferredQueuedUserMessage(incomingMessage)') &&
-    source.includes('return;') &&
+  'derives queued user visibility from persisted queue snapshots',
+  source.includes('queuedChatMessageKeysForSession') &&
+    source.includes('isQueuedUserMessageFromSnapshot') &&
+    source.includes('filterQueuedUserMessagesFromSnapshot') &&
+    source.includes('queuedUserMessagesByIdFromSnapshot') &&
+    source.includes("String(item.message.status) !== 'queued'") &&
+    source.includes('item.message.chat_message_id') &&
+    source.includes('chatQueuesApi.listSession(sid).catch') &&
+    source.includes('queueResponse.members') &&
+    source.includes('queuedUserMessagesById,') &&
+    source.includes('ensureQueuedRunSourceMessage') &&
     /chatMessagesApi\.get\(\s*event\.source_message_id/.test(source) &&
-    source.includes('deferredQueuedMessagesById,') &&
-    source.includes('...withReleasedUser,') &&
-    source.includes('placeholder,'),
+    source.includes('insertQueuedBackendUserMessage') &&
+    !source.includes('deferredQueuedMessageIdsRef') &&
+    !source.includes('deferredQueuedClientMessageIdsRef') &&
+    !source.includes('deferredQueuedUserMessagesRef') &&
+    !source.includes('rememberDeferredQueuedUserMessage') &&
+    !source.includes('releaseDeferredQueuedUserMessage'),
   source,
 );
 
