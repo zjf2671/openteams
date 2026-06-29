@@ -90,7 +90,7 @@ check(
   "auto-exits conflict resolution when status changes away from needs_conflict_resolution",
   source.includes(
     'worktree?.status !== "needs_conflict_resolution"',
-  ) && source.includes("setShowConflictResolution(false)"),
+  ) && source.includes("closeConflictResolutionForScope(scopeKey)"),
   source,
 );
 
@@ -115,9 +115,30 @@ check(
 );
 
 check(
+  "isolates source-control errors by session scope",
+  source.includes("type ScopedErrorState = Record<string, string>") &&
+    source.includes("actionErrorsByScope") &&
+    source.includes("worktreeActionErrorsByScope") &&
+    source.includes("scopedError(actionErrorsByScope, scopeKey)") &&
+    source.includes("scopedError(worktreeActionErrorsByScope, scopeKey)") &&
+    source.includes("updateScopedError(current, key, message)"),
+  source,
+);
+
+check(
+  "records late async errors under their original session scope",
+  source.includes("const actionScopeKey = scopeKeyRef.current") &&
+    source.includes("const operationScopeKey = scopeKeyRef.current") &&
+    source.includes("scopeKeyRef.current === key") &&
+    source.includes("setWorktreeActionErrorForScope(actionScopeKey, message)") &&
+    source.includes("setActionErrorForScope(operationScopeKey"),
+  source,
+);
+
+check(
   "refreshes source-control after conflict resolution completes",
   source.includes("onCompleted") &&
-    source.includes("setShowConflictResolution(false)") &&
+    source.includes("closeConflictResolutionForScope(scopeKey)") &&
     source.includes("refreshAfterWorktreeResolution"),
   source,
 );

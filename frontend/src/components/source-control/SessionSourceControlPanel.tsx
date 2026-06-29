@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
   Loader2,
@@ -59,6 +59,25 @@ interface SourceControlConfirmDialogState {
   tone: "warning" | "danger";
   resolve: (confirmed: boolean) => void;
 }
+
+type ScopedErrorState = Record<string, string>;
+
+const scopedError = (errors: ScopedErrorState, scopeKey: string) =>
+  errors[scopeKey] ?? null;
+
+const updateScopedError = (
+  errors: ScopedErrorState,
+  scopeKey: string,
+  message: string | null,
+): ScopedErrorState => {
+  const next = { ...errors };
+  if (message?.trim()) {
+    next[scopeKey] = message;
+  } else {
+    delete next[scopeKey];
+  }
+  return next;
+};
 
 interface SessionCommitSummary {
   id: string;
@@ -265,20 +284,66 @@ export const SessionSourceControlPanel: React.FC<
     enabled: worktreeEnabled && enabled,
   });
   const [commitMessage, setCommitMessage] = useState("");
-  const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingActionState, setPendingActionState] = useState<{
+    scopeKey: string;
+    key: string;
+  } | null>(null);
+  const [actionErrorsByScope, setActionErrorsByScope] =
+    useState<ScopedErrorState>({});
   const [sessionCommits, setSessionCommits] = useState<
     SessionCommitSummary[]
   >([]);
   const [commitListExpanded, setCommitListExpanded] = useState(true);
   const [confirmDialog, setConfirmDialog] =
     useState<SourceControlConfirmDialogState | null>(null);
-  const [showConflictResolution, setShowConflictResolution] = useState(false);
-  const [showWorktreeHistory, setShowWorktreeHistory] = useState(false);
-  const [worktreeBusy, setWorktreeBusy] = useState(false);
-  const [worktreeActionError, setWorktreeActionError] = useState<string | null>(
-    null,
-  );
+  const [conflictResolutionScopeKey, setConflictResolutionScopeKey] = useState<
+    string | null
+  >(null);
+  const [worktreeHistoryScopeKey, setWorktreeHistoryScopeKey] = useState<
+    string | null
+  >(null);
+  const [worktreeBusyScopeKey, setWorktreeBusyScopeKey] = useState<
+    string | null
+  >(null);
+  const [worktreeActionErrorsByScope, setWorktreeActionErrorsByScope] =
+    useState<ScopedErrorState>({});
+  const scopeKey = `${enabled ? "1" : "0"}:${projectId ?? ""}:${
+    sessionId ?? ""
+  }:${worktreeMode ?? ""}`;
+  const scopeKeyRef = useRef(scopeKey);
+  scopeKeyRef.current = scopeKey;
+
+  const isCurrentScope = (key: string) => scopeKeyRef.current === key;
+  const pendingAction =
+    pendingActionState?.scopeKey === scopeKey ? pendingActionState.key : null;
+  const actionError = scopedError(actionErrorsByScope, scopeKey);
+  const worktreeActionError = scopedError(worktreeActionErrorsByScope, scopeKey);
+  const showConflictResolution = conflictResolutionScopeKey === scopeKey;
+  const showWorktreeHistory = worktreeHistoryScopeKey === scopeKey;
+  const worktreeBusy = worktreeBusyScopeKey === scopeKey;
+  const setActionErrorForScope = (key: string, message: string | null) => {
+    setActionErrorsByScope((current) =>
+      updateScopedError(current, key, message),
+    );
+  };
+  const setWorktreeActionErrorForScope = (
+    key: string,
+    message: string | null,
+  ) => {
+    setWorktreeActionErrorsByScope((current) =>
+      updateScopedError(current, key, message),
+    );
+  };
+  const closeConflictResolutionForScope = (key: string) => {
+    setConflictResolutionScopeKey((current) =>
+      current === key ? null : current,
+    );
+  };
+  const closeWorktreeHistoryForScope = (key: string) => {
+    setWorktreeHistoryScopeKey((current) =>
+      current === key ? null : current,
+    );
+  };
 
   const viewModel = useMemo(
     () => buildSourceControlViewModel(status, t),
@@ -334,15 +399,15 @@ export const SessionSourceControlPanel: React.FC<
       showConflictResolution &&
       worktree?.status !== "needs_conflict_resolution"
     ) {
-      setShowConflictResolution(false);
+      closeConflictResolutionForScope(scopeKey);
     }
-  }, [showConflictResolution, worktree?.status]);
+  }, [showConflictResolution, scopeKey, worktree?.status]);
 
   useEffect(() => {
     if (worktree?.status !== "merged") {
-      setShowWorktreeHistory(false);
+      closeWorktreeHistoryForScope(scopeKey);
     }
-  }, [worktree?.status]);
+  }, [scopeKey, worktree?.status]);
 
   if (!enabled || !projectId || !sessionId) {
     return <>{fallbackRelatedFiles}</>;
@@ -363,14 +428,14 @@ export const SessionSourceControlPanel: React.FC<
         sessionId={sessionId}
         tr={tr}
         onCompleted={() => {
-          setShowConflictResolution(false);
+          closeConflictResolutionForScope(scopeKey);
           void refreshAfterWorktreeResolution(
             refreshSourceControl,
             refreshWorktree,
           );
         }}
         onAbort={() => {
-          setShowConflictResolution(false);
+          closeConflictResolutionForScope(scopeKey);
           void refreshAfterWorktreeResolution(
             refreshSourceControl,
             refreshWorktree,
@@ -382,8 +447,9 @@ export const SessionSourceControlPanel: React.FC<
 
   const handleWorktreeAction = async (action: SessionWorktreeAction) => {
     if (worktreeBusy) return;
-    setWorktreeBusy(true);
-    setWorktreeActionError(null);
+    const actionScopeKey = scopeKeyRef.current;
+    setWorktreeBusyScopeKey(actionScopeKey);
+    setWorktreeActionErrorForScope(actionScopeKey, null);
     try {
       switch (action) {
         case "prepare":
@@ -405,23 +471,29 @@ export const SessionSourceControlPanel: React.FC<
           await forceRemove();
           break;
         case "resolve-conflicts":
-          setShowConflictResolution(true);
+          setConflictResolutionScopeKey(actionScopeKey);
           break;
         case "view-history":
-          setShowWorktreeHistory(true);
+          setWorktreeHistoryScopeKey(actionScopeKey);
           break;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setWorktreeActionError(message);
-      showToast(
-        tr("worktree.error.actionFailed", "Worktree action failed: {message}", {
-          message,
-        }),
-        "error",
-      );
+      setWorktreeActionErrorForScope(actionScopeKey, message);
+      if (isCurrentScope(actionScopeKey)) {
+        showToast(
+          tr(
+            "worktree.error.actionFailed",
+            "Worktree action failed: {message}",
+            { message },
+          ),
+          "error",
+        );
+      }
     } finally {
-      setWorktreeBusy(false);
+      setWorktreeBusyScopeKey((current) =>
+        current === actionScopeKey ? null : current,
+      );
     }
   };
 
@@ -431,18 +503,27 @@ export const SessionSourceControlPanel: React.FC<
     options: { trackPending?: boolean } = {},
   ) => {
     const trackPending = options.trackPending ?? true;
-    if (trackPending) setPendingAction(key);
-    setActionError(null);
+    const operationScopeKey = scopeKeyRef.current;
+    if (trackPending) {
+      setPendingActionState({ scopeKey: operationScopeKey, key });
+    }
+    setActionErrorForScope(operationScopeKey, null);
     try {
       const response = await operation();
       const firstFailure = response.failed?.[0]?.message;
       if (response.ok === false && firstFailure) {
-        setActionError(firstFailure);
+        setActionErrorForScope(operationScopeKey, firstFailure);
       }
     } catch (err) {
-      setActionError(actionErrorMessage(err));
+      setActionErrorForScope(operationScopeKey, actionErrorMessage(err));
     } finally {
-      if (trackPending) setPendingAction(null);
+      if (trackPending) {
+        setPendingActionState((current) =>
+          current?.scopeKey === operationScopeKey && current.key === key
+            ? null
+            : current,
+        );
+      }
     }
   };
 
@@ -483,8 +564,10 @@ export const SessionSourceControlPanel: React.FC<
 
   const handleStageFiles = (files: SourceControlFile[]) => {
     if (files.length === 0) return;
+    const operationScopeKey = scopeKeyRef.current;
     void (async () => {
       const forceShared = await getSharedForce(files, stageLabel);
+      if (!isCurrentScope(operationScopeKey)) return;
       if (forceShared === null) return;
       const paths = sourceControlVisiblePaths(files);
       await runOperation(`stage:${paths.join("|")}`, () =>
@@ -512,6 +595,7 @@ export const SessionSourceControlPanel: React.FC<
 
   const handleDiscardFiles = (files: SourceControlFile[]) => {
     if (files.length === 0) return;
+    const operationScopeKey = scopeKeyRef.current;
     void (async () => {
       const discardConfirmed = await requestConfirm({
         title: tr("sourceControl.confirm.discardTitle", "Discard changes?"),
@@ -523,8 +607,10 @@ export const SessionSourceControlPanel: React.FC<
         confirmLabel: discardLabel,
         tone: "danger",
       });
+      if (!isCurrentScope(operationScopeKey)) return;
       if (!discardConfirmed) return;
       const forceShared = await getSharedForce(files, discardLabel);
+      if (!isCurrentScope(operationScopeKey)) return;
       if (forceShared === null) return;
       const paths = sourceControlVisiblePaths(files);
       await runOperation(`discard:${paths.join("|")}`, () =>
@@ -566,8 +652,10 @@ export const SessionSourceControlPanel: React.FC<
     if (!message || !viewModel.canCommit) return;
     const stagedSection = findSection(viewModel, "staged");
     const stagedFiles = stagedSection?.files ?? [];
+    const commitScopeKey = scopeKeyRef.current;
     void (async () => {
       const forceShared = await getSharedForce(stagedFiles, commitLabel);
+      if (!isCurrentScope(commitScopeKey)) return;
       if (forceShared === null) return;
 
       await runOperation("commit", async () => {
@@ -579,6 +667,7 @@ export const SessionSourceControlPanel: React.FC<
           work_item_ids: linkedWorkItemIds,
           expected_head_sha: viewModel.headSha,
         });
+        if (!isCurrentScope(commitScopeKey)) return { ok: true, failed: [] };
         setSessionCommits((current) =>
           mergeCommitSummaries([
             commitSummaryFromResponse(response),
@@ -682,7 +771,7 @@ export const SessionSourceControlPanel: React.FC<
               worktree={worktree}
               commits={sessionCommits}
               tr={tr}
-              onClose={() => setShowWorktreeHistory(false)}
+              onClose={() => closeWorktreeHistoryForScope(scopeKey)}
             />
           )}
         </>

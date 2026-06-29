@@ -13,6 +13,10 @@ import { CreateAgentSessionModal } from "@/components/CreateAgentSessionModal";
 import { DiffViewTab } from "@/components/DiffViewTab";
 import { NotificationToast } from "@/components/NotificationToast";
 import { ProjectSidebar } from "@/components/ProjectSidebar";
+import {
+  OnboardingGuide,
+  compareVersions,
+} from "@/components/onboarding/OnboardingGuide";
 import { GitHubRepositoryPage } from "@/pages/GitHubRepositoryPage";
 import { IssuePage } from "@/pages/IssuePage";
 import { RoutingPage } from "@/pages/RoutingPage";
@@ -42,9 +46,14 @@ import {
   chatAgentsApi,
   chatMessagesApi,
   chatSessionsApi,
+  onboardingApi,
   projectApi,
   projectWorkItemsApi,
 } from "@/lib/api";
+import {
+  ONBOARDING_GUIDE_RESET_EVENT,
+  ONBOARDING_UPGRADE_REPLAY_EVENT,
+} from "@/lib/onboardingEvents";
 import {
   ISSUE_NAVIGATION_EVENT,
   ISSUE_NAVIGATION_TARGET_CHANGED_EVENT,
@@ -62,19 +71,26 @@ import { mapSession } from "@/lib/mappers";
 import { mockFrontendApi } from "@/lib/mockFrontendApi";
 import { projectDisplayName } from "@/lib/projectDisplay";
 import {
+  buildTemplateMemberSpecs,
+  firstAvailableRuntime,
+  runtimeConfiguredModel,
+} from "@/lib/teamTemplateRuntime";
+import {
   getRunnerLabel,
-  getRuntimeDisplayState,
 } from "@/pages/agent-runtime/agentRuntimeViewModel";
 import type { ShellOptionsMock } from "@/mockApiData";
 import {
   type BaseCodingAgent as ProjectBaseCodingAgent,
   type ChatMemberPreset,
   type ChatTeamPreset,
+  OnboardingAppearance,
+  type OnboardingState,
   ProjectMemberType,
   type CreateProjectRequest,
   type ProjectMemberWithRuntime,
   type UpdateProject,
 } from "../../shared/types";
+import rootPackage from "../../package.json";
 import type {
   AgentRuntimeStatus,
   ChatSessionWorktreeMode,
@@ -174,6 +190,12 @@ const maxAppScale = 1.2;
 const compactViewportLayoutRelief = 0.06;
 const compactViewportFontScale = 1.06;
 const blankTeamId = "blank_team";
+const currentUpgradeVersion = rootPackage.version || "0.0.0";
+
+type OnboardingOverlay =
+  | { mode: "onboarding"; state: OnboardingState | null }
+  | { mode: "upgrade"; state: OnboardingState | null }
+  | null;
 
 type CreateProjectOptions = {
   teamId?: string;
@@ -182,20 +204,6 @@ type CreateProjectOptions = {
 type ChatPresetConfigView = {
   members?: ChatMemberPreset[];
   teams?: ChatTeamPreset[];
-};
-
-const isObjectRecord = (value: unknown): value is Record<string, JsonValue> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
-
-const runtimeConfiguredModel = (
-  runtime?: AgentRuntimeStatus | null,
-): string => {
-  return (
-    isObjectRecord(runtime?.executor_options) &&
-    typeof runtime.executor_options.model === "string"
-      ? runtime.executor_options.model.trim()
-      : ""
-  );
 };
 
 const chatSessionUpdatePayload = (
@@ -359,7 +367,10 @@ function AppScaleFrame({ children }: { children: React.ReactNode }) {
 function WorkspaceLayout() {
   const {
     t,
+    theme,
     locale,
+    setTheme,
+    setLocale,
     toast,
     sessions,
     setSessions,
@@ -394,6 +405,10 @@ function WorkspaceLayout() {
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [isCreateSessionModalOpen, setIsCreateSessionModalOpen] =
     useState(false);
+  const [onboardingOverlay, setOnboardingOverlay] =
+    useState<OnboardingOverlay>(null);
+  const [onboardingState, setOnboardingState] =
+    useState<OnboardingState | null>(null);
   const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>(() =>
     activeSessionId ? [createSessionTab(activeSessionId)] : [],
   );
@@ -527,10 +542,22 @@ function WorkspaceLayout() {
     return translated && translated !== key ? translated : fallback;
   };
 
-  const firstAvailableRuntime = (
-    runtimes: AgentRuntimeStatus[],
-  ): AgentRuntimeStatus | undefined =>
-    runtimes.find((runner) => getRuntimeDisplayState(runner) === "available");
+  const overlayForOnboardingState = (
+    nextState: OnboardingState,
+  ): OnboardingOverlay => {
+    if (!nextState.onboarding_completed_at) {
+      return { mode: "onboarding", state: nextState };
+    }
+    if (
+      compareVersions(
+        nextState.last_seen_upgrade_version,
+        currentUpgradeVersion,
+      ) < 0
+    ) {
+      return { mode: "upgrade", state: nextState };
+    }
+    return null;
+  };
 
   const loadRuntimeStatuses = async (): Promise<AgentRuntimeStatus[]> => {
     try {
@@ -624,44 +651,16 @@ function WorkspaceLayout() {
     teamPreset: ChatTeamPreset,
     runtimes: AgentRuntimeStatus[],
   ): Promise<number> => {
-    const selectedMembers = teamPreset.members.filter(
-      (preset) => preset.enabled !== false,
-    );
-    const leadMemberId =
-      teamPreset.lead_member_id &&
-      selectedMembers.some((member) => member.id === teamPreset.lead_member_id)
-        ? teamPreset.lead_member_id
-        : selectedMembers[0]?.id;
-
     let created = 0;
-    for (const [index, memberPreset] of selectedMembers.entries()) {
-      const configuredRunnerType = memberPreset.runner_type?.trim() ?? "";
-      const runtime = configuredRunnerType
-        ? runtimes.find((runner) => runner.runner_type === configuredRunnerType)
-        : firstAvailableRuntime(runtimes);
-      const runnerType = configuredRunnerType || runtime?.runner_type;
-      if (!runnerType) continue;
-
-      const recommendedModel = memberPreset.recommended_model?.trim() ?? "";
-      const modelName =
-        recommendedModel ||
-        (runtime
-          ? runtimeConfiguredModel(runtime) || runtime.discovered_models[0]
-          : "") ||
-        null;
-
+    const memberSpecs = buildTemplateMemberSpecs(
+      teamPreset,
+      workspacePath,
+      runtimes,
+    );
+    for (const spec of memberSpecs) {
       await createProjectAgentMember({
         projectId,
-        workspacePath:
-          memberPreset.default_workspace_path?.trim() || workspacePath,
-        name: memberPreset.name,
-        runnerType,
-        systemPrompt: memberPreset.system_prompt,
-        toolsEnabled: (memberPreset.tools_enabled ?? {}) as JsonValue,
-        modelName,
-        allowedSkillIds: memberPreset.selected_skill_ids,
-        role: memberPreset.id === leadMemberId ? "lead" : "agent",
-        displayOrder: index + 1,
+        ...spec,
       });
       created += 1;
     }
@@ -674,6 +673,48 @@ function WorkspaceLayout() {
 
   useEffect(() => {
     void mockFrontendApi.getShellOptions().then(setShellOptions);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void onboardingApi.getState()
+      .then((nextState) => {
+        if (cancelled) return;
+        setOnboardingState(nextState);
+        setOnboardingOverlay(overlayForOnboardingState(nextState));
+      })
+      .catch((err) => {
+        console.error("Failed to load onboarding state", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleGuideReset = (event: Event) => {
+      const nextState = (event as CustomEvent<OnboardingState>).detail;
+      setOnboardingState(nextState);
+      setOnboardingOverlay({ mode: "onboarding", state: nextState });
+    };
+    const handleUpgradeReplay = (event: Event) => {
+      const nextState = (event as CustomEvent<OnboardingState>).detail;
+      setOnboardingState(nextState);
+      setOnboardingOverlay({ mode: "upgrade", state: nextState });
+    };
+
+    window.addEventListener(ONBOARDING_GUIDE_RESET_EVENT, handleGuideReset);
+    window.addEventListener(
+      ONBOARDING_UPGRADE_REPLAY_EVENT,
+      handleUpgradeReplay,
+    );
+    return () => {
+      window.removeEventListener(ONBOARDING_GUIDE_RESET_EVENT, handleGuideReset);
+      window.removeEventListener(
+        ONBOARDING_UPGRADE_REPLAY_EVENT,
+        handleUpgradeReplay,
+      );
+    };
   }, []);
 
   useEffect(() => {
@@ -1426,6 +1467,7 @@ function WorkspaceLayout() {
             });
     showToast(createdProjectToast);
     closeMobileSidebar();
+    return { project, session };
   };
 
   const handleUpdateProject = async (
@@ -1461,6 +1503,62 @@ function WorkspaceLayout() {
         name: projectName,
       }),
     );
+  };
+
+  const handleOnboardingCompleted = (nextState: OnboardingState) => {
+    setOnboardingState(nextState);
+    setOnboardingOverlay(null);
+    setIsCreateSessionModalOpen(true);
+    closeMobileSidebar();
+  };
+
+  const handleCreateOnboardingProject = async ({
+    name,
+    path,
+    teamId,
+  }: {
+    name: string;
+    path: string;
+    teamId: string | null;
+  }) => {
+    const { project, session } = await handleCreateProject(
+      {
+        name,
+        repositories: [],
+        description: null,
+        status: null,
+        default_workspace_path: path,
+        active_repo_id: null,
+      },
+      { teamId: teamId ?? blankTeamId },
+    );
+    return { projectId: project.id, sessionId: session?.id ?? null };
+  };
+
+  const handleOnboardingPreviewAppearanceChange = (
+    appearance: OnboardingAppearance,
+  ) => {
+    if (appearance === OnboardingAppearance.light) {
+      setTheme("light");
+      return;
+    }
+    if (appearance === OnboardingAppearance.system) {
+      const prefersLight =
+        typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-color-scheme: light)").matches;
+      setTheme(prefersLight ? "light" : "dark");
+      return;
+    }
+    setTheme("dark");
+  };
+
+  const handleOnboardingStateChange = (nextState: OnboardingState) => {
+    setOnboardingState(nextState);
+  };
+
+  const handleUpgradeRead = (nextState: OnboardingState) => {
+    setOnboardingState(nextState);
+    setOnboardingOverlay(null);
   };
 
   const currentProject = projects.find(
@@ -1519,6 +1617,25 @@ function WorkspaceLayout() {
         onClose={() => setIsCreateSessionModalOpen(false)}
         onCreate={handleCreateAgentSession}
       />
+
+      {onboardingOverlay && (
+        <OnboardingGuide
+          mode={onboardingOverlay.mode}
+          initialState={onboardingOverlay.state ?? onboardingState}
+          currentVersion={currentUpgradeVersion}
+          locale={locale}
+          theme={theme}
+          t={t}
+          teamPresets={teamPresets}
+          onCreateProjectFromOnboarding={handleCreateOnboardingProject}
+          onPreviewLocaleChange={setLocale}
+          onPreviewAppearanceChange={handleOnboardingPreviewAppearanceChange}
+          onClose={() => setOnboardingOverlay(null)}
+          onOpenCreateSession={handleOnboardingCompleted}
+          onStateChange={handleOnboardingStateChange}
+          onUpgradeRead={handleUpgradeRead}
+        />
+      )}
 
       <aside
         className="relative h-full hidden md:block shrink-0"

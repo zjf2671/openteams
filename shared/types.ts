@@ -36,6 +36,22 @@ export type CreateProjectPath = { path: string, label: string | null, kind: Proj
 
 export type UpdateProjectPath = { path: string | null, label: string | null, kind: ProjectPathKind | null, is_default: boolean | null, };
 
+export type OnboardingState = { welcome_seen_at: Date | null, onboarding_completed_at: Date | null, current_step: OnboardingStep, selected_scenario: OnboardingScenario | null, recommended_team_name: string | null, team_config: Array<OnboardingTeamMemberConfig> | null, project_path: string | null, project_name: string | null, created_project_id: string | null, project_path_is_git: boolean, language: OnboardingLanguage | null, appearance: OnboardingAppearance | null, last_seen_upgrade_version: string | null, created_at: Date, updated_at: Date, };
+
+export enum OnboardingStep { scenario = "scenario", executor = "executor", project_path = "project_path", appearance = "appearance" }
+
+export enum OnboardingScenario { software = "software", design = "design", research = "research", other = "other" }
+
+export enum OnboardingLanguage { browser = "browser", en = "en", fr = "fr", ja = "ja", es = "es", ko = "ko", zh_hans = "zh_hans", zh_hant = "zh_hant" }
+
+export enum OnboardingAppearance { light = "light", dark = "dark", system = "system" }
+
+export type OnboardingTeamMemberConfig = { member: string, runner_type?: string, model_name?: string, };
+
+export type UpdateOnboardingStateRequest = { welcome_seen?: boolean, current_step?: OnboardingStep, selected_scenario?: OnboardingScenario, recommended_team_name?: string, team_config?: Array<OnboardingTeamMemberConfig>, project_path?: string, project_name?: string, created_project_id?: string, language?: OnboardingLanguage, appearance?: OnboardingAppearance, };
+
+export type MarkUpgradeReadRequest = { version: string, };
+
 export type CreateProjectRepo = { display_name: string, git_repo_path: string, };
 
 export type ProjectStats = { id: string, project_id: string, period_start: string | null, period_end: string | null, feature_count: bigint, bugfix_count: bigint, test_count: bigint, input_tokens: bigint, output_tokens: bigint, cache_read_tokens: bigint, reasoning_output_tokens: bigint, total_tokens: bigint, cost_total: number | null, updated_at: Date, };
