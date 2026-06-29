@@ -681,6 +681,39 @@ async fn committed_other_session_path_is_not_shared() {
 }
 
 #[tokio::test]
+async fn externally_committed_other_session_path_is_not_shared() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let first_session =
+        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    fs::write(repo_path.join("tracked.txt"), "external commit\n").expect("modify tracked");
+    git_add(&repo_path, "tracked.txt");
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    GitService::new()
+        .commit(&repo_path, "external session commit")
+        .expect("external commit");
+    SourceControlService::invalidate_session_caches(first_session);
+
+    let second_session =
+        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    fs::write(repo_path.join("tracked.txt"), "second session\n").expect("modify tracked again");
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, second_session, None)
+        .await
+        .expect("status");
+
+    let SessionSourceControlStatus::Git { changes, .. } = status else {
+        panic!("expected git status");
+    };
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "tracked.txt");
+    assert!(!changes[0].shared);
+    assert!(changes[0].shared_session_ids.is_empty());
+}
+
+#[tokio::test]
 async fn other_session_path_observed_after_commit_is_shared_again() {
     let pool = setup_pool().await;
     let (_tempdir, repo_path) = setup_git_workspace();
