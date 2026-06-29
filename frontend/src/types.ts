@@ -1787,6 +1787,7 @@ export interface DailyTokensResponse {
 export interface SessionCostEntry {
   session_id: string;
   title: string;
+  run_count: number;
   total_tokens: number;
   input_tokens: number;
   output_tokens: number;
