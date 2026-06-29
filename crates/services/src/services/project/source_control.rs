@@ -1290,7 +1290,9 @@ async fn filter_committed_session_paths(
         return Ok(paths);
     }
 
-    let committed_paths = collect_committed_path_times(pool, context, session_id).await?;
+    let target_paths = paths.keys().cloned().collect::<BTreeSet<_>>();
+    let committed_paths =
+        collect_committed_path_times(pool, context, session_id, &target_paths).await?;
     if committed_paths.is_empty() {
         return Ok(paths);
     }
@@ -1313,6 +1315,7 @@ async fn collect_committed_path_times(
     pool: &SqlitePool,
     context: &WorkspaceContext,
     session_id: Uuid,
+    target_paths: &BTreeSet<String>,
 ) -> Result<HashMap<String, DateTime<Utc>>> {
     let records =
         ProjectDeliveryRecord::find_by_project(pool, context.project_id, None, None).await?;
@@ -1337,6 +1340,9 @@ async fn collect_committed_path_times(
             else {
                 continue;
             };
+            if !target_paths.contains(&path) {
+                continue;
+            }
             committed_paths
                 .entry(path)
                 .and_modify(|committed_at| {
@@ -1347,8 +1353,37 @@ async fn collect_committed_path_times(
                 .or_insert(record.occurred_at);
         }
     }
+    add_git_committed_path_times(context, target_paths, &mut committed_paths);
 
     Ok(committed_paths)
+}
+
+fn add_git_committed_path_times(
+    context: &WorkspaceContext,
+    target_paths: &BTreeSet<String>,
+    committed_paths: &mut HashMap<String, DateTime<Utc>>,
+) {
+    let git = GitCli::new();
+    for path in target_paths {
+        let Ok(output) = git.git(
+            &context.workspace_path,
+            ["log", "-1", "--format=%cI", "--", path.as_str()],
+        ) else {
+            continue;
+        };
+        let Ok(committed_at) = DateTime::parse_from_rfc3339(output.trim()) else {
+            continue;
+        };
+        let committed_at = committed_at.with_timezone(&Utc);
+        committed_paths
+            .entry(path.clone())
+            .and_modify(|current| {
+                if committed_at > *current {
+                    *current = committed_at;
+                }
+            })
+            .or_insert(committed_at);
+    }
 }
 
 async fn collect_shared_paths(
