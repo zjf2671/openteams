@@ -635,7 +635,8 @@ impl ChatRunner {
         }
 
         let agents = ChatAgent::find_all(&self.db.pool).await?;
-        let member_names = chat::member_name_overrides_for_session(&self.db.pool, session.id).await?;
+        let member_names =
+            chat::member_name_overrides_for_session(&self.db.pool, session.id).await?;
 
         tracing::debug!(
             session_id = %session.id,
@@ -717,7 +718,8 @@ impl ChatRunner {
                 return;
             }
         };
-        self.emit_member_queue_update(session_id, session_agent_id).await;
+        self.emit_member_queue_update(session_id, session_agent_id)
+            .await;
 
         self.dispatch_queued_entry(session_id, session_agent_id, entry)
             .await;
@@ -825,7 +827,8 @@ impl ChatRunner {
             .await
         {
             Ok(claimed) => {
-                self.emit_member_queue_update(session_id, session_agent_id).await;
+                self.emit_member_queue_update(session_id, session_agent_id)
+                    .await;
                 claimed
             }
             Err(err) => {
@@ -898,8 +901,7 @@ impl ChatRunner {
             .await
         {
             Ok(Some(entry)) => {
-                self.fail_or_skip_queue_entry(&entry, failure_reason)
-                    .await;
+                self.fail_or_skip_queue_entry(&entry, failure_reason).await;
             }
             Ok(None) => {}
             Err(err) => {
@@ -915,72 +917,178 @@ impl ChatRunner {
     ) -> Result<Option<(ChatSessionAgent, ChatAgent)>, ChatRunnerError> {
         let session_agents =
             ChatSessionAgent::find_all_for_session(&self.db.pool, session_id).await?;
-        if session_agents.is_empty() {
-            return Ok(None);
+        if !session_agents.is_empty() {
+            let agents = ChatAgent::find_all(&self.db.pool).await?;
+            let member_names =
+                chat::member_name_overrides_for_session(&self.db.pool, session_id).await?;
+            let agent_map: HashMap<Uuid, ChatAgent> =
+                agents.into_iter().map(|agent| (agent.id, agent)).collect();
+
+            let mut exact_member_match: Option<(ChatSessionAgent, ChatAgent)> = None;
+            let mut exact_template_match: Option<(ChatSessionAgent, ChatAgent)> = None;
+            let mut ci_member_match: Option<(ChatSessionAgent, ChatAgent)> = None;
+            let mut ci_template_match: Option<(ChatSessionAgent, ChatAgent)> = None;
+
+            for session_agent in session_agents {
+                let Some(agent) = agent_map.get(&session_agent.agent_id) else {
+                    tracing::warn!(
+                        session_agent_id = %session_agent.id,
+                        agent_id = %session_agent.agent_id,
+                        "chat session agent missing backing agent"
+                    );
+                    continue;
+                };
+
+                let effective_name = chat::effective_agent_name(
+                    agent,
+                    member_names.get(&agent.id).map(String::as_str),
+                );
+                let build_match = |session_agent: &ChatSessionAgent, effective_name: &str| {
+                    let mut effective_agent = agent.clone();
+                    effective_agent.name = effective_name.to_string();
+                    (session_agent.clone(), effective_agent)
+                };
+
+                if effective_name == mention {
+                    exact_member_match = Some(build_match(&session_agent, &effective_name));
+                    break;
+                }
+                if agent.name == mention && exact_template_match.is_none() {
+                    exact_template_match = Some(build_match(&session_agent, &effective_name));
+                }
+
+                if effective_name.eq_ignore_ascii_case(mention) {
+                    if ci_member_match.is_some() {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            mention = mention,
+                            "multiple session agents matched mention; skipping"
+                        );
+                        return Ok(None);
+                    }
+                    ci_member_match = Some(build_match(&session_agent, &effective_name));
+                }
+
+                if agent.name.eq_ignore_ascii_case(mention) {
+                    if ci_template_match.is_some() {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            mention = mention,
+                            "multiple session agents matched template name mention; skipping"
+                        );
+                        return Ok(None);
+                    }
+                    ci_template_match = Some(build_match(&session_agent, &effective_name));
+                }
+            }
+
+            let Some((session_agent, agent)) = exact_member_match
+                .or(exact_template_match)
+                .or(ci_member_match)
+                .or(ci_template_match)
+            else {
+                return Ok(None);
+            };
+
+            if session_agent.workspace_path.is_none() {
+                // respects "优先保留显式 agent workspace" because a user-set
+                // Isolated sessions resolve through the worktree reducer during
+                // the run. That path also syncs all session members to the
+                // isolated worktree once it exists.
+                let session = ChatSession::find_by_id(&self.db.pool, session_id).await?;
+                if let Some(ref session) = session
+                    && session.worktree_mode == ChatSessionWorktreeMode::Isolated
+                {
+                    return Ok(Some((session_agent, agent)));
+                }
+
+                let workspace_path = self
+                    .resolve_workspace_path_for_agent(session_id, agent.id, None)
+                    .await?;
+                let updated = ChatSessionAgent::update_workspace_path(
+                    &self.db.pool,
+                    session_agent.id,
+                    Some(workspace_path),
+                )
+                .await?;
+                return Ok(Some((updated, agent)));
+            }
+
+            return Ok(Some((session_agent, agent)));
         }
 
+        self.materialize_project_member_for_mention(session_id, mention)
+            .await
+    }
+
+    async fn materialize_project_member_for_mention(
+        &self,
+        session_id: Uuid,
+        mention: &str,
+    ) -> Result<Option<(ChatSessionAgent, ChatAgent)>, ChatRunnerError> {
+        let Some(session) = ChatSession::find_by_id(&self.db.pool, session_id).await? else {
+            return Ok(None);
+        };
+        let Some(project_id) = session.project_id else {
+            return Ok(None);
+        };
+
+        let project_members = ProjectMember::find_by_project(&self.db.pool, project_id).await?;
         let agents = ChatAgent::find_all(&self.db.pool).await?;
-        let member_names = chat::member_name_overrides_for_session(&self.db.pool, session_id).await?;
         let agent_map: HashMap<Uuid, ChatAgent> =
             agents.into_iter().map(|agent| (agent.id, agent)).collect();
 
-        let mut exact_member_match: Option<(ChatSessionAgent, ChatAgent)> = None;
-        let mut exact_template_match: Option<(ChatSessionAgent, ChatAgent)> = None;
-        let mut ci_member_match: Option<(ChatSessionAgent, ChatAgent)> = None;
-        let mut ci_template_match: Option<(ChatSessionAgent, ChatAgent)> = None;
+        let mut exact_member_match = None;
+        let mut exact_template_match = None;
+        let mut ci_member_match = None;
+        let mut ci_template_match = None;
 
-        for session_agent in session_agents {
-            let Some(agent) = agent_map.get(&session_agent.agent_id) else {
-                tracing::warn!(
-                    session_agent_id = %session_agent.id,
-                    agent_id = %session_agent.agent_id,
-                    "chat session agent missing backing agent"
-                );
+        for member in project_members {
+            if member.member_type != ProjectMemberType::Agent {
+                continue;
+            }
+            let Some(agent_id) = member.agent_id else {
+                continue;
+            };
+            let Some(agent) = agent_map.get(&agent_id) else {
                 continue;
             };
 
-            let effective_name =
-                chat::effective_agent_name(agent, member_names.get(&agent.id).map(String::as_str));
-            let build_match = |session_agent: &ChatSessionAgent, effective_name: &str| {
-                let mut effective_agent = agent.clone();
-                effective_agent.name = effective_name.to_string();
-                (session_agent.clone(), effective_agent)
-            };
+            let effective_name = chat::effective_agent_name(agent, member.member_name.as_deref());
+            let candidate = (member, agent.clone(), effective_name.clone());
 
             if effective_name == mention {
-                exact_member_match = Some(build_match(&session_agent, &effective_name));
+                exact_member_match = Some(candidate);
                 break;
             }
             if agent.name == mention && exact_template_match.is_none() {
-                exact_template_match = Some(build_match(&session_agent, &effective_name));
+                exact_template_match = Some(candidate.clone());
             }
-
             if effective_name.eq_ignore_ascii_case(mention) {
                 if ci_member_match.is_some() {
                     tracing::warn!(
                         session_id = %session_id,
                         mention = mention,
-                        "multiple session agents matched mention; skipping"
+                        "multiple project members matched mention; skipping auto-configuration"
                     );
                     return Ok(None);
                 }
-                ci_member_match = Some(build_match(&session_agent, &effective_name));
+                ci_member_match = Some(candidate.clone());
             }
-
             if agent.name.eq_ignore_ascii_case(mention) {
                 if ci_template_match.is_some() {
                     tracing::warn!(
                         session_id = %session_id,
                         mention = mention,
-                        "multiple session agents matched template name mention; skipping"
+                        "multiple project members matched template name mention; skipping auto-configuration"
                     );
                     return Ok(None);
                 }
-                ci_template_match = Some(build_match(&session_agent, &effective_name));
+                ci_template_match = Some(candidate);
             }
         }
 
-        let Some((session_agent, agent)) = exact_member_match
+        let Some((member, mut agent, effective_name)) = exact_member_match
             .or(exact_template_match)
             .or(ci_member_match)
             .or(ci_template_match)
@@ -988,30 +1096,60 @@ impl ChatRunner {
             return Ok(None);
         };
 
-        if session_agent.workspace_path.is_none() {
-            // respects "优先保留显式 agent workspace" because a user-set
-            // Isolated sessions resolve through the worktree reducer during
-            // the run. That path also syncs all session members to the
-            // isolated worktree once it exists.
-            let session = ChatSession::find_by_id(&self.db.pool, session_id).await?;
-            if let Some(ref session) = session
-                && session.worktree_mode == ChatSessionWorktreeMode::Isolated
-            {
-                return Ok(Some((session_agent, agent)));
-            }
+        let Some(agent_id) = member.agent_id else {
+            return Ok(None);
+        };
 
-            let workspace_path = self
-                .resolve_workspace_path_for_agent(session_id, agent.id, None)
-                .await?;
-            let updated = ChatSessionAgent::update_workspace_path(
-                &self.db.pool,
-                session_agent.id,
-                Some(workspace_path),
-            )
-            .await?;
-            return Ok(Some((updated, agent)));
+        if let Some(existing) =
+            ChatSessionAgent::find_by_session_and_agent(&self.db.pool, session_id, agent_id).await?
+        {
+            agent.name = effective_name;
+            return Ok(Some((existing, agent)));
         }
 
+        let workspace_path = self
+            .resolve_workspace_path_for_agent(
+                session_id,
+                agent_id,
+                member
+                    .default_workspace_path
+                    .clone()
+                    .or_else(|| session.default_workspace_path.clone()),
+            )
+            .await?;
+        let create = CreateChatSessionAgent {
+            session_id,
+            agent_id,
+            workspace_path: Some(workspace_path),
+            allowed_skill_ids: member.allowed_skill_ids.0.clone(),
+            project_member_id: Some(member.id),
+            execution_config: member.execution_config.0.clone(),
+        };
+        let session_agent = match ChatSessionAgent::create(&self.db.pool, &create, Uuid::new_v4())
+            .await
+        {
+            Ok(created) => created,
+            Err(err) => {
+                if let Some(existing) =
+                    ChatSessionAgent::find_by_session_and_agent(&self.db.pool, session_id, agent_id)
+                        .await?
+                {
+                    existing
+                } else {
+                    return Err(err.into());
+                }
+            }
+        };
+
+        tracing::info!(
+            session_id = %session_id,
+            project_member_id = %member.id,
+            agent_id = %agent_id,
+            mention = mention,
+            "auto-configured project member in chat session for first mention"
+        );
+
+        agent.name = effective_name;
         Ok(Some((session_agent, agent)))
     }
 

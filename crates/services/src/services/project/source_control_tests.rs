@@ -190,6 +190,58 @@ async fn seed_session_with_observed_source(
     session.id
 }
 
+async fn append_session_run_with_paths(
+    pool: &SqlitePool,
+    session_id: Uuid,
+    workspace_path: &Path,
+    paths: &[&str],
+    run_index: i64,
+) {
+    let session_agents = ChatSessionAgent::find_all_for_session(pool, session_id)
+        .await
+        .expect("list session agents");
+    let session_agent = session_agents.first().expect("session agent");
+    let run_dir = workspace_path
+        .join(".openteams-test-runs")
+        .join(session_id.to_string());
+    fs::create_dir_all(&run_dir).expect("create run dir");
+    let observed = paths
+        .iter()
+        .map(|path| {
+            json!({
+                "path": path,
+                "source": "git_diff",
+                "existed_after_run": true
+            })
+        })
+        .collect::<Vec<_>>();
+    let meta_path = run_dir.join(format!("meta_run_{run_index}.json"));
+    fs::write(
+        &meta_path,
+        json!({ "workspace_observed_paths": observed }).to_string(),
+    )
+    .expect("write meta");
+
+    ChatRun::create(
+        pool,
+        &CreateChatRun {
+            session_id,
+            session_agent_id: session_agent.id,
+            workspace_path: Some(workspace_path.to_string_lossy().to_string()),
+            run_index,
+            run_dir: run_dir.to_string_lossy().to_string(),
+            input_path: None,
+            output_path: None,
+            raw_log_path: None,
+            meta_path: Some(meta_path.to_string_lossy().to_string()),
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .expect("create run");
+    SourceControlService::invalidate_session_caches(session_id);
+}
+
 fn setup_git_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let repo_path = tempdir.path().join("repo");
@@ -581,6 +633,99 @@ async fn shared_file_blocks_stage_unless_forced() {
     assert!(forced.ok);
     let (_, staged) = git_status_paths(operation_status(&forced));
     assert_eq!(staged, vec!["tracked.txt"]);
+}
+
+#[tokio::test]
+async fn committed_other_session_path_is_not_shared() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let first_session =
+        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    fs::write(repo_path.join("tracked.txt"), "first session\n").expect("modify tracked");
+    git_add(&repo_path, "tracked.txt");
+
+    SourceControlService::new()
+        .commit(
+            &pool,
+            project.id,
+            SourceControlCommitRequest {
+                session_id: first_session,
+                workspace_id: None,
+                message: "commit first session".to_string(),
+                expected_staged_paths: vec!["tracked.txt".to_string()],
+                force_shared: None,
+                work_item_ids: None,
+                expected_head_sha: None,
+            },
+        )
+        .await
+        .expect("commit succeeds");
+
+    let second_session =
+        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    fs::write(repo_path.join("tracked.txt"), "second session\n").expect("modify tracked again");
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, second_session, None)
+        .await
+        .expect("status");
+
+    let SessionSourceControlStatus::Git { changes, .. } = status else {
+        panic!("expected git status");
+    };
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "tracked.txt");
+    assert!(!changes[0].shared);
+    assert!(changes[0].shared_session_ids.is_empty());
+}
+
+#[tokio::test]
+async fn other_session_path_observed_after_commit_is_shared_again() {
+    let pool = setup_pool().await;
+    let (_tempdir, repo_path) = setup_git_workspace();
+    let project = seed_project(&pool, &repo_path).await;
+    let first_session =
+        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    fs::write(repo_path.join("tracked.txt"), "first session\n").expect("modify tracked");
+    git_add(&repo_path, "tracked.txt");
+
+    SourceControlService::new()
+        .commit(
+            &pool,
+            project.id,
+            SourceControlCommitRequest {
+                session_id: first_session,
+                workspace_id: None,
+                message: "commit first session".to_string(),
+                expected_staged_paths: vec!["tracked.txt".to_string()],
+                force_shared: None,
+                work_item_ids: None,
+                expected_head_sha: None,
+            },
+        )
+        .await
+        .expect("commit succeeds");
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    append_session_run_with_paths(&pool, first_session, &repo_path, &["tracked.txt"], 2).await;
+
+    let second_session =
+        seed_session_with_paths(&pool, project.id, &repo_path, &["tracked.txt"]).await;
+    fs::write(repo_path.join("tracked.txt"), "second session\n").expect("modify tracked again");
+
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, second_session, None)
+        .await
+        .expect("status");
+
+    let SessionSourceControlStatus::Git { changes, .. } = status else {
+        panic!("expected git status");
+    };
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "tracked.txt");
+    assert!(changes[0].shared);
+    assert_eq!(changes[0].shared_session_ids, vec![first_session]);
 }
 
 #[tokio::test]

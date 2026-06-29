@@ -6,11 +6,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use db::models::{
     chat_run::ChatRun,
     chat_session::{ChatSession, ChatSessionStatus, ChatSessionWorktreeMode},
     project::Project,
+    project_delivery_record::{ProjectDeliveryEventTypeV2, ProjectDeliveryRecord},
     project_path::{ProjectPath, ProjectPathKind},
     project_work_item::ProjectWorkItem,
     project_work_item_execution_link::ProjectWorkItemExecutionLink,
@@ -314,6 +316,7 @@ struct WorkspaceContext {
 #[derive(Debug, Clone, Default)]
 struct SessionPathState {
     existed_after_run: bool,
+    last_observed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -355,6 +358,12 @@ struct WorkspaceObservedPathRecord {
 struct RunMetaFile {
     #[serde(default)]
     workspace_observed_paths: Vec<WorkspaceObservedPathRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitDeliveryMetadata {
+    #[serde(default)]
+    files: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1178,6 +1187,7 @@ async fn collect_session_paths(
         ChatRun::list_for_session_workspace(pool, session_id, &context.workspace_path_string)
             .await?;
     let paths = collect_paths_from_runs(&context.workspace_path, &runs)?;
+    let paths = filter_committed_session_paths(pool, session_id, context, paths).await?;
     SESSION_PATH_CACHE.insert(
         key,
         SessionPathCacheEntry {
@@ -1186,6 +1196,77 @@ async fn collect_session_paths(
         },
     );
     Ok(paths)
+}
+
+async fn filter_committed_session_paths(
+    pool: &SqlitePool,
+    session_id: Uuid,
+    context: &WorkspaceContext,
+    paths: BTreeMap<String, SessionPathState>,
+) -> Result<BTreeMap<String, SessionPathState>> {
+    if paths.is_empty() {
+        return Ok(paths);
+    }
+
+    let committed_paths = collect_committed_path_times(pool, context, session_id).await?;
+    if committed_paths.is_empty() {
+        return Ok(paths);
+    }
+
+    Ok(paths
+        .into_iter()
+        .filter(|(path, state)| {
+            let Some(last_observed_at) = state.last_observed_at else {
+                return true;
+            };
+            committed_paths
+                .get(path)
+                .map(|committed_at| *committed_at < last_observed_at)
+                .unwrap_or(true)
+        })
+        .collect())
+}
+
+async fn collect_committed_path_times(
+    pool: &SqlitePool,
+    context: &WorkspaceContext,
+    session_id: Uuid,
+) -> Result<HashMap<String, DateTime<Utc>>> {
+    let records =
+        ProjectDeliveryRecord::find_by_project(pool, context.project_id, None, None).await?;
+    let mut committed_paths = HashMap::<String, DateTime<Utc>>::new();
+
+    for record in records {
+        if record.source_session_id != Some(session_id)
+            || record.event_type != ProjectDeliveryEventTypeV2::CommitCreated
+        {
+            continue;
+        }
+
+        let Some(metadata_json) = record.metadata_json.as_deref() else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_str::<CommitDeliveryMetadata>(metadata_json) else {
+            continue;
+        };
+
+        for raw_path in metadata.files {
+            let Ok(path) = normalize_workspace_relative_path(&raw_path, &context.workspace_path)
+            else {
+                continue;
+            };
+            committed_paths
+                .entry(path)
+                .and_modify(|committed_at| {
+                    if record.occurred_at > *committed_at {
+                        *committed_at = record.occurred_at;
+                    }
+                })
+                .or_insert(record.occurred_at);
+        }
+    }
+
+    Ok(committed_paths)
 }
 
 async fn collect_shared_paths(
@@ -1299,31 +1380,43 @@ fn collect_paths_from_runs(
                 continue;
             }
             if let Ok(path) = normalize_workspace_relative_path(&entry.path, workspace_path) {
-                let state = paths.entry(path).or_default();
-                state.existed_after_run |= entry.existed_after_run;
+                observe_session_path(&mut paths, path, run.created_at, entry.existed_after_run);
             }
         }
 
         if let Some(patch) = read_first_existing_file(&run_scoped_diff_paths(run)) {
             for path in parse_diff_patch_paths(&patch, workspace_path) {
-                paths.entry(path).or_insert(SessionPathState {
-                    existed_after_run: true,
-                });
+                observe_session_path(&mut paths, path, run.created_at, true);
             }
         }
 
         for dir in run_scoped_untracked_dirs(run) {
             for path in collect_relative_file_paths(&dir) {
                 if let Ok(path) = normalize_workspace_relative_path(&path, workspace_path) {
-                    paths.entry(path).or_insert(SessionPathState {
-                        existed_after_run: true,
-                    });
+                    observe_session_path(&mut paths, path, run.created_at, true);
                 }
             }
         }
     }
 
     Ok(paths)
+}
+
+fn observe_session_path(
+    paths: &mut BTreeMap<String, SessionPathState>,
+    path: String,
+    observed_at: DateTime<Utc>,
+    existed_after_run: bool,
+) {
+    let state = paths.entry(path).or_default();
+    state.existed_after_run |= existed_after_run;
+    if state
+        .last_observed_at
+        .map(|last_observed_at| observed_at > last_observed_at)
+        .unwrap_or(true)
+    {
+        state.last_observed_at = Some(observed_at);
+    }
 }
 
 fn load_run_meta_observed_paths(run: &ChatRun) -> Result<Vec<WorkspaceObservedPathRecord>> {

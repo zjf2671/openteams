@@ -2581,7 +2581,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
               <textarea
                 ref={inputRef}
                 rows={1}
-                className="w-full bg-transparent resize-none border-none text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text overflow-y-auto"
+                className="w-full bg-transparent resize-none border-none text-[16px] leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--ink-tertiary)] select-text overflow-y-auto md:text-[13px] md:leading-normal"
                 style={{
                   minHeight: CHAT_INPUT_MIN_HEIGHT,
                   maxHeight: CHAT_INPUT_MAX_HEIGHT,

@@ -12,6 +12,8 @@ use db::{
         chat_message::{ChatMessage, ChatSenderType},
         chat_session::{ChatSession, ChatSessionStatus, ChatSessionWorktreeMode},
         chat_session_agent::{ChatSessionAgent, ChatSessionAgentState},
+        member_execution_config::MemberExecutionConfig,
+        project_member::{ProjectMember, ProjectMemberType},
     },
 };
 use executors::executors::CancellationToken;
@@ -95,6 +97,38 @@ async fn setup_chat_runner_db() -> DBService {
 
     for statement in [
         "PRAGMA foreign_keys = ON",
+        r#"
+            CREATE TABLE projects (
+                id BLOB PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_agent_working_dir TEXT,
+                remote_project_id BLOB,
+                description TEXT,
+                status TEXT,
+                default_workspace_path TEXT,
+                active_repo_id BLOB,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
+        r#"
+            CREATE TABLE project_members (
+                id BLOB PRIMARY KEY,
+                project_id BLOB NOT NULL,
+                member_type TEXT NOT NULL CHECK (member_type IN ('human','agent')),
+                user_id TEXT,
+                agent_id BLOB,
+                member_name TEXT,
+                role TEXT,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                default_workspace_path TEXT,
+                allowed_skill_ids TEXT NOT NULL DEFAULT '[]',
+                execution_config TEXT NOT NULL DEFAULT '{}',
+                is_default BOOLEAN NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+            )
+            "#,
         r#"
             CREATE TABLE chat_sessions (
                 id BLOB PRIMARY KEY,
@@ -274,6 +308,21 @@ async fn insert_test_session_agent(
     .expect("insert session agent")
 }
 
+async fn insert_test_project(pool: &SqlitePool, project_id: Uuid) {
+    sqlx::query(
+        r#"
+        INSERT INTO projects (id, name, default_workspace_path)
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(project_id)
+    .bind("test project")
+    .bind("/tmp/project-default")
+    .execute(pool)
+    .await
+    .expect("insert project");
+}
+
 fn finished_count(msg_store: &MsgStore) -> usize {
     msg_store
         .get_history()
@@ -308,6 +357,62 @@ async fn default_route_ignores_unmentioned_free_mode_user_messages() {
         .expect("resolve default mention");
 
     assert_eq!(default_mention, None);
+}
+
+#[tokio::test]
+async fn mention_resolution_auto_configures_project_member_for_new_session() {
+    let db = setup_chat_runner_db().await;
+    let runner = ChatRunner::new(db.clone());
+    let session_id = Uuid::new_v4();
+    let project_id = Uuid::new_v4();
+    insert_test_project(&db.pool, project_id).await;
+    sqlx::query(
+        r#"
+        INSERT INTO chat_sessions (id, title, status, project_id, default_workspace_path)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(session_id)
+    .bind("test session")
+    .bind(ChatSessionStatus::Active)
+    .bind(project_id)
+    .bind("/tmp/session-default")
+    .execute(&db.pool)
+    .await
+    .expect("insert project session");
+    let agent = insert_test_chat_agent(&db, "OpencodeAgent").await;
+    let member = ProjectMember::create(
+        &db.pool,
+        project_id,
+        ProjectMemberType::Agent,
+        None,
+        Some(agent.id),
+        Some("OpencodeAgent".to_string()),
+        Some("agent".to_string()),
+        1,
+        Some("/tmp/member-workspace".to_string()),
+        vec!["skill-a".to_string()],
+        MemberExecutionConfig::default(),
+        false,
+    )
+    .await
+    .expect("insert project member");
+
+    let (session_agent, resolved_agent) = runner
+        .resolve_session_agent_for_mention(session_id, "opencodeagent")
+        .await
+        .expect("resolve mention")
+        .expect("project member is materialized");
+
+    assert_eq!(resolved_agent.id, agent.id);
+    assert_eq!(resolved_agent.name, "OpencodeAgent");
+    assert_eq!(session_agent.agent_id, agent.id);
+    assert_eq!(session_agent.project_member_id, Some(member.id));
+    assert_eq!(
+        session_agent.workspace_path.as_deref(),
+        Some("/tmp/member-workspace")
+    );
+    assert_eq!(session_agent.allowed_skill_ids.0, vec!["skill-a"]);
 }
 
 #[tokio::test]
