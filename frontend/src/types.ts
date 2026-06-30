@@ -820,7 +820,7 @@ export interface SourceControlCommitResponse {
   committed_paths: string[];
   additions: number;
   deletions: number;
-  status: SessionSourceControlStatus;
+  status?: SessionSourceControlStatus | null;
 }
 
 export interface SourceControlCommitError {

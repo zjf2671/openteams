@@ -137,6 +137,15 @@ check(
 );
 
 check(
+  "confirms staged shared files before commit",
+  source.includes('const stagedSection = findSection(viewModel, "staged")') &&
+    source.includes("const stagedFiles = stagedSection?.files ?? []") &&
+    source.includes("const forceShared = await getSharedForce(stagedFiles, commitLabel)") &&
+    source.includes("force_shared: forceShared || undefined"),
+  source,
+);
+
+check(
   "refreshes source-control after conflict resolution completes",
   source.includes("onCompleted") &&
     source.includes("closeConflictResolutionForScope(scopeKey)") &&

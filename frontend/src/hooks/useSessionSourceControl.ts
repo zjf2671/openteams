@@ -489,7 +489,21 @@ export function useSessionSourceControl({
           ...request,
           session_id: context.sessionId,
         });
-        applyStatus(response.status);
+        if (response.status) {
+          applyStatus(response.status);
+        } else {
+          applyStatus(
+            sourceControlStatusWithHead(
+              optimisticSourceControlStatus(
+                statusRef.current,
+                "discard",
+                response.committed_paths,
+              ),
+              response.commit_sha,
+            ),
+          );
+          void refresh().catch(() => undefined);
+        }
         return response;
       } catch (err) {
         const embeddedStatus = sourceControlStatusFromError(err);
@@ -499,7 +513,7 @@ export function useSessionSourceControl({
         throw err;
       }
     },
-    [applyStatus, flushBatchedOperation, projectId, sessionId],
+    [applyStatus, flushBatchedOperation, projectId, refresh, sessionId],
   );
 
   return {

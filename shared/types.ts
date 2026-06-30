@@ -172,7 +172,7 @@ export type SourceControlOperationResponse = { ok: boolean, succeeded: Array<str
 
 export type SourceControlCommitRequest = { session_id: string, workspace_id?: string | null, message: string, expected_staged_paths: Array<string>, force_shared?: boolean | null, work_item_ids?: Array<string>, expected_head_sha?: string | null, };
 
-export type SourceControlCommitResponse = { commit_sha: string, short_sha: string, branch: string, message: string, committed_paths: Array<string>, additions: number, deletions: number, status: SessionSourceControlStatus, };
+export type SourceControlCommitResponse = { commit_sha: string, short_sha: string, branch: string, message: string, committed_paths: Array<string>, additions: number, deletions: number, status?: SessionSourceControlStatus | null, };
 
 export type SourceControlCommitError = { code: SourceControlCommitErrorCode, message: string, conflicting_paths?: Array<string>, status?: SessionSourceControlStatus, };
 
