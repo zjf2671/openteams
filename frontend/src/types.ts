@@ -1672,7 +1672,7 @@ export interface WorkspacePathEntry {
 export interface WorkspaceChanges {
   modified: WorkspaceChangedFile[];
   added: WorkspaceChangedFile[];
-  deleted: WorkspacePathEntry[];
+  deleted: WorkspaceChangedFile[];
   untracked: WorkspaceChangedFile[];
 }
 
