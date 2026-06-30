@@ -2356,6 +2356,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       const [
         backendMsgs,
         backendAgents,
+        sessionAgents,
         projectMembers,
         runtimeSnapshot,
       ] =
@@ -2364,6 +2365,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           chatAgentsApi
             .list(projectId ? { projectId } : undefined)
             .catch(() => []),
+          sessionAgentsApi.list(sid).catch(() => []),
           projectId ? projectApi.listMembers(projectId).catch(() => []) : [],
           chatRuntimeApi.getSnapshot(sid).catch(() => ({
             session_id: sid,
@@ -2381,11 +2383,20 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             member.member_name as string,
           ]),
       );
+      const sessionAgentByAgentId = new Map(
+        sessionAgents.map((sessionAgent) => [
+          sessionAgent.agent_id,
+          sessionAgent,
+        ]),
+      );
       const agentNamesById: Record<string, string> = {};
       const agentModelsById: Record<string, string | null> = {};
       for (const a of backendAgents) {
         agentNamesById[a.id] = projectMemberNameByAgentId.get(a.id) ?? a.name;
-        agentModelsById[a.id] = a.model_name ?? null;
+        agentModelsById[a.id] = effectiveSessionAgentModelName(
+          a,
+          sessionAgentByAgentId.get(a.id),
+        );
       }
       agentNamesByIdRef.current = agentNamesById;
       agentModelsByIdRef.current = agentModelsById;

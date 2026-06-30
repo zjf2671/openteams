@@ -1252,6 +1252,7 @@ impl ChatRunner {
         runner: ChatRunner,
         source_message_id: Uuid,
         client_message_id: Option<String>,
+        run_model: Option<String>,
         source_message_created_at: chrono::DateTime<Utc>,
         source_message_content: String,
         agent_name: String,
@@ -1751,6 +1752,7 @@ impl ChatRunner {
                             "session_id": session_id,
                             "session_agent_id": session_agent_id,
                             "agent_id": agent_id,
+                            "model": run_model.as_deref(),
                             "source_message_id": source_message_id,
                             "client_message_id": client_message_id,
                             "agent_session_id": agent_session_id,
@@ -1933,6 +1935,7 @@ impl ChatRunner {
                                 error_type.as_ref(),
                                 matches!(completion_status, RunCompletionStatus::Stopped),
                                 Some(&token_usage),
+                                run_model.as_deref(),
                                 protocol_retry_attempt,
                             )
                             .await;
@@ -2060,6 +2063,7 @@ impl ChatRunner {
                                             visible_error_content
                                                 .map(|content| (content, error_type.as_ref())),
                                             Some(&token_usage),
+                                            run_model.as_deref(),
                                             None,
                                         )
                                         .await
@@ -2162,6 +2166,7 @@ impl ChatRunner {
                                     client_message_id.as_deref(),
                                     visible_error_content,
                                     error_type.as_ref(),
+                                    run_model.as_deref(),
                                 )
                                 .await
                             {
