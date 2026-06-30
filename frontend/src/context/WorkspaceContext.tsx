@@ -29,6 +29,7 @@ import {
   QueuedMessageStatus,
   UpdateChatSession,
   WorkflowCardProjection,
+  WorkflowSessionStatusResponse,
   WorkflowSidebarState,
   WorkspaceChangesResponse,
   JsonValue,
@@ -72,6 +73,12 @@ import {
 } from '@/lib/asyncResource';
 import { notifyBuildStatsUsageUpdated } from '@/lib/buildStatsEvents';
 import { notifySourceControlRefreshRequested } from '@/lib/sourceControlEvents';
+import {
+  hasRunningWorkflowActivity,
+  idleWorkflowSessionStatus,
+  isWorkflowSidebarRunning,
+  resolveWorkflowSidebarState,
+} from '@/lib/workflowSidebarState';
 
 type ListUpdater<T> = T[] | ((prev: T[]) => T[]);
 
@@ -326,27 +333,6 @@ type SessionRunningIndicators = {
   pendingWorkflowReviewId: string | null;
 };
 
-const workflowRunningSidebarStates = new Set<WorkflowSidebarState>([
-  'running',
-  'reviewing',
-  'waiting',
-]);
-
-const resolveWorkflowSidebarState = (status: {
-  sidebar_workflow_state?: WorkflowSidebarState | null;
-  has_running_workflow: boolean;
-  pending_workflow_input_id?: string | null;
-  pending_workflow_review_id?: string | null;
-}): WorkflowSidebarState => {
-  if (status.sidebar_workflow_state) return status.sidebar_workflow_state;
-  if (status.pending_workflow_review_id) return 'waiting_user_review';
-  if (status.pending_workflow_input_id) return 'waiting_input';
-  return status.has_running_workflow ? 'running' : 'idle';
-};
-
-const isWorkflowSidebarRunning = (state: WorkflowSidebarState): boolean =>
-  workflowRunningSidebarStates.has(state);
-
 const loadSessionRunningIndicators = async (
   sessionIds: string[],
   ignoredSessionAgentIds?: ReadonlySet<string>,
@@ -362,12 +348,7 @@ const loadSessionRunningIndicators = async (
           : sessionAgentsApi.list(sessionId).catch(() => []),
         workflowApi
           .getSessionStatus(sessionId)
-          .catch(() => ({
-            sidebar_workflow_state: 'idle' as const,
-            has_running_workflow: false,
-            pending_workflow_input_id: null,
-            pending_workflow_review_id: null,
-          })),
+          .catch(() => idleWorkflowSessionStatus),
       ]);
       const workflowSidebarState = resolveWorkflowSidebarState(workflowStatus);
       return [
@@ -1246,6 +1227,7 @@ interface WorkspaceContextProps {
   workflowCard: WorkflowCardProjection | null;
   workflowCardAsync: AsyncResourceState<WorkflowCardProjection | null>;
   refreshWorkflowCard: (messageId: string) => Promise<void>;
+  refreshSessionWorkflowStatus: (sessionId: string) => Promise<void>;
   workspaceChanges: WorkspaceChangesResponse | null;
   workspaceChangesAsync: AsyncResourceState<WorkspaceChangesResponse | null>;
   refreshWorkspaceChanges: (
@@ -1363,6 +1345,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const sessionRunningIndicatorRequestsRef = useRef<Map<string, Promise<void>>>(
     new Map(),
   );
+  const sessionWorkflowStatusRequestsRef = useRef<
+    Map<string, Promise<WorkflowSessionStatusResponse | null>>
+  >(new Map());
   const [chatInputModeBySessionId, setChatInputModeBySessionId] = useState<
     Record<string, ChatInputMode>
   >({});
@@ -2734,17 +2719,39 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     [],
   );
 
-  const refreshSessionWorkflowRunningIndicator = useCallback(
+  const loadSessionWorkflowStatus = useCallback(
+    async (
+      sessionId: string,
+    ): Promise<WorkflowSessionStatusResponse | null> => {
+      if (!sessionId) return null;
+      const existing =
+        sessionWorkflowStatusRequestsRef.current.get(sessionId);
+      if (existing) return existing;
+
+      const request = workflowApi
+        .getSessionStatus(sessionId)
+        .catch(() => null)
+        .finally(() => {
+          if (
+            sessionWorkflowStatusRequestsRef.current.get(sessionId) === request
+          ) {
+            sessionWorkflowStatusRequestsRef.current.delete(sessionId);
+          }
+        });
+      sessionWorkflowStatusRequestsRef.current.set(sessionId, request);
+      return request;
+    },
+    [],
+  );
+
+  const refreshSessionWorkflowStatus = useCallback(
     async (sessionId: string): Promise<void> => {
-      if (!sessionId) return;
-      try {
-        const status = await workflowApi.getSessionStatus(sessionId);
+      const status = await loadSessionWorkflowStatus(sessionId);
+      if (status) {
         setSessionWorkflowStatusIndicators(sessionId, status);
-      } catch {
-        // Sidebar status is best-effort; card/message refresh remains primary.
       }
     },
-    [setSessionWorkflowStatusIndicators],
+    [loadSessionWorkflowStatus, setSessionWorkflowStatusIndicators],
   );
 
   const refreshSessionRunningIndicators = useCallback(
@@ -2759,7 +2766,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         );
         const [sessionAgents, workflowStatus] = await Promise.all([
           sessionAgentsApi.list(sessionId).catch(() => null),
-          workflowApi.getSessionStatus(sessionId).catch(() => null),
+          loadSessionWorkflowStatus(sessionId),
         ]);
 
         if (sessionAgents) {
@@ -2781,7 +2788,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       sessionRunningIndicatorRequestsRef.current.set(sessionId, request);
       return request;
     },
-    [setSessionRunningIndicator, setSessionWorkflowStatusIndicators],
+    [
+      loadSessionWorkflowStatus,
+      setSessionRunningIndicator,
+      setSessionWorkflowStatusIndicators,
+    ],
   );
 
   useEffect(() => {
@@ -2793,7 +2804,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           session.id !== activeSessionId &&
           Boolean(
             session.hasRunningAgent ||
-              session.hasRunningWorkflow ||
+              hasRunningWorkflowActivity(session) ||
               session.hasPendingWorkflowInput ||
               session.hasPendingWorkflowReview ||
               session.hasWorkflowError,
@@ -3458,7 +3469,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             setSessionRunningIndicator(sid, hasRemainingRunningAgent);
             return changed ? next : prev;
           });
-          void refreshSessionWorkflowRunningIndicator(sid);
+          void refreshSessionWorkflowStatus(sid);
         }
         void refreshMembers();
         return;
@@ -3547,7 +3558,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     refreshMessages,
     refreshMemberQueues,
     refreshSessionRunningIndicators,
-    refreshSessionWorkflowRunningIndicator,
+    refreshSessionWorkflowStatus,
     refreshWorkspaceChanges,
     refreshMembers,
     setSessionRunningIndicator,
@@ -3968,6 +3979,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         workflowCard: workflowCardAsync.data,
         workflowCardAsync,
         refreshWorkflowCard,
+        refreshSessionWorkflowStatus,
         workspaceChanges: workspaceChangesAsync.data,
         workspaceChangesAsync,
         refreshWorkspaceChanges,

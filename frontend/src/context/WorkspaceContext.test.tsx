@@ -28,6 +28,10 @@ const workflowCardSource = readFileSync(
   new URL('../components/workflow/WorkflowCard.tsx', import.meta.url),
   'utf8',
 );
+const workflowSidebarStateSource = readFileSync(
+  new URL('../lib/workflowSidebarState.ts', import.meta.url),
+  'utf8',
+);
 
 const refreshAllIndex = source.indexOf('const refreshAll = useCallback');
 const refreshProjectsIndex = source.indexOf('await refreshProjects();', refreshAllIndex);
@@ -408,12 +412,32 @@ check(
   source,
 );
 check(
+  'workflow card refresh syncs session workflow sidebar status through the shared loader',
+  source.includes('refreshSessionWorkflowStatus') &&
+    source.includes('loadSessionWorkflowStatus') &&
+    source.includes('sessionWorkflowStatusRequestsRef') &&
+    /workflowApi\s*\.\s*getSessionStatus\(sessionId\)/.test(source) &&
+    workflowCardSource.includes('refreshSessionWorkflowStatus') &&
+    workflowCardSource.includes('void refreshSessionWorkflowStatus(sessionId)'),
+  { source, workflowCardSource },
+);
+check(
+  'workflow sidebar running states are centralized',
+  source.includes("from '@/lib/workflowSidebarState'") &&
+    workflowSidebarStateSource.includes('workflowRunningSidebarStates') &&
+    workflowSidebarStateSource.includes('workflowNonRunningSidebarStates') &&
+    workflowSidebarStateSource.includes('resolveWorkflowSidebarState') &&
+    workflowSidebarStateSource.includes('hasRunningWorkflowActivity') &&
+    workflowCardSource.includes('refreshSessionWorkflowStatus'),
+  { source, workflowSidebarStateSource, workflowCardSource },
+);
+check(
   'polls non-active running and waiting workflow sessions so sidebar icons update',
   source.includes('SIDEBAR_RUNNING_INDICATOR_POLL_MS') &&
     source.includes('runningSidebarSessionIds') &&
     source.includes('session.id !== activeSessionId') &&
     source.includes('session.hasRunningAgent') &&
-    source.includes('session.hasRunningWorkflow') &&
+    source.includes('hasRunningWorkflowActivity(session)') &&
     source.includes('session.hasPendingWorkflowInput') &&
     source.includes('session.hasPendingWorkflowReview') &&
     source.includes('refreshRunningSidebarSessions') &&

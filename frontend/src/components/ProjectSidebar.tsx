@@ -61,6 +61,10 @@ import {
   projectDisplayName,
 } from "@/lib/projectDisplay";
 import { sanitizeProjectName } from "@/lib/projectName";
+import {
+  hasRunningWorkflowActivity,
+  workflowNonRunningSidebarStates,
+} from "@/lib/workflowSidebarState";
 import type { ShellOptionsMock } from "@/mockApiData";
 import type {
   ChatTeamPreset,
@@ -138,24 +142,6 @@ const sidebarItemClass =
 
 const visibleSessionLimit = 6;
 const blankTeamId = "blank_team";
-
-const runningWorkflowSidebarStates = new Set([
-  "running",
-  "reviewing",
-  "waiting",
-]);
-
-const workflowNonRunningSidebarStates = new Set([
-  "waiting_input",
-  "waiting_user_review",
-  "paused",
-  "failed",
-]);
-
-const hasRunningWorkflowActivity = (session: Session): boolean =>
-  !workflowNonRunningSidebarStates.has(session.workflowSidebarState ?? "idle") &&
-  (Boolean(session.hasRunningWorkflow) ||
-    runningWorkflowSidebarStates.has(session.workflowSidebarState ?? "idle"));
 
 const hasRunningSessionActivity = (session: Session): boolean =>
   Boolean(session.hasRunningAgent) || hasRunningWorkflowActivity(session);

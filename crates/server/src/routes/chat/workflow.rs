@@ -100,6 +100,87 @@ fn is_sidebar_running_workflow_state(state: WorkflowSidebarState) -> bool {
     )
 }
 
+fn execution_base_sidebar_state(status: &WorkflowExecutionStatus) -> WorkflowSidebarState {
+    if status == &WorkflowExecutionStatus::Pending
+        || status == &WorkflowExecutionStatus::Running
+        || status == &WorkflowExecutionStatus::Recompiling
+    {
+        WorkflowSidebarState::Running
+    } else if status == &WorkflowExecutionStatus::Waiting {
+        WorkflowSidebarState::Waiting
+    } else if status == &WorkflowExecutionStatus::Paused {
+        WorkflowSidebarState::Paused
+    } else if status == &WorkflowExecutionStatus::Failed {
+        WorkflowSidebarState::Failed
+    } else {
+        WorkflowSidebarState::Idle
+    }
+}
+
+fn sidebar_state_priority(state: WorkflowSidebarState) -> u8 {
+    match state {
+        WorkflowSidebarState::Reviewing => 60,
+        WorkflowSidebarState::Running => 50,
+        WorkflowSidebarState::Failed => 40,
+        WorkflowSidebarState::Waiting => 30,
+        WorkflowSidebarState::WaitingUserReview => 25,
+        WorkflowSidebarState::WaitingInput => 25,
+        WorkflowSidebarState::Paused => 20,
+        WorkflowSidebarState::Idle => 0,
+    }
+}
+
+fn merge_sidebar_state(
+    current: WorkflowSidebarState,
+    candidate: WorkflowSidebarState,
+) -> WorkflowSidebarState {
+    if sidebar_state_priority(candidate) > sidebar_state_priority(current) {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn execution_accepts_live_step_sidebar_state(status: &WorkflowExecutionStatus) -> bool {
+    status == &WorkflowExecutionStatus::Pending
+        || status == &WorkflowExecutionStatus::Running
+        || status == &WorkflowExecutionStatus::Recompiling
+        || status == &WorkflowExecutionStatus::Waiting
+}
+
+fn execution_may_have_sidebar_relevant_steps(status: &WorkflowExecutionStatus) -> bool {
+    execution_accepts_live_step_sidebar_state(status) || status == &WorkflowExecutionStatus::Paused
+}
+
+fn step_sidebar_state_for_execution(
+    execution_status: &WorkflowExecutionStatus,
+    step_status: &WorkflowStepStatus,
+) -> Option<WorkflowSidebarState> {
+    let accepts_live_steps = execution_accepts_live_step_sidebar_state(execution_status);
+    if step_status == &WorkflowStepStatus::WaitingReview && accepts_live_steps {
+        Some(WorkflowSidebarState::Reviewing)
+    } else if step_status == &WorkflowStepStatus::Failed
+        && (accepts_live_steps || execution_status == &WorkflowExecutionStatus::Paused)
+    {
+        Some(WorkflowSidebarState::Failed)
+    } else if (step_status == &WorkflowStepStatus::WaitingInput
+        || step_status == &WorkflowStepStatus::PreCompleted)
+        && accepts_live_steps
+    {
+        Some(WorkflowSidebarState::Waiting)
+    } else if (step_status == &WorkflowStepStatus::Pending
+        || step_status == &WorkflowStepStatus::Ready
+        || step_status == &WorkflowStepStatus::Running
+        || step_status == &WorkflowStepStatus::Revising
+        || step_status == &WorkflowStepStatus::InterruptRequested)
+        && accepts_live_steps
+    {
+        Some(WorkflowSidebarState::Running)
+    } else {
+        None
+    }
+}
+
 async fn derive_sidebar_workflow_state(
     pool: &SqlitePool,
     executions: &[WorkflowExecution],
@@ -113,78 +194,26 @@ async fn derive_sidebar_workflow_state(
         return Ok(WorkflowSidebarState::WaitingInput);
     }
 
-    let mut saw_running_execution = false;
-    let mut saw_waiting_execution = false;
-    let mut saw_paused_execution = false;
-    let mut saw_failed_execution = false;
-    let mut saw_failed_step = false;
-    let mut saw_waiting_step = false;
+    let mut state = WorkflowSidebarState::Idle;
 
     for execution in executions {
-        match execution.status {
-            WorkflowExecutionStatus::Pending
-            | WorkflowExecutionStatus::Running
-            | WorkflowExecutionStatus::Recompiling => {
-                saw_running_execution = true;
-            }
-            WorkflowExecutionStatus::Waiting => {
-                saw_waiting_execution = true;
-            }
-            WorkflowExecutionStatus::Paused => {
-                saw_paused_execution = true;
-            }
-            WorkflowExecutionStatus::Failed => {
-                saw_failed_execution = true;
-            }
-            WorkflowExecutionStatus::Completed => {}
+        state = merge_sidebar_state(state, execution_base_sidebar_state(&execution.status));
+
+        if !execution_may_have_sidebar_relevant_steps(&execution.status) {
+            continue;
         }
 
         let steps = WorkflowStep::find_by_execution(pool, execution.id).await?;
-        if steps
-            .iter()
-            .any(|step| step.status == WorkflowStepStatus::WaitingReview)
-        {
-            return Ok(WorkflowSidebarState::Reviewing);
-        }
-        if steps
-            .iter()
-            .any(|step| step.status == WorkflowStepStatus::Failed)
-        {
-            saw_failed_step = true;
-        }
-        if steps.iter().any(|step| {
-            matches!(
-                step.status,
-                WorkflowStepStatus::WaitingInput | WorkflowStepStatus::PreCompleted
-            )
-        }) {
-            saw_waiting_step = true;
-        }
-        if steps.iter().any(|step| {
-            matches!(
-                step.status,
-                WorkflowStepStatus::Pending
-                    | WorkflowStepStatus::Ready
-                    | WorkflowStepStatus::Running
-                    | WorkflowStepStatus::Revising
-                    | WorkflowStepStatus::InterruptRequested
-            )
-        }) {
-            saw_running_execution = true;
+        for step in steps {
+            if let Some(step_state) =
+                step_sidebar_state_for_execution(&execution.status, &step.status)
+            {
+                state = merge_sidebar_state(state, step_state);
+            }
         }
     }
 
-    if saw_running_execution {
-        Ok(WorkflowSidebarState::Running)
-    } else if saw_failed_step || saw_failed_execution {
-        Ok(WorkflowSidebarState::Failed)
-    } else if saw_waiting_execution || saw_waiting_step {
-        Ok(WorkflowSidebarState::Waiting)
-    } else if saw_paused_execution {
-        Ok(WorkflowSidebarState::Paused)
-    } else {
-        Ok(WorkflowSidebarState::Idle)
-    }
+    Ok(state)
 }
 
 async fn find_pending_workflow_input_id(
@@ -192,6 +221,10 @@ async fn find_pending_workflow_input_id(
     executions: &[WorkflowExecution],
 ) -> Result<Option<Uuid>, sqlx::Error> {
     for execution in executions {
+        if !execution_accepts_live_step_sidebar_state(&execution.status) {
+            continue;
+        }
+
         let input_id = sqlx::query_scalar::<_, Uuid>(
             r#"
             SELECT t.id
@@ -228,6 +261,10 @@ async fn find_pending_workflow_review_id(
     executions: &[WorkflowExecution],
 ) -> Result<Option<Uuid>, sqlx::Error> {
     for execution in executions {
+        if !execution_accepts_live_step_sidebar_state(&execution.status) {
+            continue;
+        }
+
         let review_id = sqlx::query_scalar::<_, Uuid>(
             r#"
             SELECT t.id
@@ -1776,5 +1813,94 @@ mod tests {
         ] {
             assert!(!is_sidebar_running_workflow_state(state));
         }
+    }
+
+    #[test]
+    fn only_live_executions_accept_live_step_sidebar_state() {
+        for status in [
+            WorkflowExecutionStatus::Pending,
+            WorkflowExecutionStatus::Running,
+            WorkflowExecutionStatus::Recompiling,
+            WorkflowExecutionStatus::Waiting,
+        ] {
+            assert!(execution_accepts_live_step_sidebar_state(&status));
+            assert!(execution_may_have_sidebar_relevant_steps(&status));
+        }
+
+        assert!(execution_may_have_sidebar_relevant_steps(
+            &WorkflowExecutionStatus::Paused
+        ));
+
+        for status in [
+            WorkflowExecutionStatus::Failed,
+            WorkflowExecutionStatus::Completed,
+        ] {
+            assert!(!execution_accepts_live_step_sidebar_state(&status));
+            assert!(!execution_may_have_sidebar_relevant_steps(&status));
+        }
+
+        assert!(!execution_accepts_live_step_sidebar_state(
+            &WorkflowExecutionStatus::Paused
+        ));
+    }
+
+    #[test]
+    fn passive_execution_steps_cannot_look_running_in_sidebar() {
+        for execution_status in [
+            WorkflowExecutionStatus::Paused,
+            WorkflowExecutionStatus::Failed,
+            WorkflowExecutionStatus::Completed,
+        ] {
+            for step_status in [
+                WorkflowStepStatus::WaitingReview,
+                WorkflowStepStatus::WaitingInput,
+                WorkflowStepStatus::Pending,
+                WorkflowStepStatus::Ready,
+                WorkflowStepStatus::Running,
+                WorkflowStepStatus::Revising,
+                WorkflowStepStatus::InterruptRequested,
+            ] {
+                assert_eq!(
+                    step_sidebar_state_for_execution(&execution_status, &step_status),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn paused_failed_step_keeps_sidebar_error_attention() {
+        assert_eq!(
+            step_sidebar_state_for_execution(
+                &WorkflowExecutionStatus::Paused,
+                &WorkflowStepStatus::Failed
+            ),
+            Some(WorkflowSidebarState::Failed)
+        );
+    }
+
+    #[test]
+    fn live_execution_steps_refine_sidebar_state() {
+        assert_eq!(
+            step_sidebar_state_for_execution(
+                &WorkflowExecutionStatus::Running,
+                &WorkflowStepStatus::WaitingReview
+            ),
+            Some(WorkflowSidebarState::Reviewing)
+        );
+        assert_eq!(
+            step_sidebar_state_for_execution(
+                &WorkflowExecutionStatus::Running,
+                &WorkflowStepStatus::WaitingInput
+            ),
+            Some(WorkflowSidebarState::Waiting)
+        );
+        assert_eq!(
+            step_sidebar_state_for_execution(
+                &WorkflowExecutionStatus::Running,
+                &WorkflowStepStatus::Running
+            ),
+            Some(WorkflowSidebarState::Running)
+        );
     }
 }

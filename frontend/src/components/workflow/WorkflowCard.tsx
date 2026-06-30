@@ -56,7 +56,11 @@ export function WorkflowCard({
   planGenerationMeta,
 }: WorkflowCardProps) {
   const { t } = useAppTranslation();
-  const { sessionsAsync, workflowRuntimeLinesByExecution } = useWorkspace();
+  const {
+    sessionsAsync,
+    workflowRuntimeLinesByExecution,
+    refreshSessionWorkflowStatus,
+  } = useWorkspace();
   const sessionTitle = useMemo(() => {
     const session = sessionsAsync.data.find((s) => s.id === sessionId);
     return session?.title ?? null;
@@ -92,12 +96,18 @@ export function WorkflowCard({
     try {
       const data = await chatMessagesApi.getWorkflowCard(messageId, 'full');
       setProjection(data);
+      void refreshSessionWorkflowStatus(sessionId);
     } catch {
       if (cardType === 'workflow_plan_generation') {
         setProjection(null);
       }
     }
-  }, [cardType, messageId]);
+  }, [
+    cardType,
+    messageId,
+    refreshSessionWorkflowStatus,
+    sessionId,
+  ]);
 
   useEffect(() => {
     void loadProjection();
