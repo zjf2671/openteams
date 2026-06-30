@@ -352,9 +352,6 @@ pub fn session_worktree_api_error(err: SessionWorktreeError) -> ApiError {
                 "Base workspace is on '{actual}', expected '{expected}'. Switch to the base branch before merging."
             ))
         }
-        SessionWorktreeError::BaseWorkspaceDirty => ApiError::Conflict(
-            "Base workspace has uncommitted changes. Commit or stash before merging.".to_string(),
-        ),
         SessionWorktreeError::MergeOperationInProgress => ApiError::Conflict(
             "A git merge or rebase is already in progress in the base workspace.".to_string(),
         ),
