@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Onboarding Concept 2 - Interactive Wizard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #08090a;
+            --surface: #121315;
+            --surface-2: #191b20;
+            --text-main: #f2f2f2;
+            --text-muted: #8a8f98;
+            --border: rgba(255, 255, 255, 0.08);
+            --accent: #5e6ad2;
+            --success: #27b973;
+            --danger: #ef6461;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background:
+                linear-gradient(135deg, rgba(94, 106, 210, 0.1), transparent 38%),
+                var(--bg);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .wizard-container {
+            display: grid;
+            grid-template-columns: 260px minmax(0, 1fr);
+            width: min(940px, 100%);
+            min-height: 610px;
+            background: rgba(8, 9, 10, 0.84);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+            overflow: hidden;
+        }
+
+        .sidebar {
+            background: rgba(255, 255, 255, 0.022);
+            border-right: 1px solid var(--border);
+            padding: 28px 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .brand-mark {
+            width: 26px;
+            height: 26px;
+            border-radius: 7px;
+            background: linear-gradient(135deg, #ffffff, #9ca3ff);
+        }
+
+        .steps { display: grid; gap: 10px; }
+
+        .step {
+            display: grid;
+            grid-template-columns: 26px minmax(0, 1fr);
+            align-items: center;
+            gap: 10px;
+            border: 1px solid transparent;
+            border-radius: 10px;
+            padding: 10px;
+            color: var(--text-muted);
+            font-size: 13px;
+            cursor: pointer;
+            background: transparent;
+            text-align: left;
+            font: inherit;
+        }
+
+        .step:hover { background: rgba(255, 255, 255, 0.035); }
+        .step.active {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.06);
+            border-color: var(--border);
+        }
+        .step.complete .step-circle {
+            background: rgba(39, 185, 115, 0.18);
+            color: var(--success);
+            border-color: rgba(39, 185, 115, 0.36);
+        }
+
+        .step-circle {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: inherit;
+        }
+
+        .sidebar-note {
+            margin-top: auto;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            background: rgba(255, 255, 255, 0.028);
+        }
+
+        .sidebar-note h3 { font-size: 13px; margin-bottom: 8px; }
+        .sidebar-note p { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+
+        .content {
+            padding: 36px;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 32px;
+        }
+
+        .progress-wrap {
+            flex: 1;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .progress-wrap span {
+            display: block;
+            width: 33%;
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            transition: width 0.25s ease;
+        }
+
+        .step-count {
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        .panel { display: none; }
+        .panel.active {
+            display: block;
+            animation: rise 0.22s ease;
+        }
+
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; letter-spacing: 0; }
+        .description { color: var(--text-muted); font-size: 14px; line-height: 1.55; margin-bottom: 26px; }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+        }
+
+        .input-group { margin-bottom: 18px; }
+        label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+
+        input,
+        select {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.035);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 11px 12px;
+            color: var(--text-main);
+            font: inherit;
+            font-size: 14px;
+            outline: 0;
+        }
+
+        select option { color: #101010; }
+        input:focus,
+        select:focus {
+            border-color: rgba(255, 255, 255, 0.24);
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .option-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .option-card {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.028);
+            padding: 16px;
+            cursor: pointer;
+            min-height: 142px;
+            transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+        }
+
+        .option-card:hover,
+        .option-card.selected {
+            transform: translateY(-2px);
+            border-color: rgba(94, 106, 210, 0.65);
+            background: rgba(94, 106, 210, 0.1);
+        }
+
+        .option-card h3 { font-size: 14px; margin-bottom: 8px; }
+        .option-card p { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+
+        .agent-picker {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .agent-toggle {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            background: rgba(255, 255, 255, 0.026);
+            cursor: pointer;
+        }
+
+        .agent-toggle input {
+            width: 16px;
+            margin-top: 2px;
+            accent-color: var(--accent);
+        }
+
+        .agent-toggle strong { display: block; font-size: 13px; margin-bottom: 4px; }
+        .agent-toggle span { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+
+        .invite-box {
+            display: flex;
+            gap: 10px;
+            margin: 18px 0 14px;
+        }
+
+        .invite-box input { flex: 1; }
+
+        .btn {
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-main);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.18);
+            transform: translateY(-1px);
+        }
+
+        .btn.primary {
+            background: #f5f5f5;
+            color: #050505;
+            border-color: transparent;
+        }
+
+        .btn:disabled {
+            opacity: 0.42;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .invite-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 7px 9px;
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        .pill button {
+            border: 0;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .summary {
+            display: grid;
+            gap: 10px;
+            margin-top: 22px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            background: rgba(255, 255, 255, 0.026);
+        }
+
+        .summary-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .summary-row strong {
+            color: var(--text-main);
+            font-weight: 500;
+            text-align: right;
+        }
+
+        .footer {
+            margin-top: auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding-top: 26px;
+            border-top: 1px solid var(--border);
+        }
+
+        .validation {
+            color: var(--danger);
+            font-size: 12px;
+            min-height: 16px;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translate(-50%, 12px);
+            opacity: 0;
+            pointer-events: none;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--text-main);
+            font-size: 13px;
+            padding: 10px 14px;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translate(-50%, 0);
+        }
+
+        @media (max-width: 820px) {
+            .wizard-container { grid-template-columns: 1fr; }
+            .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
+            .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .step { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+            .sidebar-note { display: none; }
+            .content { padding: 24px; }
+            .form-grid,
+            .option-grid,
+            .agent-picker { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <main class="wizard-container">
+        <aside class="sidebar">
+            <div class="brand"><span class="brand-mark"></span>OpenTeams setup</div>
+            <div class="steps" aria-label="Onboarding steps">
+                <button class="step active" data-step="0"><span class="step-circle">1</span><span>Profile</span></button>
+                <button class="step" data-step="1"><span class="step-circle">2</span><span>Workspace</span></button>
+                <button class="step" data-step="2"><span class="step-circle">3</span><span>Team</span></button>
+            </div>
+            <div class="sidebar-note">
+                <h3>Session draft</h3>
+                <p id="sidebarSummary">Complete each step to generate a ready-to-run collaboration room.</p>
+            </div>
+        </aside>
+
+        <section class="content">
+            <div class="topbar">
+                <div class="progress-wrap"><span id="progressBar"></span></div>
+                <div id="stepCount" class="step-count">Step 1 of 3</div>
+            </div>
+
+            <div class="panel active" data-panel="0">
+                <h1>Set up your profile</h1>
+                <p class="description">Start with the identity other agents and teammates will see in shared chat, reviews, and workflow handoffs.</p>
+                <div class="form-grid">
+                    <div class="input-group">
+                        <label for="fullName">Full name</label>
+                        <input id="fullName" type="text" placeholder="e.g. Jane Doe" value="Jane Doe">
+                    </div>
+                    <div class="input-group">
+                        <label for="role">Role</label>
+                        <input id="role" type="text" placeholder="e.g. Software Engineer" value="Product Engineer">
+                    </div>
+                </div>
+                <div class="input-group">
+                    <label for="focus">Primary focus</label>
+                    <select id="focus">
+                        <option>Frontend implementation</option>
+                        <option>Backend services</option>
+                        <option>Workflow orchestration</option>
+                        <option>Product design</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="panel" data-panel="1">
+                <h1>Choose a workspace mode</h1>
+                <p class="description">Pick how OpenTeams should prepare files, source control, and checkpoints for this onboarding session.</p>
+                <div class="option-grid" id="workspaceOptions">
+                    <article class="option-card selected" data-value="Isolated worktree">
+                        <h3>Isolated worktree</h3>
+                        <p>Best for agent changes that should be reviewed and merged separately.</p>
+                    </article>
+                    <article class="option-card" data-value="Shared workspace">
+                        <h3>Shared workspace</h3>
+                        <p>Fastest path when the team is already working in one local branch.</p>
+                    </article>
+                    <article class="option-card" data-value="Planning only">
+                        <h3>Planning only</h3>
+                        <p>Create workflow plans and notes without writing project files yet.</p>
+                    </article>
+                </div>
+                <div class="summary">
+                    <div class="summary-row"><span>Default review policy</span><strong id="policyLabel">Strict before merge</strong></div>
+                    <div class="summary-row"><span>Runtime behavior</span><strong id="runtimeLabel">Agents can queue work</strong></div>
+                </div>
+            </div>
+
+            <div class="panel" data-panel="2">
+                <h1>Invite the first team</h1>
+                <p class="description">Select agents for the room and add optional teammates. The summary updates as you make changes.</p>
+                <div class="agent-picker">
+                    <label class="agent-toggle">
+                        <input type="checkbox" checked value="Lead agent">
+                        <span><strong>Lead agent</strong><span>Creates the plan and coordinates handoffs.</span></span>
+                    </label>
+                    <label class="agent-toggle">
+                        <input type="checkbox" checked value="Frontend agent">
+                        <span><strong>Frontend agent</strong><span>Builds UI changes and verifies interactions.</span></span>
+                    </label>
+                    <label class="agent-toggle">
+                        <input type="checkbox" checked value="Reviewer agent">
+                        <span><strong>Reviewer agent</strong><span>Reviews diffs and flags risks.</span></span>
+                    </label>
+                    <label class="agent-toggle">
+                        <input type="checkbox" value="QA agent">
+                        <span><strong>QA agent</strong><span>Runs focused checks and reports regressions.</span></span>
+                    </label>
+                </div>
+                <div class="invite-box">
+                    <input id="inviteInput" type="email" placeholder="teammate@example.com">
+                    <button id="addInviteBtn" class="btn">Add invite</button>
+                </div>
+                <div id="inviteList" class="invite-list"></div>
+                <div class="summary" id="finalSummary"></div>
+            </div>
+
+            <div class="footer">
+                <div id="validation" class="validation"></div>
+                <div>
+                    <button id="backBtn" class="btn" disabled>Back</button>
+                    <button id="nextBtn" class="btn primary">Continue</button>
+                </div>
+            </div>
+        </section>
+    </main>
+    <div id="toast" class="toast">Setup updated</div>
+
+    <script>
+        const panels = [...document.querySelectorAll('.panel')];
+        const steps = [...document.querySelectorAll('.step')];
+        const progressBar = document.querySelector('#progressBar');
+        const stepCount = document.querySelector('#stepCount');
+        const backBtn = document.querySelector('#backBtn');
+        const nextBtn = document.querySelector('#nextBtn');
+        const validation = document.querySelector('#validation');
+        const sidebarSummary = document.querySelector('#sidebarSummary');
+        const finalSummary = document.querySelector('#finalSummary');
+        const toast = document.querySelector('#toast');
+        const invites = [];
+
+        const setup = {
+            currentStep: 0,
+            workspace: 'Isolated worktree'
+        };
+
+        function showToast(message) {
+            toast.textContent = message;
+            toast.classList.add('show');
+            window.clearTimeout(showToast.timer);
+            showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 1300);
+        }
+
+        function selectedAgents() {
+            return [...document.querySelectorAll('.agent-toggle input:checked')].map((input) => input.value);
+        }
+
+        function renderSummary() {
+            const name = document.querySelector('#fullName').value.trim() || 'Unnamed user';
+            const role = document.querySelector('#role').value.trim() || 'No role set';
+            const focus = document.querySelector('#focus').value;
+            const agents = selectedAgents();
+            sidebarSummary.textContent = `${name} is setting up ${setup.workspace.toLowerCase()} with ${agents.length} agents.`;
+            finalSummary.innerHTML = `
+                <div class="summary-row"><span>Owner</span><strong>${name} - ${role}</strong></div>
+                <div class="summary-row"><span>Focus</span><strong>${focus}</strong></div>
+                <div class="summary-row"><span>Workspace</span><strong>${setup.workspace}</strong></div>
+                <div class="summary-row"><span>Agents</span><strong>${agents.join(', ') || 'None selected'}</strong></div>
+                <div class="summary-row"><span>Invites</span><strong>${invites.length ? invites.join(', ') : 'No teammates yet'}</strong></div>
+            `;
+        }
+
+        function setStep(index) {
+            setup.currentStep = Math.max(0, Math.min(index, panels.length - 1));
+            panels.forEach((panel, panelIndex) => panel.classList.toggle('active', panelIndex === setup.currentStep));
+            steps.forEach((step, stepIndex) => {
+                step.classList.toggle('active', stepIndex === setup.currentStep);
+                step.classList.toggle('complete', stepIndex < setup.currentStep);
+            });
+            progressBar.style.width = `${((setup.currentStep + 1) / panels.length) * 100}%`;
+            stepCount.textContent = `Step ${setup.currentStep + 1} of ${panels.length}`;
+            backBtn.disabled = setup.currentStep === 0;
+            nextBtn.textContent = setup.currentStep === panels.length - 1 ? 'Create room' : 'Continue';
+            validation.textContent = '';
+            renderSummary();
+        }
+
+        function validateStep() {
+            if (setup.currentStep === 0) {
+                const name = document.querySelector('#fullName').value.trim();
+                const role = document.querySelector('#role').value.trim();
+                if (!name || !role) return 'Name and role are required.';
+            }
+            if (setup.currentStep === 2 && selectedAgents().length === 0) {
+                return 'Select at least one agent.';
+            }
+            return '';
+        }
+
+        document.querySelector('#workspaceOptions').addEventListener('click', (event) => {
+            const card = event.target.closest('.option-card');
+            if (!card) return;
+            document.querySelectorAll('.option-card').forEach((item) => item.classList.remove('selected'));
+            card.classList.add('selected');
+            setup.workspace = card.dataset.value;
+            document.querySelector('#policyLabel').textContent = setup.workspace === 'Planning only' ? 'User approval only' : 'Strict before merge';
+            document.querySelector('#runtimeLabel').textContent = setup.workspace === 'Shared workspace' ? 'Agents write to current branch' : 'Agents can queue work';
+            renderSummary();
+            showToast('Workspace mode changed');
+        });
+
+        document.querySelector('#addInviteBtn').addEventListener('click', () => {
+            const input = document.querySelector('#inviteInput');
+            const email = input.value.trim();
+            if (!email) return;
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                validation.textContent = 'Enter a valid email address.';
+                return;
+            }
+            if (!invites.includes(email)) invites.push(email);
+            input.value = '';
+            validation.textContent = '';
+            renderInvites();
+            renderSummary();
+            showToast('Invite added');
+        });
+
+        function renderInvites() {
+            document.querySelector('#inviteList').innerHTML = invites.map((email) => `
+                <span class="pill">${email}<button aria-label="Remove ${email}" data-email="${email}">x</button></span>
+            `).join('');
+        }
+
+        document.querySelector('#inviteList').addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-email]');
+            if (!button) return;
+            const index = invites.indexOf(button.dataset.email);
+            if (index >= 0) invites.splice(index, 1);
+            renderInvites();
+            renderSummary();
+        });
+
+        document.querySelectorAll('input, select').forEach((field) => {
+            field.addEventListener('input', renderSummary);
+            field.addEventListener('change', renderSummary);
+        });
+
+        steps.forEach((step) => step.addEventListener('click', () => setStep(Number(step.dataset.step))));
+        backBtn.addEventListener('click', () => setStep(setup.currentStep - 1));
+        nextBtn.addEventListener('click', () => {
+            const message = validateStep();
+            if (message) {
+                validation.textContent = message;
+                return;
+            }
+            if (setup.currentStep === panels.length - 1) {
+                steps.forEach((step) => step.classList.add('complete'));
+                progressBar.style.width = '100%';
+                showToast('Room created');
+                return;
+            }
+            setStep(setup.currentStep + 1);
+        });
+
+        setStep(0);
+    </script>
+</body>
+</html>

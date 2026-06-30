@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsString,
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -35,6 +36,9 @@ use super::delivery::ProjectDeliveryService;
 use crate::services::session_worktree::{SessionWorktreeError, SessionWorktreeService};
 
 const MAX_INLINE_DIFF_BYTES: u64 = 2 * 1024 * 1024;
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+const SOURCE_CONTROL_DIFF_STAT_PATH_CHUNK: usize = 200;
+const SOURCE_CONTROL_STATUS_SHARED_PATH_LIMIT: usize = 200;
 const SOURCE_CONTROL_CACHE_TTL: Duration = Duration::from_secs(2);
 
 static SESSION_PATH_CACHE: Lazy<DashMap<SessionPathCacheKey, SessionPathCacheEntry>> =
@@ -269,7 +273,9 @@ pub struct SourceControlCommitResponse {
     pub committed_paths: Vec<String>,
     pub additions: usize,
     pub deletions: usize,
-    pub status: SessionSourceControlStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "SessionSourceControlStatus | null")]
+    pub status: Option<SessionSourceControlStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -664,7 +670,6 @@ impl SourceControlService {
         let message = request.message.trim().to_string();
         let force_shared = request.force_shared.unwrap_or(false);
         let requested_work_item_ids = request.work_item_ids.clone();
-        let raw_operation_in_progress = detect_operation_in_progress(&context.workspace_path);
         if message.is_empty() {
             return Err(commit_error(
                 SourceControlCommitErrorCode::EmptyMessage,
@@ -674,49 +679,32 @@ impl SourceControlService {
             ));
         }
 
-        let status = self.status_for_context(pool, &context).await?;
-        let SessionSourceControlStatus::Git {
-            head_sha,
-            branch,
-            staged_changes,
-            external_staged_paths,
-            operation_in_progress,
-            detached_head,
-            ..
-        } = status.clone()
-        else {
+        if !is_git_repo(&context.workspace_path) {
             return Err(commit_error(
                 SourceControlCommitErrorCode::GitOperationBlocked,
                 "Commits are only available for Git workspaces.",
                 None,
-                Some(status),
+                None,
             ));
-        };
+        }
 
-        if let Some(op) = raw_operation_in_progress {
+        if let Some(op) = detect_operation_in_progress(&context.workspace_path) {
             return Err(commit_error(
                 SourceControlCommitErrorCode::GitOperationBlocked,
                 format!("A Git {op:?} operation is in progress."),
                 None,
-                Some(status),
-            ));
-        }
-        if let Some(op) = operation_in_progress {
-            return Err(commit_error(
-                SourceControlCommitErrorCode::GitOperationBlocked,
-                format!("A Git {op:?} operation is in progress."),
                 None,
-                Some(status),
             ));
         }
-        if detached_head {
+        if is_detached_head(&context.workspace_path) {
             return Err(commit_error(
                 SourceControlCommitErrorCode::DetachedHead,
                 "Cannot commit while HEAD is detached.",
                 None,
-                Some(status),
+                None,
             ));
         }
+        let head_sha = current_head_sha(&context.workspace_path);
         if let Some(expected) = request.expected_head_sha.as_deref()
             && head_sha.as_deref() != Some(expected)
         {
@@ -724,17 +712,19 @@ impl SourceControlService {
                 SourceControlCommitErrorCode::StaleStatus,
                 "Workspace HEAD changed. Refresh and retry.",
                 None,
-                Some(status),
+                None,
             ));
         }
 
+        let session_paths = collect_session_paths(pool, context.session_id, &context).await?;
+        let session_path_set = session_paths.keys().cloned().collect::<BTreeSet<_>>();
         let real_staged = staged_paths(&context.workspace_path)?;
         if real_staged.is_empty() {
             return Err(commit_error(
                 SourceControlCommitErrorCode::EmptyStaged,
                 "There are no staged files to commit.",
                 None,
-                Some(status),
+                None,
             ));
         }
 
@@ -744,7 +734,7 @@ impl SourceControlService {
                     SourceControlCommitErrorCode::PathOutsideWorkspace,
                     err,
                     None,
-                    Some(status.clone()),
+                    None,
                 )
             })?;
         let real_staged_set = real_staged.iter().cloned().collect::<BTreeSet<_>>();
@@ -770,37 +760,27 @@ impl SourceControlService {
                 code,
                 "The real Git index no longer matches the expected staged paths.",
                 Some(conflicts),
-                Some(status),
+                None,
             ));
         }
 
+        let external_staged_paths = real_staged
+            .iter()
+            .filter(|path| !session_path_set.contains(*path))
+            .cloned()
+            .collect::<Vec<_>>();
         if !external_staged_paths.is_empty() {
             return Err(commit_error(
                 SourceControlCommitErrorCode::ExternalStagedConflict,
                 "The Git index contains files outside the current session.",
                 Some(external_staged_paths),
-                Some(status),
+                None,
             ));
         }
 
-        let shared_paths = staged_changes
-            .iter()
-            .filter(|file| file.shared)
-            .map(|file| file.path.clone())
-            .collect::<Vec<_>>();
-        if !shared_paths.is_empty() && !force_shared {
-            return Err(commit_error(
-                SourceControlCommitErrorCode::SharedFileRequiresConfirmation,
-                "Staged changes include files shared with another active session.",
-                Some(shared_paths),
-                Some(status),
-            ));
-        }
-
-        let (additions, deletions) = staged_changes.iter().fold((0usize, 0usize), |acc, file| {
-            (acc.0 + file.additions, acc.1 + file.deletions)
-        });
         let committed_paths = real_staged;
+        let (additions, deletions) =
+            diff_totals_for_paths(&context.workspace_path, &committed_paths, GitArea::Staged);
         let work_item_ids = resolve_commit_work_item_ids(
             pool,
             project_id,
@@ -816,6 +796,7 @@ impl SourceControlService {
             )
         })?;
         let short_sha = commit_sha.chars().take(7).collect::<String>();
+        let branch = current_branch(&context.workspace_path).unwrap_or_else(|| "HEAD".to_string());
         ProjectDeliveryService::new()
             .create_commit_records(
                 pool,
@@ -832,7 +813,6 @@ impl SourceControlService {
             )
             .await?;
         invalidate_source_control_caches(&context.workspace_path_string);
-        let status = self.status_for_context(pool, &context).await?;
 
         Ok(SourceControlCommitResponse {
             short_sha,
@@ -842,7 +822,7 @@ impl SourceControlService {
             committed_paths,
             additions,
             deletions,
-            status,
+            status: None,
         })
     }
 
@@ -867,7 +847,13 @@ impl SourceControlService {
         let git = GitCli::new();
         let worktree_status = git.get_worktree_status(&context.workspace_path)?;
         let entries = normalize_status_entries(worktree_status.entries);
-        let shared_paths = collect_shared_paths(pool, context, &session_path_set).await?;
+        let changed_session_paths = session_changed_paths(&entries, &session_path_set);
+        let shared_paths = if changed_session_paths.len() <= SOURCE_CONTROL_STATUS_SHARED_PATH_LIMIT
+        {
+            collect_shared_paths(pool, context, &changed_session_paths).await?
+        } else {
+            HashMap::new()
+        };
         let mut changes = Vec::new();
         let mut staged_changes = Vec::new();
         let mut external_staged_paths = Vec::new();
@@ -1502,6 +1488,22 @@ fn collect_paths_from_runs(
 ) -> Result<BTreeMap<String, SessionPathState>> {
     let mut paths = BTreeMap::<String, SessionPathState>::new();
     let run_ids = runs.iter().map(|run| run.id).collect::<HashSet<_>>();
+    let mut work_records_by_run = HashMap::<Uuid, Vec<WorkRecordJsonLine>>::new();
+    if let Some(session_id) = runs.first().map(|run| run.session_id) {
+        for record in load_work_record_lines(session_id)
+            .into_iter()
+            .filter(|record| {
+                record.session_id == session_id
+                    && record.message_type.eq_ignore_ascii_case("artifact")
+                    && run_ids.contains(&record.run_id)
+            })
+        {
+            work_records_by_run
+                .entry(record.run_id)
+                .or_default()
+                .push(record);
+        }
+    }
 
     for run in runs {
         for entry in load_run_meta_observed_paths(run)? {
@@ -1513,17 +1515,13 @@ fn collect_paths_from_runs(
             }
         }
 
-        for record in load_work_record_lines(run.session_id)
-            .into_iter()
-            .filter(|record| {
-                record.session_id == run.session_id
-                    && record.run_id == run.id
-                    && record.message_type.eq_ignore_ascii_case("artifact")
-            })
-        {
-            for path in extract_workspace_paths_from_artifact_text(&record.content, workspace_path)
-            {
-                observe_session_path(&mut paths, path, run.created_at, true);
+        if let Some(records) = work_records_by_run.get(&run.id) {
+            for record in records {
+                for path in
+                    extract_workspace_paths_from_artifact_text(&record.content, workspace_path)
+                {
+                    observe_session_path(&mut paths, path, run.created_at, true);
+                }
             }
         }
     }
@@ -1772,6 +1770,20 @@ fn normalize_status_path(path: &[u8]) -> Option<String> {
     validate_relative_path(&String::from_utf8_lossy(path)).ok()
 }
 
+fn session_changed_paths(
+    entries: &[StatusPathEntry],
+    session_path_set: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    entries
+        .iter()
+        .filter(|entry| {
+            session_path_set.contains(&entry.path)
+                && (entry.is_untracked || entry.staged != ' ' || entry.unstaged != ' ')
+        })
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
 fn source_file_from_status(
     workspace_path: &Path,
     entry: &StatusPathEntry,
@@ -1783,8 +1795,6 @@ fn source_file_from_status(
         GitArea::Changes => status_from_code(entry.unstaged),
         GitArea::Staged => status_from_code(entry.staged),
     };
-    let (additions, deletions, has_text_diff) =
-        diff_stats(workspace_path, &entry.path, area, entry.is_untracked);
     let absolute_path = workspace_path.join(&entry.path);
     let (is_too_large, is_binary) = file_flags(&absolute_path);
     let shared_session_ids = shared_paths.get(&entry.path).cloned().unwrap_or_default();
@@ -1795,9 +1805,9 @@ fn source_file_from_status(
         path: entry.path.clone(),
         old_path: entry.old_path.clone(),
         status,
-        additions,
-        deletions,
-        has_diff: has_text_diff && !is_too_large && !is_binary,
+        additions: 0,
+        deletions: 0,
+        has_diff: !is_too_large && !is_binary,
         is_binary,
         is_too_large,
         shared: !shared_session_ids.is_empty(),
@@ -1825,7 +1835,14 @@ fn diff_stats(
     is_untracked: bool,
 ) -> (usize, usize, bool) {
     if matches!(area, GitArea::Changes) && is_untracked {
-        return fs::read_to_string(workspace_path.join(path))
+        let absolute_path = workspace_path.join(path);
+        if fs::metadata(&absolute_path)
+            .map(|metadata| !metadata.is_file() || metadata.len() > MAX_INLINE_DIFF_BYTES)
+            .unwrap_or(true)
+        {
+            return (0, 0, false);
+        }
+        return fs::read_to_string(absolute_path)
             .map(|content| (content.lines().count(), 0, true))
             .unwrap_or((0, 0, false));
     }
@@ -1845,6 +1862,28 @@ fn diff_stats(
     parse_numstat(&output).unwrap_or((0, 0, !output.trim().is_empty()))
 }
 
+fn diff_totals_for_paths(workspace_path: &Path, paths: &[String], area: GitArea) -> (usize, usize) {
+    paths
+        .chunks(SOURCE_CONTROL_DIFF_STAT_PATH_CHUNK)
+        .fold((0usize, 0usize), |acc, chunk| {
+            let mut args = vec![
+                "-c".to_string(),
+                "core.quotepath=false".to_string(),
+                "diff".to_string(),
+                "--numstat".to_string(),
+            ];
+            if matches!(area, GitArea::Staged) {
+                args.push("--cached".to_string());
+            }
+            args.push("--".to_string());
+            args.extend(chunk.iter().cloned());
+
+            let output = GitCli::new().git(workspace_path, args).unwrap_or_default();
+            let (additions, deletions) = parse_numstat_totals(&output);
+            (acc.0 + additions, acc.1 + deletions)
+        })
+}
+
 fn parse_numstat(output: &str) -> Option<(usize, usize, bool)> {
     let line = output.lines().find(|line| !line.trim().is_empty())?;
     let mut parts = line.split('\t');
@@ -1856,6 +1895,20 @@ fn parse_numstat(output: &str) -> Option<(usize, usize, bool)> {
     Some((additions.parse().ok()?, deletions.parse().ok()?, true))
 }
 
+fn parse_numstat_totals(output: &str) -> (usize, usize) {
+    output.lines().fold((0usize, 0usize), |acc, line| {
+        let mut parts = line.split('\t');
+        let additions = parts.next().unwrap_or_default();
+        let deletions = parts.next().unwrap_or_default();
+        if additions == "-" || deletions == "-" {
+            return acc;
+        }
+        let parsed_additions = additions.parse::<usize>().unwrap_or(0);
+        let parsed_deletions = deletions.parse::<usize>().unwrap_or(0);
+        (acc.0 + parsed_additions, acc.1 + parsed_deletions)
+    })
+}
+
 fn old_path_from_diff(diff: &str) -> Option<String> {
     diff.lines().find_map(|line| {
         line.strip_prefix("rename from ")
@@ -1865,11 +1918,18 @@ fn old_path_from_diff(diff: &str) -> Option<String> {
 }
 
 fn file_flags(path: &Path) -> (bool, bool) {
-    let is_too_large = fs::metadata(path)
-        .map(|metadata| metadata.len() > MAX_INLINE_DIFF_BYTES)
-        .unwrap_or(false);
-    let is_binary = fs::read(path)
-        .map(|bytes| bytes.iter().take(8192).any(|byte| *byte == 0))
+    let Ok(metadata) = fs::metadata(path) else {
+        return (false, false);
+    };
+    if !metadata.is_file() {
+        return (false, false);
+    }
+
+    let is_too_large = metadata.len() > MAX_INLINE_DIFF_BYTES;
+    let mut buffer = [0_u8; BINARY_SNIFF_BYTES];
+    let is_binary = fs::File::open(path)
+        .and_then(|mut file| file.read(&mut buffer))
+        .map(|bytes_read| buffer[..bytes_read].iter().any(|byte| *byte == 0))
         .unwrap_or(false);
     (is_too_large, is_binary)
 }

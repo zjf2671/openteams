@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Onboarding Concept 3 - Interactive Bento</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #08090a;
+            --card-bg: rgba(255, 255, 255, 0.026);
+            --text-main: #f2f2f2;
+            --text-muted: #8a8f98;
+            --border: rgba(255, 255, 255, 0.07);
+            --border-hover: rgba(255, 255, 255, 0.18);
+            --accent: #5e6ad2;
+            --success: #27b973;
+            --warning: #f4b95f;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background:
+                linear-gradient(135deg, rgba(94, 106, 210, 0.11), transparent 36%),
+                radial-gradient(circle at 88% 20%, rgba(39, 185, 115, 0.09), transparent 22%),
+                var(--bg);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            padding: 28px;
+        }
+
+        .page {
+            width: min(1180px, 100%);
+            margin: 0 auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            gap: 24px;
+            align-items: end;
+            margin-bottom: 26px;
+        }
+
+        h1 {
+            font-size: clamp(30px, 4vw, 48px);
+            font-weight: 700;
+            line-height: 1.05;
+            letter-spacing: 0;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: var(--text-muted);
+            font-size: 15px;
+            line-height: 1.55;
+            max-width: 560px;
+        }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .btn,
+        .filter-btn {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-main);
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 10px 13px;
+            cursor: pointer;
+            transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+        }
+
+        .btn:hover,
+        .filter-btn:hover,
+        .filter-btn.active {
+            transform: translateY(-1px);
+            border-color: var(--border-hover);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn.primary {
+            background: #f5f5f5;
+            color: #030303;
+            border-color: transparent;
+            box-shadow: 0 10px 30px rgba(255, 255, 255, 0.1);
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 340px;
+            gap: 18px;
+        }
+
+        .bento-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-auto-rows: 190px;
+            gap: 14px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+            position: relative;
+            overflow: hidden;
+            cursor: pointer;
+            min-width: 0;
+        }
+
+        .card:hover,
+        .card.active {
+            border-color: rgba(94, 106, 210, 0.65);
+            transform: translateY(-3px);
+            background: rgba(94, 106, 210, 0.09);
+        }
+
+        .card.large { grid-column: span 2; }
+        .card.tall { grid-row: span 2; }
+        .card.hidden { display: none; }
+
+        .card-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            border: 1px solid var(--border);
+            display: grid;
+            place-items: center;
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.06);
+            margin-bottom: auto;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+        .card p { font-size: 13px; color: var(--text-muted); line-height: 1.45; }
+
+        .meter {
+            margin-top: 16px;
+            height: 6px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.06);
+            overflow: hidden;
+        }
+
+        .meter span {
+            display: block;
+            width: var(--value);
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            transition: width 0.25s ease;
+        }
+
+        .side-panel {
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.026);
+            padding: 18px;
+            min-height: 394px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .side-panel h2 { font-size: 18px; margin-bottom: 6px; }
+        .side-panel p { color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .stat {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.028);
+        }
+
+        .stat strong {
+            display: block;
+            font-size: 22px;
+            margin-bottom: 4px;
+        }
+
+        .stat span {
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+
+        .toggle-list {
+            display: grid;
+            gap: 9px;
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .switch {
+            width: 38px;
+            height: 22px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.06);
+            position: relative;
+            cursor: pointer;
+            transition: background 0.18s ease;
+            flex: 0 0 auto;
+        }
+
+        .switch::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            left: 3px;
+            top: 2px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            transition: transform 0.18s ease, background 0.18s ease;
+        }
+
+        .switch.active {
+            background: rgba(39, 185, 115, 0.24);
+            border-color: rgba(39, 185, 115, 0.4);
+        }
+
+        .switch.active::after {
+            transform: translateX(15px);
+            background: var(--success);
+        }
+
+        .activity {
+            margin-top: auto;
+            border-top: 1px solid var(--border);
+            padding-top: 14px;
+        }
+
+        .activity h3 { font-size: 13px; margin-bottom: 10px; }
+        .activity-log {
+            display: grid;
+            gap: 8px;
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+            max-height: 104px;
+            overflow: auto;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translate(-50%, 12px);
+            opacity: 0;
+            pointer-events: none;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: #181a1f;
+            color: var(--text-main);
+            font-size: 13px;
+            padding: 10px 14px;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translate(-50%, 0);
+        }
+
+        @media (max-width: 980px) {
+            .header { align-items: flex-start; flex-direction: column; }
+            .toolbar { justify-content: flex-start; }
+            .layout { grid-template-columns: 1fr; }
+            .bento-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        @media (max-width: 640px) {
+            body { padding: 16px; }
+            .bento-grid { grid-template-columns: 1fr; grid-auto-rows: minmax(170px, auto); }
+            .card.large,
+            .card.tall { grid-column: span 1; grid-row: span 1; }
+            .stats { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <header class="header">
+            <div>
+                <h1>Discover OpenTeams</h1>
+                <p>Explore the collaboration system by filtering features, selecting cards, toggling integrations, and watching the workspace preview update.</p>
+            </div>
+            <div class="toolbar" aria-label="Feature filters">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="workflow">Workflow</button>
+                <button class="filter-btn" data-filter="collab">Collab</button>
+                <button class="filter-btn" data-filter="insight">Insights</button>
+                <button id="tourBtn" class="btn primary">Start tour</button>
+            </div>
+        </header>
+
+        <section class="layout">
+            <div class="bento-grid" id="bentoGrid">
+                <article class="card large active" data-category="workflow" data-title="Intelligent Workflow" data-score="86" data-detail="Compile visual plans into deterministic execution graphs with retries, reviews, pauses, and user input checkpoints.">
+                    <div class="card-icon">W</div>
+                    <h3>Intelligent Workflow</h3>
+                    <p>AI-driven task plans that adapt to blockers, reviews, and iteration loops.</p>
+                    <div class="meter"><span style="--value: 86%"></span></div>
+                </article>
+                <article class="card" data-category="insight" data-title="Global Search" data-score="72" data-detail="Find sessions, work items, artifacts, and source-control context across a local-first workspace.">
+                    <div class="card-icon">S</div>
+                    <h3>Global Search</h3>
+                    <p>Find anything across your workspace in milliseconds.</p>
+                    <div class="meter"><span style="--value: 72%"></span></div>
+                </article>
+                <article class="card tall" data-category="collab" data-title="Team Protocols" data-score="91" data-detail="Guide agent handoffs with shared instructions, queued work, permissions, and visible activity logs.">
+                    <div class="card-icon">T</div>
+                    <h3>Team Protocols</h3>
+                    <p>Keep every agent aligned with shared rules, mentions, queues, and review gates.</p>
+                    <div class="meter"><span style="--value: 91%"></span></div>
+                </article>
+                <article class="card" data-category="collab" data-title="Integrations" data-score="78" data-detail="Connect GitHub, Linear, Figma, and local runtimes without giving up local workspace control.">
+                    <div class="card-icon">I</div>
+                    <h3>Integrations</h3>
+                    <p>Connect with GitHub, Linear, Figma, and agent CLIs.</p>
+                    <div class="meter"><span style="--value: 78%"></span></div>
+                </article>
+                <article class="card large" data-category="collab" data-title="Real-time Collab" data-score="83" data-detail="Share session context, follow agent activity, and resolve changes from isolated worktrees before merging.">
+                    <div class="card-icon">R</div>
+                    <h3>Real-time Collab</h3>
+                    <p>Work together without losing track of ownership, diffs, or state.</p>
+                    <div class="meter"><span style="--value: 83%"></span></div>
+                </article>
+                <article class="card" data-category="insight" data-title="Cost Analytics" data-score="69" data-detail="Track model usage, run duration, token spend, and delivery signals for each project.">
+                    <div class="card-icon">A</div>
+                    <h3>Cost Analytics</h3>
+                    <p>Understand build health, token usage, and team throughput.</p>
+                    <div class="meter"><span style="--value: 69%"></span></div>
+                </article>
+            </div>
+
+            <aside class="side-panel" aria-live="polite">
+                <div>
+                    <h2 id="detailTitle">Intelligent Workflow</h2>
+                    <p id="detailText">Compile visual plans into deterministic execution graphs with retries, reviews, pauses, and user input checkpoints.</p>
+                </div>
+                <div class="stats">
+                    <div class="stat"><strong id="scoreValue">86</strong><span>readiness score</span></div>
+                    <div class="stat"><strong id="activeCount">6</strong><span>visible modules</span></div>
+                </div>
+                <div class="toggle-list">
+                    <div class="toggle-row"><span>GitHub sync</span><button class="switch active" data-name="GitHub sync" aria-label="Toggle GitHub sync"></button></div>
+                    <div class="toggle-row"><span>Review checkpoints</span><button class="switch active" data-name="Review checkpoints" aria-label="Toggle review checkpoints"></button></div>
+                    <div class="toggle-row"><span>Cost alerts</span><button class="switch" data-name="Cost alerts" aria-label="Toggle cost alerts"></button></div>
+                </div>
+                <div class="activity">
+                    <h3>Activity preview</h3>
+                    <div class="activity-log" id="activityLog">
+                        <div>Selected Intelligent Workflow.</div>
+                        <div>6 modules are visible in the current view.</div>
+                    </div>
+                </div>
+                <button id="enterBtn" class="btn primary">Enter Workspace</button>
+            </aside>
+        </section>
+    </main>
+    <div id="toast" class="toast">Workspace preview updated</div>
+
+    <script>
+        const cards = [...document.querySelectorAll('.card')];
+        const filterButtons = [...document.querySelectorAll('.filter-btn')];
+        const detailTitle = document.querySelector('#detailTitle');
+        const detailText = document.querySelector('#detailText');
+        const scoreValue = document.querySelector('#scoreValue');
+        const activeCount = document.querySelector('#activeCount');
+        const activityLog = document.querySelector('#activityLog');
+        const toast = document.querySelector('#toast');
+        let tourIndex = 0;
+        let tourTimer = null;
+
+        function showToast(message) {
+            toast.textContent = message;
+            toast.classList.add('show');
+            window.clearTimeout(showToast.timer);
+            showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 1300);
+        }
+
+        function addActivity(message) {
+            activityLog.insertAdjacentHTML('afterbegin', `<div>${message}</div>`);
+            while (activityLog.children.length > 5) activityLog.lastElementChild.remove();
+        }
+
+        function selectCard(card, silent = false) {
+            cards.forEach((item) => item.classList.remove('active'));
+            card.classList.add('active');
+            detailTitle.textContent = card.dataset.title;
+            detailText.textContent = card.dataset.detail;
+            scoreValue.textContent = card.dataset.score;
+            if (!silent) {
+                addActivity(`Selected ${card.dataset.title}.`);
+                showToast(`${card.dataset.title} selected`);
+            }
+        }
+
+        cards.forEach((card) => card.addEventListener('click', () => selectCard(card)));
+
+        filterButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                filterButtons.forEach((item) => item.classList.remove('active'));
+                button.classList.add('active');
+                const filter = button.dataset.filter;
+                let visible = 0;
+                cards.forEach((card) => {
+                    const shouldShow = filter === 'all' || card.dataset.category === filter;
+                    card.classList.toggle('hidden', !shouldShow);
+                    if (shouldShow) visible += 1;
+                });
+                activeCount.textContent = visible;
+                const firstVisible = cards.find((card) => !card.classList.contains('hidden'));
+                if (firstVisible) selectCard(firstVisible, true);
+                addActivity(`${visible} modules visible for ${button.textContent}.`);
+            });
+        });
+
+        document.querySelectorAll('.switch').forEach((switchButton) => {
+            switchButton.addEventListener('click', () => {
+                switchButton.classList.toggle('active');
+                const state = switchButton.classList.contains('active') ? 'enabled' : 'disabled';
+                addActivity(`${switchButton.dataset.name} ${state}.`);
+                showToast(`${switchButton.dataset.name} ${state}`);
+            });
+        });
+
+        document.querySelector('#tourBtn').addEventListener('click', () => {
+            window.clearInterval(tourTimer);
+            tourIndex = 0;
+            filterButtons[0].click();
+            addActivity('Guided tour started.');
+            tourTimer = window.setInterval(() => {
+                const visibleCards = cards.filter((card) => !card.classList.contains('hidden'));
+                selectCard(visibleCards[tourIndex % visibleCards.length], true);
+                tourIndex += 1;
+                if (tourIndex > visibleCards.length + 1) {
+                    window.clearInterval(tourTimer);
+                    addActivity('Guided tour completed.');
+                    showToast('Tour completed');
+                }
+            }, 900);
+        });
+
+        document.querySelector('#enterBtn').addEventListener('click', () => {
+            const enabled = [...document.querySelectorAll('.switch.active')].map((item) => item.dataset.name);
+            addActivity(`Workspace opened with ${enabled.join(', ') || 'no integrations'}.`);
+            showToast('Workspace preview opened');
+        });
+    </script>
+</body>
+</html>

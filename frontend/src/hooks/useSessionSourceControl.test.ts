@@ -96,6 +96,16 @@ check(
 );
 
 check(
+  'optimistically clears committed paths when commit omits status',
+  source.includes('optimisticSourceControlStatus(') &&
+    source.includes('"discard"') &&
+    source.includes('response.committed_paths') &&
+    source.includes('response.commit_sha') &&
+    source.includes('void refresh().catch(() => undefined)'),
+  source,
+);
+
+check(
   'updates local status from embedded commit errors',
   source.includes('sourceControlStatusFromError') &&
     source.includes('errorData?.status ?? null') &&

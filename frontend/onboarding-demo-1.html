@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Onboarding Concept 1 - Interactive Hero</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #08090a;
+            --surface: #111215;
+            --surface-2: #17191d;
+            --text-main: #f2f2f2;
+            --text-muted: #8a8f98;
+            --border: rgba(255, 255, 255, 0.08);
+            --accent: #5e6ad2;
+            --accent-2: #27b973;
+            --warning: #f4b95f;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            min-height: 100vh;
+            background:
+                linear-gradient(135deg, rgba(94, 106, 210, 0.14), transparent 34%),
+                radial-gradient(circle at 78% 16%, rgba(39, 185, 115, 0.12), transparent 24%),
+                var(--bg);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+        }
+
+        .app-shell {
+            width: min(1120px, calc(100vw - 48px));
+            min-height: min(720px, calc(100vh - 48px));
+            margin: 24px auto;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: rgba(8, 9, 10, 0.72);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 380px;
+            overflow: hidden;
+        }
+
+        .hero {
+            padding: 56px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            position: relative;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            width: fit-content;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--text-muted);
+            font-size: 12px;
+            margin-bottom: 22px;
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent-2);
+            box-shadow: 0 0 0 5px rgba(39, 185, 115, 0.12);
+        }
+
+        h1 {
+            max-width: 650px;
+            font-size: clamp(42px, 6vw, 76px);
+            line-height: 0.98;
+            font-weight: 700;
+            letter-spacing: 0;
+            margin-bottom: 18px;
+        }
+
+        .lede {
+            max-width: 580px;
+            font-size: 18px;
+            color: var(--text-muted);
+            line-height: 1.6;
+            margin-bottom: 32px;
+        }
+
+        .prompt-card {
+            width: min(620px, 100%);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.035);
+            padding: 14px;
+            margin-bottom: 22px;
+        }
+
+        .prompt-input {
+            width: 100%;
+            min-height: 86px;
+            resize: none;
+            border: 0;
+            outline: 0;
+            color: var(--text-main);
+            background: transparent;
+            font: inherit;
+            font-size: 15px;
+            line-height: 1.5;
+        }
+
+        .prompt-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        .chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .chip,
+        .icon-btn,
+        .btn {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.04);
+            font: inherit;
+            cursor: pointer;
+            transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+        }
+
+        .chip {
+            padding: 7px 10px;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        .chip:hover,
+        .chip.active,
+        .icon-btn:hover,
+        .btn:hover {
+            transform: translateY(-1px);
+            border-color: rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn {
+            padding: 10px 15px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .btn.primary {
+            border-color: transparent;
+            background: #f6f6f6;
+            color: #050505;
+            box-shadow: 0 8px 26px rgba(255, 255, 255, 0.14);
+        }
+
+        .btn.primary:hover { background: #ffffff; }
+
+        .mini-controls {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            width: min(620px, 100%);
+            margin-top: 18px;
+        }
+
+        .control-card {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.026);
+        }
+
+        .control-label {
+            color: var(--text-muted);
+            font-size: 11px;
+            margin-bottom: 10px;
+        }
+
+        .segmented {
+            display: flex;
+            padding: 3px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .segmented button {
+            flex: 1;
+            border: 0;
+            border-radius: 6px;
+            color: var(--text-muted);
+            background: transparent;
+            font: inherit;
+            font-size: 12px;
+            padding: 6px;
+            cursor: pointer;
+        }
+
+        .segmented button.active {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .preview {
+            border-left: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.018);
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .preview-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .preview-title {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .icon-btn {
+            width: 32px;
+            height: 32px;
+            display: grid;
+            place-items: center;
+            color: var(--text-muted);
+        }
+
+        .queue {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .agent-row {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px;
+            background: var(--surface);
+            cursor: pointer;
+            transition: transform 0.18s ease, border-color 0.18s ease;
+        }
+
+        .agent-row:hover,
+        .agent-row.selected {
+            transform: translateX(-2px);
+            border-color: rgba(94, 106, 210, 0.6);
+        }
+
+        .agent-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .agent-name { font-size: 13px; font-weight: 600; }
+        .agent-state { font-size: 11px; color: var(--accent-2); }
+        .agent-row p { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+
+        .timeline {
+            margin-top: auto;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            background: rgba(255, 255, 255, 0.025);
+        }
+
+        .timeline h2 {
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .timeline-item {
+            display: grid;
+            grid-template-columns: 18px minmax(0, 1fr);
+            gap: 10px;
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.4;
+            margin-bottom: 10px;
+        }
+
+        .timeline-item:last-child { margin-bottom: 0; }
+
+        .timeline-item::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            margin-top: 4px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 0 4px rgba(94, 106, 210, 0.12);
+        }
+
+        .progress {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .progress span {
+            display: block;
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            transition: width 0.4s ease;
+        }
+
+        .toast {
+            position: fixed;
+            left: 50%;
+            bottom: 24px;
+            transform: translate(-50%, 16px);
+            opacity: 0;
+            pointer-events: none;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--surface-2);
+            color: var(--text-main);
+            font-size: 13px;
+            padding: 10px 14px;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translate(-50%, 0);
+        }
+
+        @media (max-width: 900px) {
+            body { overflow: auto; }
+            .app-shell {
+                grid-template-columns: 1fr;
+                margin: 16px;
+                width: calc(100vw - 32px);
+            }
+            .hero { padding: 32px 24px; }
+            .preview { border-left: 0; border-top: 1px solid var(--border); }
+            .mini-controls { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <main class="app-shell">
+        <section class="hero">
+            <div class="eyebrow"><span class="status-dot"></span><span id="teamState">3 agents ready</span></div>
+            <h1>Launch a project room in seconds.</h1>
+            <p class="lede">Describe the outcome, pick the team behavior, and watch OpenTeams prepare a shared workspace with suggested agents, tasks, and checkpoints.</p>
+
+            <div class="prompt-card">
+                <textarea id="promptInput" class="prompt-input" aria-label="Project goal">Build a source-control review flow for a session worktree and prepare a concise demo script.</textarea>
+                <div class="prompt-actions">
+                    <div class="chips" aria-label="Prompt examples">
+                        <button class="chip active" data-template="Build a source-control review flow for a session worktree and prepare a concise demo script.">Source control</button>
+                        <button class="chip" data-template="Draft a workflow plan, assign reviewer checkpoints, and summarize implementation risks.">Workflow</button>
+                        <button class="chip" data-template="Create a Linear-style onboarding screen and validate it across desktop and mobile.">Product UI</button>
+                    </div>
+                    <button id="startBtn" class="btn primary">Start room <span aria-hidden="true">-></span></button>
+                </div>
+            </div>
+
+            <div class="mini-controls">
+                <div class="control-card">
+                    <div class="control-label">Mode</div>
+                    <div class="segmented" data-control="mode">
+                        <button class="active" data-value="Chat">Chat</button>
+                        <button data-value="Workflow">Workflow</button>
+                    </div>
+                </div>
+                <div class="control-card">
+                    <div class="control-label">Worktree</div>
+                    <div class="segmented" data-control="worktree">
+                        <button class="active" data-value="Isolated">Isolated</button>
+                        <button data-value="Shared">Shared</button>
+                    </div>
+                </div>
+                <div class="control-card">
+                    <div class="control-label">Review</div>
+                    <div class="segmented" data-control="review">
+                        <button data-value="Fast">Fast</button>
+                        <button class="active" data-value="Strict">Strict</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <aside class="preview" aria-live="polite">
+            <div class="preview-header">
+                <div>
+                    <div class="preview-title">Live setup preview</div>
+                    <div class="control-label" id="setupSummary">Chat / Isolated / Strict</div>
+                </div>
+                <button id="shuffleBtn" class="icon-btn" title="Shuffle team" aria-label="Shuffle team">S</button>
+            </div>
+
+            <div class="queue" id="agentQueue">
+                <article class="agent-row selected" data-agent="Lead">
+                    <div class="agent-top"><span class="agent-name">Lead Agent</span><span class="agent-state">planning</span></div>
+                    <p>Breaks the request into a shared plan and keeps the room aligned.</p>
+                </article>
+                <article class="agent-row" data-agent="Frontend">
+                    <div class="agent-top"><span class="agent-name">Frontend Agent</span><span class="agent-state">ready</span></div>
+                    <p>Builds UI changes, checks responsive states, and captures issues.</p>
+                </article>
+                <article class="agent-row" data-agent="Reviewer">
+                    <div class="agent-top"><span class="agent-name">Reviewer Agent</span><span class="agent-state">ready</span></div>
+                    <p>Reviews diffs, flags risk, and requests targeted fixes.</p>
+                </article>
+            </div>
+
+            <div class="timeline">
+                <h2>Room checklist</h2>
+                <div class="progress"><span id="progressBar"></span></div>
+                <div id="timelineItems">
+                    <div class="timeline-item">Add a project goal to unlock the first room action.</div>
+                    <div class="timeline-item">Pick collaboration settings for the generated session.</div>
+                    <div class="timeline-item">Start the room to create agent queues and checkpoints.</div>
+                </div>
+            </div>
+        </aside>
+    </main>
+    <div id="toast" class="toast">Room draft updated</div>
+
+    <script>
+        const promptInput = document.querySelector('#promptInput');
+        const chips = [...document.querySelectorAll('.chip')];
+        const setupSummary = document.querySelector('#setupSummary');
+        const teamState = document.querySelector('#teamState');
+        const progressBar = document.querySelector('#progressBar');
+        const toast = document.querySelector('#toast');
+        const timelineItems = document.querySelector('#timelineItems');
+        const agentRows = [...document.querySelectorAll('.agent-row')];
+
+        const state = {
+            mode: 'Chat',
+            worktree: 'Isolated',
+            review: 'Strict',
+            selectedAgent: 'Lead',
+            started: false
+        };
+
+        const teamSets = [
+            ['Lead Agent', 'Frontend Agent', 'Reviewer Agent'],
+            ['Planner Agent', 'Backend Agent', 'QA Agent'],
+            ['UX Agent', 'Codex Agent', 'Release Agent']
+        ];
+        let teamIndex = 0;
+
+        function showToast(message) {
+            toast.textContent = message;
+            toast.classList.add('show');
+            window.clearTimeout(showToast.timer);
+            showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 1400);
+        }
+
+        function updatePreview(message) {
+            setupSummary.textContent = `${state.mode} / ${state.worktree} / ${state.review}`;
+            teamState.textContent = `${agentRows.length} agents ready`;
+            const completion = Math.min(100, (promptInput.value.trim().length > 0 ? 34 : 0) + (state.started ? 66 : 22));
+            progressBar.style.width = `${completion}%`;
+            if (message) showToast(message);
+        }
+
+        chips.forEach((chip) => {
+            chip.addEventListener('click', () => {
+                chips.forEach((item) => item.classList.remove('active'));
+                chip.classList.add('active');
+                promptInput.value = chip.dataset.template;
+                state.started = false;
+                timelineItems.innerHTML = `
+                    <div class="timeline-item">Prompt loaded: ${chip.textContent}.</div>
+                    <div class="timeline-item">Settings are ready for a room draft.</div>
+                    <div class="timeline-item">Press Enter or Start room to continue.</div>
+                `;
+                updatePreview('Prompt template applied');
+            });
+        });
+
+        document.querySelectorAll('.segmented').forEach((group) => {
+            group.addEventListener('click', (event) => {
+                const button = event.target.closest('button');
+                if (!button) return;
+                group.querySelectorAll('button').forEach((item) => item.classList.remove('active'));
+                button.classList.add('active');
+                state[group.dataset.control] = button.dataset.value;
+                updatePreview('Setup option changed');
+            });
+        });
+
+        agentRows.forEach((row) => {
+            row.addEventListener('click', () => {
+                agentRows.forEach((item) => item.classList.remove('selected'));
+                row.classList.add('selected');
+                state.selectedAgent = row.dataset.agent;
+                showToast(`${row.dataset.agent} selected`);
+            });
+        });
+
+        document.querySelector('#shuffleBtn').addEventListener('click', () => {
+            teamIndex = (teamIndex + 1) % teamSets.length;
+            agentRows.forEach((row, index) => {
+                row.querySelector('.agent-name').textContent = teamSets[teamIndex][index];
+                row.dataset.agent = teamSets[teamIndex][index].replace(' Agent', '');
+            });
+            showToast('Team suggestions refreshed');
+        });
+
+        function startRoom() {
+            state.started = true;
+            const goal = promptInput.value.trim() || 'Untitled project room';
+            timelineItems.innerHTML = `
+                <div class="timeline-item">Room drafted for: ${goal.slice(0, 58)}${goal.length > 58 ? '...' : ''}</div>
+                <div class="timeline-item">${state.selectedAgent} opens the first queue in ${state.mode.toLowerCase()} mode.</div>
+                <div class="timeline-item">${state.review} review and ${state.worktree.toLowerCase()} worktree settings applied.</div>
+            `;
+            updatePreview('Room draft created');
+        }
+
+        document.querySelector('#startBtn').addEventListener('click', startRoom);
+        promptInput.addEventListener('input', () => {
+            state.started = false;
+            updatePreview();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey || document.activeElement !== promptInput)) {
+                startRoom();
+            }
+        });
+
+        updatePreview();
+    </script>
+</body>
+</html>

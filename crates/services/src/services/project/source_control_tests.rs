@@ -900,8 +900,13 @@ async fn commit_succeeds_with_valid_request() {
     assert_eq!(response.committed_paths, vec!["tracked.txt"]);
     assert_eq!(response.additions, 1);
     assert_eq!(response.deletions, 0);
+    assert!(response.status.is_none());
 
-    let (changes, staged) = git_status_paths(&response.status);
+    let status = SourceControlService::new()
+        .session_status(&pool, project.id, session_id, None)
+        .await
+        .expect("status after commit");
+    let (changes, staged) = git_status_paths(&status);
     assert!(changes.is_empty());
     assert!(staged.is_empty());
 }
