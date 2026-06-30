@@ -3257,12 +3257,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         parsed.type === 'file_change_refresh' &&
         parsed.session_id === sid
       ) {
+        const projectId = selectedProjectIdRef.current;
         notifySourceControlRefreshRequested({
-          projectId: selectedProjectIdRef.current,
+          projectId,
           sessionId: sid,
         });
         const workspacePath = activeWorkspacePathRef.current;
-        if (workspacePath) {
+        if (!projectId && workspacePath) {
           void refreshWorkspaceChanges(sid, workspacePath, true);
         }
         return;
@@ -3367,9 +3368,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         if (hasConnectedOnce) {
           void refreshMessages();
           void refreshMembers();
+          const projectId = selectedProjectIdRef.current;
+          if (projectId) {
+            notifySourceControlRefreshRequested({
+              projectId,
+              sessionId: sid,
+            });
+          }
           void refreshMemberQueues();
           const workspacePath = activeWorkspacePathRef.current;
-          if (workspacePath) {
+          if (!projectId && workspacePath) {
             void refreshWorkspaceChanges(sid, workspacePath, true);
           }
         }

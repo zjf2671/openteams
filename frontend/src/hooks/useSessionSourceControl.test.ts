@@ -72,10 +72,19 @@ check(
 
 check(
   'batches rapid stage and unstage operations',
-  source.includes('SOURCE_CONTROL_BATCH_WINDOW_MS = 3000') &&
+  source.includes('SOURCE_CONTROL_BATCH_WINDOW_MS = 2000') &&
     source.includes('enqueueBatchedOperation') &&
     source.includes('flushBatchedOperation') &&
     source.includes('setTimeout(() =>'),
+  source,
+);
+
+check(
+  'serializes overlapping refresh requests',
+  source.includes('refreshInFlightRef') &&
+    source.includes('refreshQueuedRef') &&
+    source.includes('const existingRefresh = refreshInFlightRef.current') &&
+    source.includes('while (refreshQueuedRef.current'),
   source,
 );
 

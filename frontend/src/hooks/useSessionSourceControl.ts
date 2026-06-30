@@ -172,6 +172,10 @@ export function useSessionSourceControl({
   const [error, setError] = useState<Error | null>(null);
   const requestIdRef = useRef(0);
   const statusRef = useRef<SessionSourceControlStatus | null>(null);
+  const refreshInFlightRef = useRef<Promise<SessionSourceControlStatus | null> | null>(
+    null,
+  );
+  const refreshQueuedRef = useRef(false);
   const stageBatchRef = useRef<BatchedOperationState | null>(null);
   const unstageBatchRef = useRef<BatchedOperationState | null>(null);
 
@@ -183,7 +187,7 @@ export function useSessionSourceControl({
     [],
   );
 
-  const refresh = useCallback(async () => {
+  const runRefreshRequest = useCallback(async () => {
     if (!enabled || !projectId || !sessionId) {
       setLoading(false);
       return null;
@@ -213,6 +217,38 @@ export function useSessionSourceControl({
       }
     }
   }, [applyStatus, enabled, projectId, sessionId]);
+
+  const refresh = useCallback(async () => {
+    if (!enabled || !projectId || !sessionId) {
+      refreshQueuedRef.current = false;
+      refreshInFlightRef.current = null;
+      setLoading(false);
+      return null;
+    }
+
+    const existingRefresh = refreshInFlightRef.current;
+    if (existingRefresh) {
+      refreshQueuedRef.current = true;
+      return existingRefresh;
+    }
+
+    const refreshPromise = (async () => {
+      let latestStatus = await runRefreshRequest();
+      while (refreshQueuedRef.current && enabled && projectId && sessionId) {
+        refreshQueuedRef.current = false;
+        latestStatus = await runRefreshRequest();
+      }
+      return latestStatus;
+    })().finally(() => {
+      if (refreshInFlightRef.current === refreshPromise) {
+        refreshInFlightRef.current = null;
+      }
+      refreshQueuedRef.current = false;
+    });
+
+    refreshInFlightRef.current = refreshPromise;
+    return refreshPromise;
+  }, [enabled, projectId, runRefreshRequest, sessionId]);
 
   const batchRefForAction = (action: BatchedSourceControlAction) =>
     action === "stage" ? stageBatchRef : unstageBatchRef;
@@ -268,8 +304,11 @@ export function useSessionSourceControl({
   );
 
   useEffect(() => {
+    requestIdRef.current += 1;
+    refreshQueuedRef.current = false;
+    refreshInFlightRef.current = null;
+
     if (!enabled || !projectId || !sessionId) {
-      requestIdRef.current += 1;
       applyStatus(null);
       setLoading(false);
       setError(null);

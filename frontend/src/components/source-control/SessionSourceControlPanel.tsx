@@ -413,10 +413,6 @@ export const SessionSourceControlPanel: React.FC<
     return <>{fallbackRelatedFiles}</>;
   }
 
-  if (status?.mode === "plain") {
-    return <>{fallbackRelatedFiles}</>;
-  }
-
   // When the user opens the conflict resolver, it takes over the entire panel
   // until the merge continues or aborts.
   if (

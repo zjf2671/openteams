@@ -835,6 +835,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
   );
   const currentWorkspacePath =
     currentProject?.default_workspace_path ?? undefined;
+  const usesProjectSourceControl = Boolean(selectedProjectId && activeSessionId);
   const sidebarMembers = members;
   const visibleSidebarMemberCount = getVisibleSidebarMemberCount(
     sidebarMembers.length,
@@ -1232,6 +1233,10 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
       resetWorkspaceChanges();
       return;
     }
+    if (selectedProjectId) {
+      resetWorkspaceChanges();
+      return;
+    }
     const workspacePath = currentWorkspacePath;
     if (!workspacePath) {
       resetWorkspaceChanges();
@@ -1243,6 +1248,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
     currentWorkspacePath,
     refreshWorkspaceChanges,
     resetWorkspaceChanges,
+    selectedProjectId,
   ]);
 
   useEffect(() => {
@@ -2943,7 +2949,7 @@ export const FreeChatWorkspace: React.FC<FreeChatWorkspaceProps> = ({
             <SessionSourceControlPanel
               projectId={selectedProjectId || null}
               sessionId={activeSessionId || null}
-              enabled={Boolean(selectedProjectId && activeSessionId)}
+              enabled={usesProjectSourceControl}
               worktreeMode={
                 sessionsAsync.data?.find(
                   (session) => session.id === activeSessionId,
