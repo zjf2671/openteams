@@ -233,6 +233,44 @@ const pendingWorkflowReviewSessionHtml = renderToStaticMarkup(
     onProjectAction={() => undefined}
   />,
 );
+const pausedWorkflowSessionHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    sessions={[
+      {
+        ...mockWorkspaceBootstrap.sessions[0],
+        hasRunningWorkflow: true,
+        workflowSidebarState: "paused",
+      },
+    ]}
+    activeSessionId="another-session"
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
+const failedWorkflowSessionHtml = renderToStaticMarkup(
+  <ProjectSidebar
+    shellOptions={mockShellOptions}
+    sessions={[
+      {
+        ...mockWorkspaceBootstrap.sessions[0],
+        workflowSidebarState: "failed",
+        hasWorkflowError: true,
+      },
+    ]}
+    activeSessionId="another-session"
+    activePage="workspace"
+    weeklyCost={mockWorkspaceBootstrap.defaults.weeklyCost}
+    onNavigate={() => undefined}
+    onSessionSelect={() => undefined}
+    onPrimaryAction={() => undefined}
+    onProjectAction={() => undefined}
+  />,
+);
 const runningOrderedHtml = renderToStaticMarkup(
   <ProjectSidebar
     shellOptions={mockShellOptions}
@@ -364,6 +402,19 @@ check(
     pendingWorkflowReviewSessionHtml.includes("text-[var(--primary)]") &&
     pendingWorkflowReviewSessionHtml.includes("waiting for review"),
   pendingWorkflowReviewSessionHtml,
+);
+check(
+  "renders paused workflow sessions with the normal non-running icon",
+  !pausedWorkflowSessionHtml.includes("animate-spin") &&
+    !pausedWorkflowSessionHtml.includes("agent running"),
+  pausedWorkflowSessionHtml,
+);
+check(
+  "renders failed workflow sessions with highlighted normal icon",
+  !failedWorkflowSessionHtml.includes("animate-spin") &&
+    failedWorkflowSessionHtml.includes("text-[var(--primary)]") &&
+    failedWorkflowSessionHtml.includes("workflow needs attention"),
+  failedWorkflowSessionHtml,
 );
 check(
   "moves running workflow sessions to the top of the collapsed session group",

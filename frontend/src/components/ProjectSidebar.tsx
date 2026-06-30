@@ -145,9 +145,17 @@ const runningWorkflowSidebarStates = new Set([
   "waiting",
 ]);
 
+const workflowNonRunningSidebarStates = new Set([
+  "waiting_input",
+  "waiting_user_review",
+  "paused",
+  "failed",
+]);
+
 const hasRunningWorkflowActivity = (session: Session): boolean =>
-  Boolean(session.hasRunningWorkflow) ||
-  runningWorkflowSidebarStates.has(session.workflowSidebarState ?? "idle");
+  !workflowNonRunningSidebarStates.has(session.workflowSidebarState ?? "idle") &&
+  (Boolean(session.hasRunningWorkflow) ||
+    runningWorkflowSidebarStates.has(session.workflowSidebarState ?? "idle"));
 
 const hasRunningSessionActivity = (session: Session): boolean =>
   Boolean(session.hasRunningAgent) || hasRunningWorkflowActivity(session);
@@ -156,7 +164,8 @@ const hasSidebarPrioritySessionActivity = (session: Session): boolean =>
   hasRunningSessionActivity(session) ||
   Boolean(session.hasUnreadAgentCompletion) ||
   Boolean(session.hasPendingWorkflowInput) ||
-  Boolean(session.hasPendingWorkflowReview);
+  Boolean(session.hasPendingWorkflowReview) ||
+  Boolean(session.hasWorkflowError);
 
 const isPinnedSession = (session: Session): boolean => Boolean(session.pinnedAt);
 
@@ -2456,13 +2465,19 @@ export function ProjectSidebar({
                     session.workflowSidebarState ?? "idle";
                   const workflowReviewing =
                     workflowSidebarState === "reviewing";
-                  const isRunning = hasRunningSessionActivity(session);
+                  const workflowForcesNonRunning =
+                    workflowNonRunningSidebarStates.has(workflowSidebarState);
+                  const isRunning =
+                    !workflowForcesNonRunning &&
+                    hasRunningSessionActivity(session);
                   const hasPendingWorkflowReview =
                     !isRunning && Boolean(session.hasPendingWorkflowReview);
                   const hasPendingWorkflowInput =
                     !isRunning &&
                     !hasPendingWorkflowReview &&
                     Boolean(session.hasPendingWorkflowInput);
+                  const hasWorkflowError =
+                    !isRunning && Boolean(session.hasWorkflowError);
                   const hasUnreadAgentCompletion =
                     !isRunning && Boolean(session.hasUnreadAgentCompletion);
                   const pinned = isPinnedSession(session);
@@ -2492,6 +2507,11 @@ export function ProjectSidebar({
                         "sidebar.sessionNeedsInput",
                         "waiting for input",
                       )}`
+                    : hasWorkflowError
+                    ? `${session.title} - ${translate(
+                        "sidebar.sessionWorkflowError",
+                        "workflow needs attention",
+                      )}`
                     : hasUnreadAgentCompletion
                     ? `${session.title} - ${translate(
                         "sidebar.sessionAgentCompleted",
@@ -2519,6 +2539,8 @@ export function ProjectSidebar({
                           isRunning
                             ? "animate-spin text-[var(--primary)]"
                             : hasPendingWorkflowReview || hasPendingWorkflowInput
+                            ? "text-[var(--primary)]"
+                            : hasWorkflowError
                             ? "text-[var(--primary)]"
                             : hasUnreadAgentCompletion
                             ? "text-[var(--primary)]"

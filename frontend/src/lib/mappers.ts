@@ -74,6 +74,7 @@ export const mapSession = (
     pendingWorkflowInputId?: string | null;
     hasPendingWorkflowReview?: boolean;
     pendingWorkflowReviewId?: string | null;
+    hasWorkflowError?: boolean;
   },
 ): Session => ({
   id: backend.id,
@@ -88,6 +89,7 @@ export const mapSession = (
   pendingWorkflowInputId: opts?.pendingWorkflowInputId ?? null,
   hasPendingWorkflowReview: opts?.hasPendingWorkflowReview,
   pendingWorkflowReviewId: opts?.pendingWorkflowReviewId ?? null,
+  hasWorkflowError: opts?.hasWorkflowError,
   pinnedAt: backend.pinned_at,
   worktreeMode: backend.worktree_mode,
 });

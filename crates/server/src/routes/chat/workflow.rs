@@ -117,6 +117,7 @@ async fn derive_sidebar_workflow_state(
     let mut saw_waiting_execution = false;
     let mut saw_paused_execution = false;
     let mut saw_failed_execution = false;
+    let mut saw_failed_step = false;
     let mut saw_waiting_step = false;
 
     for execution in executions {
@@ -145,6 +146,12 @@ async fn derive_sidebar_workflow_state(
         {
             return Ok(WorkflowSidebarState::Reviewing);
         }
+        if steps
+            .iter()
+            .any(|step| step.status == WorkflowStepStatus::Failed)
+        {
+            saw_failed_step = true;
+        }
         if steps.iter().any(|step| {
             matches!(
                 step.status,
@@ -169,12 +176,12 @@ async fn derive_sidebar_workflow_state(
 
     if saw_running_execution {
         Ok(WorkflowSidebarState::Running)
+    } else if saw_failed_step || saw_failed_execution {
+        Ok(WorkflowSidebarState::Failed)
     } else if saw_waiting_execution || saw_waiting_step {
         Ok(WorkflowSidebarState::Waiting)
     } else if saw_paused_execution {
         Ok(WorkflowSidebarState::Paused)
-    } else if saw_failed_execution {
-        Ok(WorkflowSidebarState::Failed)
     } else {
         Ok(WorkflowSidebarState::Idle)
     }

@@ -247,11 +247,13 @@ const UNREAD_AGENT_COMPLETION_SESSION_IDS_STORAGE_KEY =
   'openteams-unread-agent-completion-session-ids';
 const ACKED_WORKFLOW_INPUT_IDS_STORAGE_KEY =
   'openteams-acked-workflow-input-ids';
+const ACKED_WORKFLOW_ERROR_SESSION_IDS_STORAGE_KEY =
+  'openteams-acked-workflow-error-session-ids';
 const LIVE_DELTA_ACTIVITY_LINE_PREFIX = 'live-delta-';
 // WebSocket auto-reconnect backoff bounds (ms).
 const CHAT_STREAM_RECONNECT_BASE_DELAY_MS = 1000;
 const CHAT_STREAM_RECONNECT_MAX_DELAY_MS = 30000;
-const SIDEBAR_RUNNING_INDICATOR_POLL_MS = 3000;
+const SIDEBAR_RUNNING_INDICATOR_POLL_MS = 5000;
 const CHAT_MESSAGE_FONT_SIZE_DEFAULT = 14;
 export const CHAT_MESSAGE_FONT_SIZE_OPTIONS = [13, 14, 15, 16] as const;
 
@@ -348,11 +350,16 @@ const isWorkflowSidebarRunning = (state: WorkflowSidebarState): boolean =>
 const loadSessionRunningIndicators = async (
   sessionIds: string[],
   ignoredSessionAgentIds?: ReadonlySet<string>,
+  options?: { skipAgentSessionIds?: ReadonlySet<string> },
 ): Promise<Map<string, SessionRunningIndicators>> => {
   const entries = await Promise.all(
     sessionIds.map(async (sessionId) => {
+      const shouldSkipAgents =
+        options?.skipAgentSessionIds?.has(sessionId) ?? false;
       const [sessionAgents, workflowStatus] = await Promise.all([
-        sessionAgentsApi.list(sessionId).catch(() => []),
+        shouldSkipAgents
+          ? Promise.resolve<BackendChatSessionAgent[]>([])
+          : sessionAgentsApi.list(sessionId).catch(() => []),
         workflowApi
           .getSessionStatus(sessionId)
           .catch(() => ({
@@ -1351,6 +1358,11 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const messagesRequestIdRef = useRef(0);
   const queueRequestIdRef = useRef(0);
   const workspaceChangesRequestIdRef = useRef(0);
+  const initialRefreshStartedRef = useRef(false);
+  const initialRefreshCompletedRef = useRef(false);
+  const sessionRunningIndicatorRequestsRef = useRef<Map<string, Promise<void>>>(
+    new Map(),
+  );
   const [chatInputModeBySessionId, setChatInputModeBySessionId] = useState<
     Record<string, ChatInputMode>
   >({});
@@ -1420,6 +1432,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const acknowledgedWorkflowInputIdsRef = useRef<Set<string>>(
     readSessionIdSet(ACKED_WORKFLOW_INPUT_IDS_STORAGE_KEY),
   );
+  const acknowledgedWorkflowErrorSessionIdsRef = useRef<Set<string>>(
+    readSessionIdSet(ACKED_WORKFLOW_ERROR_SESSION_IDS_STORAGE_KEY),
+  );
   useEffect(() => {
     allMessagesRef.current = allMessages;
   }, [allMessages]);
@@ -1438,6 +1453,12 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     writeSessionIdSet(
       ACKED_WORKFLOW_INPUT_IDS_STORAGE_KEY,
       acknowledgedWorkflowInputIdsRef.current,
+    );
+  }, []);
+  const persistWorkflowErrorAcknowledgementStorage = useCallback(() => {
+    writeSessionIdSet(
+      ACKED_WORKFLOW_ERROR_SESSION_IDS_STORAGE_KEY,
+      acknowledgedWorkflowErrorSessionIdsRef.current,
     );
   }, []);
 
@@ -1505,6 +1526,36 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     [acknowledgeWorkflowInput],
   );
 
+  const acknowledgeWorkflowError = useCallback(
+    (sessionId: string | null | undefined) => {
+      if (!sessionId) return;
+      if (acknowledgedWorkflowErrorSessionIdsRef.current.has(sessionId)) {
+        return;
+      }
+      acknowledgedWorkflowErrorSessionIdsRef.current.add(sessionId);
+      persistWorkflowErrorAcknowledgementStorage();
+    },
+    [persistWorkflowErrorAcknowledgementStorage],
+  );
+
+  const syncSessionWorkflowErrorIndicator = useCallback(
+    (sessionId: string, workflowSidebarState: WorkflowSidebarState): boolean => {
+      if (!sessionId) return false;
+      if (workflowSidebarState !== 'failed') {
+        if (acknowledgedWorkflowErrorSessionIdsRef.current.delete(sessionId)) {
+          persistWorkflowErrorAcknowledgementStorage();
+        }
+        return false;
+      }
+      if (activeSessionIdRef.current === sessionId) {
+        acknowledgeWorkflowError(sessionId);
+        return false;
+      }
+      return !acknowledgedWorkflowErrorSessionIdsRef.current.has(sessionId);
+    },
+    [acknowledgeWorkflowError, persistWorkflowErrorAcknowledgementStorage],
+  );
+
   const clearUnreadAgentCompletion = useCallback(
     (sessionId: string) => {
       if (!sessionId) return;
@@ -1549,6 +1600,28 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     [acknowledgeWorkflowInput],
   );
 
+  const clearWorkflowErrorAttention = useCallback(
+    (sessionId: string) => {
+      if (!sessionId) return;
+      setSessionsAsync((prev) => {
+        let changed = false;
+        const data = prev.data.map((session) => {
+          if (session.id !== sessionId) {
+            return session;
+          }
+          if (session.workflowSidebarState === 'failed') {
+            acknowledgeWorkflowError(sessionId);
+          }
+          if (!session.hasWorkflowError) return session;
+          changed = true;
+          return { ...session, hasWorkflowError: false };
+        });
+        return changed ? { ...prev, data } : prev;
+      });
+    },
+    [acknowledgeWorkflowError],
+  );
+
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
     try {
@@ -1560,7 +1633,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch {}
     clearUnreadAgentCompletion(activeSessionId);
     clearPendingWorkflowInput(activeSessionId);
-  }, [activeSessionId, clearPendingWorkflowInput, clearUnreadAgentCompletion]);
+    clearWorkflowErrorAttention(activeSessionId);
+  }, [
+    activeSessionId,
+    clearPendingWorkflowInput,
+    clearUnreadAgentCompletion,
+    clearWorkflowErrorAttention,
+  ]);
 
   useEffect(() => {
     messagesRequestIdRef.current += 1;
@@ -1755,23 +1834,33 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       const workflowSidebarState: WorkflowSidebarState = hasRunningWorkflow
         ? 'running'
         : 'idle';
+      const hasWorkflowError = syncSessionWorkflowErrorIndicator(
+        sessionId,
+        workflowSidebarState,
+      );
       setSessionsAsync((prev) => {
         let changed = false;
         const data = prev.data.map((session) => {
           if (
             session.id !== sessionId ||
             (session.hasRunningWorkflow === hasRunningWorkflow &&
-              session.workflowSidebarState === workflowSidebarState)
+              session.workflowSidebarState === workflowSidebarState &&
+              session.hasWorkflowError === hasWorkflowError)
           ) {
             return session;
           }
           changed = true;
-          return { ...session, hasRunningWorkflow, workflowSidebarState };
+          return {
+            ...session,
+            hasRunningWorkflow,
+            workflowSidebarState,
+            hasWorkflowError,
+          };
         });
         return changed ? { ...prev, data } : prev;
       });
     },
-    [],
+    [syncSessionWorkflowErrorIndicator],
   );
   const setSessionWorkflowStatusIndicators = useCallback(
     (
@@ -1793,6 +1882,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingWorkflowInputId,
       );
       const hasPendingWorkflowReview = Boolean(pendingWorkflowReviewId);
+      const hasWorkflowError = syncSessionWorkflowErrorIndicator(
+        sessionId,
+        workflowSidebarState,
+      );
       setSessionsAsync((prev) => {
         let changed = false;
         const data = prev.data.map((session) => {
@@ -1803,7 +1896,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
               session.pendingWorkflowInputId === pendingWorkflowInputId &&
               session.hasPendingWorkflowInput === hasPendingWorkflowInput &&
               session.pendingWorkflowReviewId === pendingWorkflowReviewId &&
-              session.hasPendingWorkflowReview === hasPendingWorkflowReview)
+              session.hasPendingWorkflowReview === hasPendingWorkflowReview &&
+              session.hasWorkflowError === hasWorkflowError)
           ) {
             return session;
           }
@@ -1816,12 +1910,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             hasPendingWorkflowInput,
             pendingWorkflowReviewId,
             hasPendingWorkflowReview,
+            hasWorkflowError,
           };
         });
         return changed ? { ...prev, data } : prev;
       });
     },
-    [syncSessionWorkflowInputIndicator],
+    [syncSessionWorkflowErrorIndicator, syncSessionWorkflowInputIndicator],
   );
 
   const clearSessionScopedState = useCallback(() => {
@@ -2055,9 +2150,19 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       const ignoredSessionAgentIds = new Set(
         optimisticallyStoppedSessionAgentIdsRef.current,
       );
+      const currentActiveSessionId = activeSessionIdRef.current;
+      const nextActiveSessionId = backend.some(
+        (session) => session.id === currentActiveSessionId,
+      )
+        ? currentActiveSessionId
+        : (backend[0]?.id ?? '');
+      const skipAgentSessionIds = nextActiveSessionId
+        ? new Set([nextActiveSessionId])
+        : undefined;
       const runningIndicators = await loadSessionRunningIndicators(
         backend.map((session) => session.id),
         ignoredSessionAgentIds,
+        { skipAgentSessionIds },
       );
       if (selectedProjectIdRef.current !== projectId) return;
 
@@ -2078,9 +2183,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       }));
 
       const activeBackendSessions = backend;
-      const nextActiveSessionId = syncActiveSessionSelection(
-        activeBackendSessions,
-      );
+      syncActiveSessionSelection(activeBackendSessions);
       const mapped = mapSessions(backend, nextActiveSessionId).map(
         (session) => {
           const indicators = runningIndicators.get(session.id);
@@ -2091,6 +2194,10 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             indicators?.pendingWorkflowInputId ?? null;
           const pendingWorkflowReviewId =
             indicators?.pendingWorkflowReviewId ?? null;
+          const hasWorkflowError = syncSessionWorkflowErrorIndicator(
+            session.id,
+            workflowSidebarState,
+          );
           return {
             ...session,
             hasRunningAgent,
@@ -2103,6 +2210,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             ),
             pendingWorkflowReviewId,
             hasPendingWorkflowReview: Boolean(pendingWorkflowReviewId),
+            hasWorkflowError,
             hasUnreadAgentCompletion: syncSessionAgentActivityIndicator(
               session.id,
               hasRunningAgent,
@@ -2118,6 +2226,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     clearSessionScopedState,
     syncActiveSessionSelection,
     syncSessionAgentActivityIndicator,
+    syncSessionWorkflowErrorIndicator,
     syncSessionWorkflowInputIndicator,
   ]);
 
@@ -2641,23 +2750,36 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const refreshSessionRunningIndicators = useCallback(
     async (sessionId: string): Promise<void> => {
       if (!sessionId) return;
-      const ignoredSessionAgentIds = new Set(
-        optimisticallyStoppedSessionAgentIdsRef.current,
-      );
-      const [sessionAgents, workflowStatus] = await Promise.all([
-        sessionAgentsApi.list(sessionId).catch(() => null),
-        workflowApi.getSessionStatus(sessionId).catch(() => null),
-      ]);
+      const existing = sessionRunningIndicatorRequestsRef.current.get(sessionId);
+      if (existing) return existing;
 
-      if (sessionAgents) {
-        setSessionRunningIndicator(
-          sessionId,
-          hasRunningSessionAgent(sessionAgents, ignoredSessionAgentIds),
+      const request = (async () => {
+        const ignoredSessionAgentIds = new Set(
+          optimisticallyStoppedSessionAgentIdsRef.current,
         );
-      }
-      if (workflowStatus) {
-        setSessionWorkflowStatusIndicators(sessionId, workflowStatus);
-      }
+        const [sessionAgents, workflowStatus] = await Promise.all([
+          sessionAgentsApi.list(sessionId).catch(() => null),
+          workflowApi.getSessionStatus(sessionId).catch(() => null),
+        ]);
+
+        if (sessionAgents) {
+          setSessionRunningIndicator(
+            sessionId,
+            hasRunningSessionAgent(sessionAgents, ignoredSessionAgentIds),
+          );
+        }
+        if (workflowStatus) {
+          setSessionWorkflowStatusIndicators(sessionId, workflowStatus);
+        }
+      })().finally(() => {
+        if (
+          sessionRunningIndicatorRequestsRef.current.get(sessionId) === request
+        ) {
+          sessionRunningIndicatorRequestsRef.current.delete(sessionId);
+        }
+      });
+      sessionRunningIndicatorRequestsRef.current.set(sessionId, request);
+      return request;
     },
     [setSessionRunningIndicator, setSessionWorkflowStatusIndicators],
   );
@@ -2673,7 +2795,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             session.hasRunningAgent ||
               session.hasRunningWorkflow ||
               session.hasPendingWorkflowInput ||
-              session.hasPendingWorkflowReview,
+              session.hasPendingWorkflowReview ||
+              session.hasWorkflowError,
           ),
       )
       .map((session) => session.id);
@@ -2685,7 +2808,6 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     };
 
-    refreshRunningSidebarSessions();
     const intervalId = window.setInterval(
       refreshRunningSidebarSessions,
       SIDEBAR_RUNNING_INDICATOR_POLL_MS,
@@ -2755,10 +2877,16 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   // Initial load: hydrate local mock API data first, then try backend-backed
   // resources. Backend failures keep the mock API payload visible.
   useEffect(() => {
+    if (initialRefreshStartedRef.current) return;
+    initialRefreshStartedRef.current = true;
     void (async () => {
       const bootstrap = await mockFrontendApi.getWorkspaceBootstrap();
       applyMockBootstrap(bootstrap);
-      await refreshAll();
+      try {
+        await refreshAll();
+      } finally {
+        initialRefreshCompletedRef.current = true;
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -3330,7 +3458,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
             setSessionRunningIndicator(sid, hasRemainingRunningAgent);
             return changed ? next : prev;
           });
-          void refreshSessionRunningIndicators(sid);
+          void refreshSessionWorkflowRunningIndicator(sid);
         }
         void refreshMembers();
         return;
@@ -3368,6 +3496,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         if (hasConnectedOnce) {
           void refreshMessages();
           void refreshMembers();
+          void refreshMemberQueues();
           const projectId = selectedProjectIdRef.current;
           if (projectId) {
             notifySourceControlRefreshRequested({
@@ -3375,7 +3504,6 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
               sessionId: sid,
             });
           }
-          void refreshMemberQueues();
           const workspacePath = activeWorkspacePathRef.current;
           if (!projectId && workspacePath) {
             void refreshWorkspaceChanges(sid, workspacePath, true);
@@ -3430,6 +3558,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   ]);
 
   useEffect(() => {
+    if (!initialRefreshCompletedRef.current) return;
     void refreshSessions();
   }, [refreshSessions, selectedProjectId]);
 
