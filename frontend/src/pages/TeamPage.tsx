@@ -821,7 +821,7 @@ export function TeamPage() {
     return () => {
       cancelled = true;
     };
-  }, [runnerType, selectedMember]);
+  }, [runnerType, selectedMember?.id]);
 
   const saveMember = async () => {
     const draft = latestMemberDraftRef.current;
