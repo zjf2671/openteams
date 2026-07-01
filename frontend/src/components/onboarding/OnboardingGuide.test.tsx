@@ -107,6 +107,8 @@ check(
 check(
   'project names are sanitized on blur and before onboarding project creation',
   guideSource.includes("import { sanitizeProjectName }") &&
+    guideSource.includes("const defaultProjectName = 'MyProject'") &&
+    guideSource.includes('current.trim() ? current : defaultProjectName') &&
     guideSource.includes('const name = sanitizeProjectName(projectName)') &&
     guideSource.includes('setProjectName(event.target.value)') &&
     guideSource.includes('onBlur={() => setProjectName((current) => sanitizeProjectName(current))}') &&

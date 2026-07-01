@@ -50,6 +50,7 @@ import {
 } from '../../../../shared/types';
 
 const welcomeStepKey = 'welcome';
+const defaultProjectName = 'MyProject';
 const onboardingSteps = ['scenario', 'executor', 'project_path', 'appearance'] as const;
 
 type OnboardingStepKey = (typeof onboardingSteps)[number];
@@ -414,16 +415,6 @@ export function OnboardingGuide({
     }));
   };
 
-  const projectNameForScenario = useCallback(
-    (scenarioKey: OnboardingScenario) => {
-      const scenario =
-        scenarios.find((candidate) => candidate.key === scenarioKey) ??
-        currentScenario;
-      return sanitizeProjectName(`${scenario.title} workspace`);
-    },
-    [currentScenario, scenarios],
-  );
-
   const buildTeamConfigForScenario = useCallback(
     (
       scenarioKey: OnboardingScenario,
@@ -464,7 +455,7 @@ export function OnboardingGuide({
     setProjectName((current) =>
       sanitizeProjectName(
         nextInitialState?.project_name ??
-          (current.trim() ? current : projectNameForScenario(nextScenario)),
+          (current.trim() ? current : defaultProjectName),
       ),
     );
     setProjectNameTouched((current) =>
@@ -697,7 +688,7 @@ export function OnboardingGuide({
     setSelectedScenario(scenarioKey);
     setTeamConfig(nextTeamConfig);
     if (!projectNameTouched) {
-      setProjectName(projectNameForScenario(scenarioKey));
+      setProjectName(defaultProjectName);
     }
     setState((current) =>
       current
@@ -1318,7 +1309,7 @@ export function OnboardingGuide({
         <div className="grid min-h-0 flex-1 place-items-center p-6">
           <div className="grid w-full max-w-5xl gap-8 lg:grid-cols-[1fr_340px] lg:items-center">
             <div className="min-w-0">
-              <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[var(--primary)]">
+              <p className="text-[15px] font-semibold uppercase tracking-[0.08em] text-[var(--primary)]">
                 OpenTeams
               </p>
               <h1 className="mt-3 max-w-2xl text-[28px] font-semibold leading-tight tracking-tight text-[var(--ink)]">
