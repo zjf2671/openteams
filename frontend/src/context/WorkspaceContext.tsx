@@ -2926,20 +2926,23 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     (sid: string, runId: string, message: Message) => {
       setAllMessages((prev) => {
         const current = filterMessagesForSession(sid, prev[sid] ?? []);
-        const clientMessageId = userMessageClientId(message);
-        const withoutExistingUserMessage = current.filter(
-          (candidate) =>
-            !matchesUserMessageIdentity(
-              candidate,
-              message.id,
-              clientMessageId,
-            ),
+        const sourceClientMessageId = message.isUser
+          ? userMessageClientId(message)
+          : undefined;
+        const withoutExistingSourceMessage = current.filter((candidate) =>
+          message.isUser
+            ? !matchesUserMessageIdentity(
+                candidate,
+                message.id,
+                sourceClientMessageId,
+              )
+            : candidate.id !== message.id,
         );
 
-        const runIndex = withoutExistingUserMessage.findIndex(
+        const runIndex = withoutExistingSourceMessage.findIndex(
           (candidate) => candidate.isAgentRunning && candidate.runId === runId,
         );
-        const next = [...withoutExistingUserMessage];
+        const next = [...withoutExistingSourceMessage];
         next.splice(runIndex >= 0 ? runIndex : next.length, 0, message);
         return { ...prev, [sid]: resolveQuotedMessageReferences(next) };
       });
