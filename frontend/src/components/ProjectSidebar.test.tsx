@@ -7,7 +7,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import { ProjectSidebar } from "./ProjectSidebar";
+import { prioritizeSessions, ProjectSidebar } from "./ProjectSidebar";
 import { mockShellOptions, mockWorkspaceBootstrap } from "@/mockApiData";
 import type { Project } from "../../../shared/types";
 
@@ -316,6 +316,24 @@ const activeOrderedHtml = renderToStaticMarkup(
     onProjectAction={() => undefined}
   />,
 );
+const prioritySessions = mockWorkspaceBootstrap.sessions.map((session) => ({
+  ...session,
+  hasUnreadAgentCompletion: session.id === "sess-8",
+}));
+const priorityOrderIds = prioritizeSessions(prioritySessions).map(
+  (session) => session.id,
+);
+const readOrderIds = prioritizeSessions(
+  mockWorkspaceBootstrap.sessions,
+  priorityOrderIds,
+).map((session) => session.id);
+const nextPriorityOrderIds = prioritizeSessions(
+  mockWorkspaceBootstrap.sessions.map((session) => ({
+    ...session,
+    hasPendingWorkflowInput: session.id === "sess-7",
+  })),
+  readOrderIds,
+).map((session) => session.id);
 const moreAttrStart = html.indexOf('data-sidebar-more="true"');
 const moreStart =
   moreAttrStart >= 0 ? html.lastIndexOf("<button", moreAttrStart) : -1;
@@ -460,6 +478,20 @@ check(
     activeOrderedHtml.includes("Refactor auth guard") &&
     !activeOrderedHtml.includes("Billing copy polish"),
   activeOrderedHtml,
+);
+check(
+  "keeps a read priority session in its displayed position",
+  priorityOrderIds[0] === "sess-8" &&
+    readOrderIds[0] === "sess-8" &&
+    priorityOrderIds.join("|") === readOrderIds.join("|"),
+  { priorityOrderIds, readOrderIds },
+);
+check(
+  "lets read sessions fall behind newly prioritized sessions",
+  nextPriorityOrderIds[0] === "sess-7" &&
+    nextPriorityOrderIds.indexOf("sess-8") >
+      nextPriorityOrderIds.indexOf("sess-7"),
+  nextPriorityOrderIds,
 );
 check(
   "keeps collapsed session list height content-sized",

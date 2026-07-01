@@ -111,6 +111,15 @@ check(
   { source, configTabsSource },
 );
 
+check(
+  "skill selection does not reload the installed skills list after save",
+  source.includes(".listNative(runnerType)") &&
+    source.includes("mcpServersApi\n      .load(runnerType)") &&
+    source.includes("}, [runnerType, selectedMember?.id]);") &&
+    !source.includes("}, [runnerType, selectedMember]);"),
+  { source },
+);
+
 if (failures > 0) {
   // eslint-disable-next-line no-console
   console.error(`\n${failures} TeamPage assertion(s) failed.`);

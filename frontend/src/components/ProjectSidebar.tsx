@@ -155,14 +155,60 @@ const hasSidebarPrioritySessionActivity = (session: Session): boolean =>
 
 const isPinnedSession = (session: Session): boolean => Boolean(session.pinnedAt);
 
-const prioritizeSessions = (sessions: Session[]): Session[] => {
+const emptySessionOrderIds: string[] = [];
+
+type StableSessionOrder = {
+  rosterKey: string;
+  orderIds: string[];
+};
+
+const sameStringArray = (left: string[], right: string[]): boolean =>
+  left.length === right.length &&
+  left.every((value, index) => value === right[index]);
+
+const sessionOrderKey = (sessions: Session[]): string =>
+  sessions.map((session) => session.id).join("\u001f");
+
+const orderSessionsWithinGroup = (
+  group: Session[],
+  inputOrderById: Map<string, number>,
+  previousOrderById: Map<string, number>,
+): Session[] =>
+  [...group].sort((left, right) => {
+    const leftPrevious = previousOrderById.get(left.id);
+    const rightPrevious = previousOrderById.get(right.id);
+    if (leftPrevious !== undefined || rightPrevious !== undefined) {
+      if (leftPrevious === undefined) return 1;
+      if (rightPrevious === undefined) return -1;
+      return leftPrevious - rightPrevious;
+    }
+    return (
+      (inputOrderById.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+      (inputOrderById.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+    );
+  });
+
+export const prioritizeSessions = (
+  sessions: Session[],
+  previousOrderIds: readonly string[] = emptySessionOrderIds,
+): Session[] => {
+  const inputOrderById = new Map(
+    sessions.map((session, index) => [session.id, index]),
+  );
+  const previousOrderById = new Map(
+    previousOrderIds.map((sessionId, index) => [sessionId, index]),
+  );
   const pinned = sessions.filter(isPinnedSession);
   const unpinned = sessions.filter((session) => !isPinnedSession(session));
   const priority = unpinned.filter(hasSidebarPrioritySessionActivity);
   const rest = unpinned.filter(
     (session) => !hasSidebarPrioritySessionActivity(session),
   );
-  return [...pinned, ...priority, ...rest];
+  return [
+    ...orderSessionsWithinGroup(pinned, inputOrderById, previousOrderById),
+    ...orderSessionsWithinGroup(priority, inputOrderById, previousOrderById),
+    ...orderSessionsWithinGroup(rest, inputOrderById, previousOrderById),
+  ];
 };
 
 const blankTeamOptions: DropdownSelectOption[] = [
@@ -425,6 +471,11 @@ export function ProjectSidebar({
   const [realBuildStats, setRealBuildStats] =
     useState<SidebarBuildStats | null>(null);
   const [buildStatsRefreshVersion, setBuildStatsRefreshVersion] = useState(0);
+  const [stableSessionOrder, setStableSessionOrder] =
+    useState<StableSessionOrder>({
+      rosterKey: "",
+      orderIds: [],
+    });
   const buildStatsProjectRef = useRef<string | null>(null);
   const buildStatsModelCostRef = useRef(0);
   const buildStatsUsageRetryTimersRef = useRef<
@@ -467,10 +518,33 @@ export function ProjectSidebar({
     [displayedProjects, projectActionMenu],
   );
   const buildStats = realBuildStats ?? ZERO_BUILD_STATS;
-  const orderedSessions = useMemo(
-    () => prioritizeSessions(sessions),
+  const currentSessionOrderKey = useMemo(
+    () => sessionOrderKey(sessions),
     [sessions],
   );
+  const previousSessionOrderIds =
+    stableSessionOrder.rosterKey === currentSessionOrderKey
+      ? stableSessionOrder.orderIds
+      : emptySessionOrderIds;
+  const orderedSessions = useMemo(
+    () => prioritizeSessions(sessions, previousSessionOrderIds),
+    [previousSessionOrderIds, sessions],
+  );
+  useEffect(() => {
+    const nextOrderIds = orderedSessions.map((session) => session.id);
+    setStableSessionOrder((current) => {
+      if (
+        current.rosterKey === currentSessionOrderKey &&
+        sameStringArray(current.orderIds, nextOrderIds)
+      ) {
+        return current;
+      }
+      return {
+        rosterKey: currentSessionOrderKey,
+        orderIds: nextOrderIds,
+      };
+    });
+  }, [currentSessionOrderKey, orderedSessions]);
   const hasOverflowSessions = orderedSessions.length > visibleSessionLimit;
   const visibleSessions = sessionsExpanded
     ? orderedSessions
