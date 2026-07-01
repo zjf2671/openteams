@@ -1567,13 +1567,7 @@ export function ProjectSidebar({
                   <input
                     className={`${createProjectFieldBaseClass} text-[14px]`}
                     value={projectName}
-                    onChange={(event) =>
-                      setProjectName(
-                        editingProject
-                          ? event.target.value
-                          : sanitizeProjectName(event.target.value),
-                      )
-                    }
+                    onChange={(event) => setProjectName(event.target.value)}
                     placeholder={translate(
                       "sidebar.projectName",
                       "Project name",

@@ -686,9 +686,10 @@ check(
   componentSource,
 );
 check(
-  "create project modal sanitizes project names before submit",
+  "create project modal preserves typed project names until submit",
   componentSource.includes("sanitizeProjectName(projectName)") &&
-    componentSource.includes("sanitizeProjectName(event.target.value)"),
+    componentSource.includes("setProjectName(event.target.value)") &&
+    !componentSource.includes("sanitizeProjectName(event.target.value)"),
   componentSource,
 );
 check(
