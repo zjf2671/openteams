@@ -155,24 +155,14 @@ const hasSidebarPrioritySessionActivity = (session: Session): boolean =>
 
 const isPinnedSession = (session: Session): boolean => Boolean(session.pinnedAt);
 
-const prioritizeSessions = (
-  sessions: Session[],
-  activeSessionId: string,
-): Session[] => {
+const prioritizeSessions = (sessions: Session[]): Session[] => {
   const pinned = sessions.filter(isPinnedSession);
   const unpinned = sessions.filter((session) => !isPinnedSession(session));
   const priority = unpinned.filter(hasSidebarPrioritySessionActivity);
   const rest = unpinned.filter(
     (session) => !hasSidebarPrioritySessionActivity(session),
   );
-  const active = rest.filter((session) => session.id === activeSessionId);
-  const inactive = rest.filter((session) => session.id !== activeSessionId);
-  return [
-    ...pinned,
-    ...priority,
-    ...active,
-    ...inactive,
-  ];
+  return [...pinned, ...priority, ...rest];
 };
 
 const blankTeamOptions: DropdownSelectOption[] = [
@@ -478,8 +468,8 @@ export function ProjectSidebar({
   );
   const buildStats = realBuildStats ?? ZERO_BUILD_STATS;
   const orderedSessions = useMemo(
-    () => prioritizeSessions(sessions, activeSessionId),
-    [activeSessionId, sessions],
+    () => prioritizeSessions(sessions),
+    [sessions],
   );
   const hasOverflowSessions = orderedSessions.length > visibleSessionLimit;
   const visibleSessions = sessionsExpanded
@@ -1567,13 +1557,7 @@ export function ProjectSidebar({
                   <input
                     className={`${createProjectFieldBaseClass} text-[14px]`}
                     value={projectName}
-                    onChange={(event) =>
-                      setProjectName(
-                        editingProject
-                          ? event.target.value
-                          : sanitizeProjectName(event.target.value),
-                      )
-                    }
+                    onChange={(event) => setProjectName(event.target.value)}
                     placeholder={translate(
                       "sidebar.projectName",
                       "Project name",

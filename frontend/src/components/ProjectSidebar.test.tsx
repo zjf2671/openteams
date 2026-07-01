@@ -455,11 +455,10 @@ check(
   completedOrderedHtml,
 );
 check(
-  "keeps the selected session at the top after attention clears",
-  activeOrderedHtml.indexOf("Billing copy polish") >= 0 &&
-    activeOrderedHtml.indexOf("Billing copy polish") <
-      activeOrderedHtml.indexOf("Fix login flicker") &&
-    !activeOrderedHtml.includes("Refactor auth guard"),
+  "does not move the selected session to the top on click",
+  activeOrderedHtml.indexOf("Fix login flicker") >= 0 &&
+    activeOrderedHtml.includes("Refactor auth guard") &&
+    !activeOrderedHtml.includes("Billing copy polish"),
   activeOrderedHtml,
 );
 check(
@@ -686,9 +685,10 @@ check(
   componentSource,
 );
 check(
-  "create project modal sanitizes project names before submit",
+  "create project modal preserves typed project names until submit",
   componentSource.includes("sanitizeProjectName(projectName)") &&
-    componentSource.includes("sanitizeProjectName(event.target.value)"),
+    componentSource.includes("setProjectName(event.target.value)") &&
+    !componentSource.includes("sanitizeProjectName(event.target.value)"),
   componentSource,
 );
 check(
